@@ -1,4 +1,4 @@
-"""Supabase access for the render worker."""
+﻿"""Supabase access for the render worker."""
 from datetime import datetime, timezone
 
 from supabase import create_client
@@ -13,16 +13,16 @@ def now_iso():
 
 
 def claim_job():
-    rows = sb.rpc("claim_render_job").execute().data or []
+    rows = sb.rpc("claim_farm_job").execute().data or []
     return rows[0] if rows else None
 
 
 def reclaim_stale():
-    return sb.rpc("reclaim_stale_jobs", {"p_stale_minutes": config.STALE_MINUTES}).execute().data
+    return sb.rpc("reclaim_stale_farm_jobs", {"p_stale_minutes": config.STALE_MINUTES}).execute().data
 
 
 def update_job(job_id, fields):
-    sb.table("render_jobs").update(fields).eq("id", job_id).execute()
+    sb.table("farm_render_jobs").update(fields).eq("id", job_id).execute()
 
 
 def set_phase(job_id, phase, progress=None):
@@ -34,7 +34,7 @@ def set_phase(job_id, phase, progress=None):
 
 def cancel_requested(job_id):
     rows = (
-        sb.table("render_jobs").select("cancel_requested").eq("id", job_id).execute().data
+        sb.table("farm_render_jobs").select("cancel_requested").eq("id", job_id).execute().data
     )
     return bool(rows and rows[0]["cancel_requested"])
 

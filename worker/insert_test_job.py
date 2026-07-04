@@ -1,4 +1,4 @@
-"""Insert a test render job directly (PC-side smoke test, bypasses the MCP).
+﻿"""Insert a test render job directly (PC-side smoke test, bypasses the MCP).
 
 Examples:
   python insert_test_job.py --engine remotion --repo https://github.com/user/proj --composition Demo
@@ -40,7 +40,8 @@ def main():
     if args.props:
         params["props"] = json.loads(args.props)
 
-    row = db.sb.table("render_jobs").insert({
+    row = db.sb.table("farm_render_jobs").insert({
+        "status": "pending",
         "engine": args.engine,
         "repo_url": args.repo,
         "git_ref": args.ref,
