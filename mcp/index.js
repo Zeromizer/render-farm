@@ -14,11 +14,12 @@ const fail = (e) => ({ content: [{ type: "text", text: `Error: ${e.message}` }],
 
 server.tool(
   "submit_render_job",
-  "Submit a GPU render job (Remotion or Blender) to the home render farm. " +
-    "The repo+ref must be pushed first; the farm clones it and renders on an RTX 4080. " +
+  "Submit a GPU job (Remotion render, Blender render, or a Python script — e.g. " +
+    "rembg matting, upscaling) to the home render farm. " +
+    "The repo+ref must be pushed first; the farm clones it and runs on an RTX 4080. " +
     "Returns a job_id — poll with get_job_status, then download_result.",
   {
-    engine: z.enum(["remotion", "blender"]),
+    engine: z.enum(["remotion", "blender", "python"]),
     repo_url: z.string().describe("Git URL, e.g. https://github.com/user/repo"),
     ref: z.string().default("main").describe("Branch, tag, or commit SHA (must be pushed)"),
     composition: z.string().optional().describe("Remotion: composition id (required for remotion)"),
@@ -32,6 +33,10 @@ server.tool(
     frame_end: z.number().int().optional(),
     single_frame: z.number().int().optional().describe("Blender: render just this frame as an image"),
     output_format: z.string().optional().describe("Blender: FFMPEG (default) or PNG (zipped sequence)"),
+    script: z.string().optional().describe("Python: repo-relative .py to run (required for python)"),
+    args: z.array(z.string()).optional().describe("Python: CLI args for the script"),
+    requirements: z.string().optional().describe("Python: repo-relative requirements.txt; venv is cached per content hash"),
+    output: z.string().optional().describe("Python: repo-relative output file/dir the script writes (dir → zip; required for python)"),
     timeout_minutes: z.number().int().optional().describe("Kill the job after this long (default 120)"),
   },
   async (args) => {
@@ -40,9 +45,12 @@ server.tool(
         throw new Error("remotion jobs require 'composition'");
       if (args.engine === "blender" && !args.blend_file)
         throw new Error("blender jobs require 'blend_file'");
+      if (args.engine === "python" && (!args.script || !args.output))
+        throw new Error("python jobs require 'script' and 'output'");
       const params = {};
       for (const k of ["composition", "project_dir", "entry", "codec", "frame_range",
-        "props", "blend_file", "frame_start", "frame_end", "single_frame", "output_format"]) {
+        "props", "blend_file", "frame_start", "frame_end", "single_frame", "output_format",
+        "script", "args", "requirements", "output"]) {
         if (args[k] !== undefined) params[k] = args[k];
       }
       const job = await insertJob({

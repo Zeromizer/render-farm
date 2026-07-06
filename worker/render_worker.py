@@ -47,9 +47,10 @@ import db
 import git_cache
 import proc
 from heartbeat import Heartbeat
-from runners import blender, remotion
+from runners import blender, python_script, remotion
 
-RUNNERS = {"remotion": remotion.run, "blender": blender.run}
+RUNNERS = {"remotion": remotion.run, "blender": blender.run,
+           "python": python_script.run}
 
 
 def log(msg):

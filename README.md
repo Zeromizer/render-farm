@@ -1,7 +1,8 @@
 # render-farm
 
-Personal GPU render farm: dispatch Remotion/Blender renders from a laptop
-(via Claude Code MCP tools) to a home PC with an RTX 4080 SUPER. Supabase
+Personal GPU render farm: dispatch Remotion/Blender renders and Python
+scripts from a laptop (via Claude Code MCP tools) to a home PC with an
+RTX 4080 SUPER. Supabase
 ("Aimotion" project) is the only rendezvous — job queue table + private
 Storage bucket. Both ends talk outbound HTTPS only; no inbound connections,
 no admin rights needed anywhere.
@@ -39,6 +40,31 @@ Job lifecycle: `pending → processing → done | failed | canceled`, with
 heartbeat every 15s, stale-job reclaim (5 min), 2 attempts max, per-job
 timeout (default 120 min), cancellation within ~5s, and startup cleanup of
 old repo caches (14d) and work dirs (2d).
+
+## Python engine (added 2026-07-06)
+
+`engine: "python"` runs a repo script on the worker — for GPU-hungry
+non-render work (rembg/BiRefNet matting, Real-ESRGAN upscales, RIFE
+interpolation). Params: `script` (repo-relative .py, required), `output`
+(repo-relative file or dir the script writes — dir gets zipped; required),
+`args` (string list), `requirements` (repo-relative requirements.txt — a
+venv is built once per unique requirements content and cached in
+`%LOCALAPPDATA%\render-farm\venvs\<hash>`). The script runs with
+cwd=<repo>, gets `RENDER_WORK_DIR` in env, and can print `PROGRESS <0-100>`
+lines to drive job progress.
+
+GPU tip for onnxruntime jobs on Windows: put `onnxruntime-directml` in the
+job's requirements and create sessions with
+`providers=["DmlExecutionProvider"]` — DirectML uses the 4080 without any
+CUDA/cuDNN install. ffmpeg must be on the worker PATH for jobs that use it.
+
+**Deploy this upgrade on the render PC** (one-time):
+
+```sh
+cd <render-farm checkout> && git pull
+# then restart the worker: close the pythonw process (Task Manager) or reboot;
+# the startup shortcut relaunches it. No new worker deps needed.
+```
 
 ## Notes
 

@@ -32,6 +32,11 @@ Restart Claude Code, then check `/mcp` lists `render-farm`.
 Blender: `engine=blender`, `blend_file=scenes/shot.blend`, plus either
 `single_frame` or `frame_start`/`frame_end`. PNG sequences arrive as a zip.
 
+Python (GPU scripts — matting, upscales, interpolation): `engine=python`,
+`script=scripts/job.py`, `output=out/frames` (dir → zip), optional
+`args=[...]` and `requirements=scripts/requirements.txt` (venv cached per
+content hash on the worker). See "Python engine" in the root README.
+
 ## Tools
 
 | Tool | Purpose |
