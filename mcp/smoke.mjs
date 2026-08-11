@@ -7,7 +7,7 @@ const JOB_ID = process.argv[2];
 
 const transport = new StdioClientTransport({
   command: process.execPath,
-  args: ["c:/Coding/render-farm/mcp/index.js"],
+  args: [new URL("./index.js", import.meta.url).pathname.replace(/^\//, "")],
   env: { ...process.env },
 });
 const client = new Client({ name: "smoke", version: "1.0.0" });

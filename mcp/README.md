@@ -54,3 +54,17 @@ content hash on the worker). See "Python engine" in the root README.
 | list_jobs | recent jobs |
 | cancel_job | cancel pending/processing |
 | download_result | download output into the workspace |
+
+## Testing without restarting Claude Code
+
+`node mcp/call.mjs` spawns the server over stdio and loads `../.env` itself, so
+new tools/params can be exercised before Claude Code is restarted (its MCP
+client only re-reads the tool list on startup):
+
+```sh
+node mcp/call.mjs                          # list tools
+node mcp/call.mjs sync_assets '{"paths":["C:/clips"]}'
+node mcp/call.mjs submit_render_job '{"engine":"remotion", ...}'
+```
+
+`smoke.mjs` does the same but expects the credentials already in the environment.
