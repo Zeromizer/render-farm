@@ -42,6 +42,7 @@ sys.stderr = _Tee(sys.__stderr__, _logf)
 
 import time
 
+import assets
 import config
 import db
 import git_cache
@@ -75,6 +76,11 @@ def run_job(job):
         db.set_phase(jid, "cloning", 1)
         repo = git_cache.checkout(job["repo_url"], job.get("git_ref") or "main", log)
 
+        manifest = (job.get("params") or {}).get("assets")
+        if manifest:
+            db.set_phase(jid, "syncing_assets", 2)
+            assets.ensure(manifest, repo, log)
+
         db.set_phase(jid, "rendering", 2)
         out_local, ext, content_type = runner(
             job, repo, work_dir, hb, log, cancel_check, timeout_seconds
@@ -99,8 +105,11 @@ def run_job(job):
 
 
 def main():
+    from singleton import ensure_single_instance
+    ensure_single_instance("worker")
     log(f"render worker starting (cache={config.CACHE_DIR})")
     git_cache.cleanup_old(log)
+    assets.cleanup_old(log)
     try:
         n = db.reclaim_stale()
         if n:

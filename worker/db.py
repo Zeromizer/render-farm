@@ -42,8 +42,10 @@ def cancel_requested(job_id):
 def upload_output(job_id, local_path, ext, content_type):
     remote = f"outputs/{job_id}.{ext}"
     with open(local_path, "rb") as f:
+        # Pass the file object (not f.read()) so httpx streams the body —
+        # large finals no longer load fully into memory.
         sb.storage.from_(config.BUCKET).upload(
-            remote, f.read(), {"content-type": content_type, "upsert": "true"}
+            remote, f, {"content-type": content_type, "upsert": "true"}
         )
     return remote
 

@@ -24,10 +24,16 @@ Restart Claude Code, then check `/mcp` lists `render-farm`.
 
 ## Typical flow inside Claude Code
 
-1. Work on your Remotion project locally, commit and **push**.
-2. `submit_render_job` with `engine=remotion`, `repo_url`, `ref`, `composition`.
-3. `wait_for_job` / `get_job_status` — shows phase (cloning → rendering) and progress %.
-4. `download_result(job_id, "out/final.mp4")` — file lands in your workspace.
+1. Work on your Remotion project locally, commit and **push** (code only —
+   large media goes via `sync_assets`, not git).
+2. `sync_assets(paths=["./broll"], dest_prefix="public")` — hashes files,
+   uploads only new ones, returns an `assets` manifest.
+3. `submit_render_job` with `engine=remotion`, `repo_url`, `ref`,
+   `composition`, `quality="draft"`, `assets=<manifest>`.
+4. `wait_for_job` / `get_job_status` — phase (cloning → syncing_assets →
+   rendering) and progress %.
+5. `download_result(job_id, "out/draft.mp4")` — iterate, then resubmit the
+   same job with `quality="final"` (manifest reused verbatim).
 
 Blender: `engine=blender`, `blend_file=scenes/shot.blend`, plus either
 `single_frame` or `frame_start`/`frame_end`. PNG sequences arrive as a zip.
@@ -41,7 +47,8 @@ content hash on the worker). See "Python engine" in the root README.
 
 | Tool | Purpose |
 |---|---|
-| submit_render_job | queue a render (returns job_id) |
+| submit_render_job | queue a render (returns job_id); `quality` draft/final, `assets` manifest |
+| sync_assets | hash + upload local media to the assets bucket, returns manifest |
 | get_job_status | status + progress % + phase |
 | wait_for_job | block up to 600s until done |
 | list_jobs | recent jobs |

@@ -22,6 +22,10 @@ def log(msg):
 
 
 def main():
+    import sys
+    sys.path.insert(0, HERE)
+    from singleton import ensure_single_instance
+    ensure_single_instance("supervisor")
     log("render supervisor started")
     while True:
         try:

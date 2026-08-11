@@ -6,6 +6,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { insertJob, getJob, listJobs, cancelJob, summarize } from "./lib/jobs.js";
 import { downloadResult } from "./lib/download.js";
+import { syncAssets } from "./lib/assets.js";
 
 const server = new McpServer({ name: "render-farm", version: "1.0.0" });
 
@@ -28,6 +29,13 @@ server.tool(
     codec: z.string().optional().describe("Remotion: h264 (default), vp9, gif, prores..."),
     frame_range: z.string().optional().describe("Remotion: e.g. '0-120'"),
     props: z.record(z.any()).optional().describe("Remotion: input props object"),
+    quality: z.enum(["draft", "final"]).optional()
+      .describe("Remotion: draft = half resolution + fast encode (+half fps if the composition supports the quality prop) for fast previews; default final"),
+    assets: z.array(z.object({
+      path: z.string(),
+      sha256: z.string().length(64),
+      size: z.number().int(),
+    })).optional().describe("Asset manifest from sync_assets; files are placed into the checkout at these repo-relative paths before rendering"),
     blend_file: z.string().optional().describe("Blender: repo-relative .blend path (required for blender)"),
     frame_start: z.number().int().optional(),
     frame_end: z.number().int().optional(),
@@ -49,7 +57,8 @@ server.tool(
         throw new Error("python jobs require 'script' and 'output'");
       const params = {};
       for (const k of ["composition", "project_dir", "entry", "codec", "frame_range",
-        "props", "blend_file", "frame_start", "frame_end", "single_frame", "output_format",
+        "props", "quality", "assets",
+        "blend_file", "frame_start", "frame_end", "single_frame", "output_format",
         "script", "args", "requirements", "output"]) {
         if (args[k] !== undefined) params[k] = args[k];
       }
@@ -59,6 +68,24 @@ server.tool(
       });
       return json({ job_id: job.id, status: job.status });
     } catch (e) { return fail(e); }
+  }
+);
+
+server.tool(
+  "sync_assets",
+  "Upload local media assets (b-roll videos, images, audio) to the farm's " +
+    "content-addressed assets bucket. Files are hashed (SHA-256) and only " +
+    "missing hashes are uploaded, so re-syncing is cheap. Returns an 'assets' " +
+    "manifest — pass it directly as the `assets` param of submit_render_job. " +
+    "Assets synced this way no longer need to be committed to git.",
+  {
+    paths: z.array(z.string()).min(1)
+      .describe("Local files and/or directories to sync (dirs are walked recursively)"),
+    dest_prefix: z.string().default("public")
+      .describe("Repo-relative dir the files are materialized under on the worker, e.g. 'public' (prepend project_dir if the job uses one)"),
+  },
+  async (args) => {
+    try { return json(await syncAssets(args)); } catch (e) { return fail(e); }
   }
 );
 

@@ -24,6 +24,8 @@ def main():
     ap.add_argument("--codec")
     ap.add_argument("--frame-range")
     ap.add_argument("--props", help="JSON string")
+    ap.add_argument("--quality", choices=["draft", "final"])
+    ap.add_argument("--assets", help="JSON string: [{path, sha256, size}, ...] (from sync_assets)")
     ap.add_argument("--blend-file")
     ap.add_argument("--frame-start", type=int)
     ap.add_argument("--frame-end", type=int)
@@ -32,13 +34,15 @@ def main():
     args = ap.parse_args()
 
     params = {}
-    for key in ("composition", "project_dir", "entry", "codec", "frame_range",
+    for key in ("composition", "project_dir", "entry", "codec", "frame_range", "quality",
                 "blend_file", "frame_start", "frame_end", "single_frame", "output_format"):
         v = getattr(args, key)
         if v is not None:
             params[key] = v
     if args.props:
         params["props"] = json.loads(args.props)
+    if args.assets:
+        params["assets"] = json.loads(args.assets)
 
     row = db.sb.table("farm_render_jobs").insert({
         "status": "pending",

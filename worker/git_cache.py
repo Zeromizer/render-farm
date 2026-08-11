@@ -31,16 +31,43 @@ def repo_dir(repo_url):
     return os.path.join(config.REPOS_DIR, h)
 
 
+def rmtree_robust(path):
+    """rmtree that survives node_modules long paths (\\\\?\\ prefix on Windows)."""
+    target = path
+    if os.name == "nt":
+        target = "\\\\?\\" + os.path.abspath(path)
+    shutil.rmtree(target, ignore_errors=True)
+    if os.path.exists(path):
+        shutil.rmtree(path, ignore_errors=True)
+    return not os.path.exists(path)
+
+
+def _clone_fresh(repo_url, d, log):
+    log(f"cloning {repo_url}")
+    _run_git(["clone", repo_url, d])
+    _run_git(["config", "core.longpaths", "true"], cwd=d)
+
+
 def checkout(repo_url, ref, log):
-    """Clone-or-fetch repo_url and force-checkout ref. Returns the repo dir."""
+    """Clone-or-fetch repo_url and force-checkout ref. Returns the repo dir.
+
+    A cached dir that fails any git op (e.g. left half-deleted by an
+    interrupted cleanup) is wiped and re-cloned once.
+    """
     d = repo_dir(repo_url)
     if not os.path.isdir(os.path.join(d, ".git")):
-        log(f"cloning {repo_url}")
-        _run_git(["clone", repo_url, d])
-        _run_git(["config", "core.longpaths", "true"], cwd=d)
+        if os.path.exists(d):  # remnant without .git — a corrupt cache
+            rmtree_robust(d)
+        _clone_fresh(repo_url, d, log)
     else:
-        log(f"fetching {repo_url}")
-        _run_git(["fetch", "--all", "--prune", "--tags"], cwd=d)
+        try:
+            log(f"fetching {repo_url}")
+            _run_git(["fetch", "--all", "--prune", "--tags"], cwd=d)
+        except RuntimeError as e:
+            log(f"cached repo unusable ({str(e)[:120]}), re-cloning")
+            if not rmtree_robust(d):
+                raise RuntimeError(f"cannot remove corrupt repo cache {d}")
+            _clone_fresh(repo_url, d, log)
 
     # Prefer the remote tip when ref is a branch name; fall back to raw ref (sha/tag).
     try:
@@ -91,6 +118,7 @@ def cleanup_old(log):
             try:
                 if now - os.path.getmtime(p) > max_days * 86400:
                     log(f"cleanup: removing {p}")
-                    shutil.rmtree(p, ignore_errors=True)
+                    if not rmtree_robust(p):
+                        log(f"cleanup: {p} only partially removed (locked files?)")
             except OSError:
                 pass

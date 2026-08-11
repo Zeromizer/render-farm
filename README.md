@@ -9,19 +9,21 @@ no admin rights needed anywhere.
 
 ```
 LAPTOP (Claude Code + mcp/)                     HOME PC (worker/)
-submit_render_job ──► render_jobs table ◄────── claim_render_job() RPC (poll 3s)
-get_job_status    ◄── progress/heartbeat ◄───── heartbeat thread + stdout parsing
-download_result   ◄── 'renders' bucket   ◄───── upload + signed URL
+submit_render_job ──► farm_render_jobs table ◄── claim_farm_job() RPC (poll 3s)
+sync_assets       ──► 'assets' bucket       ◄──  content-addressed download cache
+get_job_status    ◄── progress/heartbeat    ◄──  heartbeat thread + stdout parsing
+download_result   ◄── 'renders' bucket      ◄──  upload + signed URL
 ```
 
-Transport is **git**: push your project, submit a job referencing repo+ref;
-the worker clones/fetches, `npm ci` (Remotion, lockfile-hash cached), renders
-with GPU (`--gl=angle` / OPTIX), uploads the result.
+Transport is **git** for code: push your project, submit a job referencing
+repo+ref; the worker clones/fetches, `npm ci` (Remotion, lockfile-hash
+cached), renders with GPU (`--gl=angle` / OPTIX), uploads the result.
+Large media assets skip git via the assets bucket (see below).
 
 ## Layout
 
-- `schema.sql` — `render_jobs` table + `claim_render_job()` + `reclaim_stale_jobs()` (apply in Supabase SQL editor)
-- `setup_supabase.py` — creates the private `renders` bucket
+- `schema.sql` — `farm_render_jobs` table + `claim_farm_job()` + `reclaim_stale_farm_jobs()` (apply in Supabase SQL editor)
+- `setup_supabase.py` — creates/updates the private `renders` + `assets` buckets (2GB file_size_limit)
 - `worker/` — Python worker for the render PC (see below)
 - `mcp/` — Node stdio MCP server for the laptop (see `mcp/README.md`)
 
@@ -40,6 +42,57 @@ Job lifecycle: `pending → processing → done | failed | canceled`, with
 heartbeat every 15s, stale-job reclaim (5 min), 2 attempts max, per-job
 timeout (default 120 min), cancellation within ~5s, and startup cleanup of
 old repo caches (14d) and work dirs (2d).
+
+## Assets bucket (added 2026-08-12)
+
+Large media (b-roll video, images, audio) no longer needs to be committed to
+the video repo. The laptop's `sync_assets` MCP tool hashes local files
+(SHA-256) and uploads only missing hashes to the private `assets` bucket at
+`sha256/<hex>` — sync once, reference forever. It returns a manifest
+(`[{path, sha256, size}, ...]`, paths repo-root-relative like
+`public/broll-1.mp4`) that is passed as the `assets` param of
+`submit_render_job`.
+
+Before rendering (phase `syncing_assets`), the worker downloads any hashes
+missing from its content-addressed cache (`%LOCALAPPDATA%\render-farm\assets`,
+streamed + hash-verified) and hardlinks them into the checkout at the manifest
+paths. Cache entries untouched for 30 days are evicted at worker startup
+(`ASSET_CACHE_MAX_AGE_DAYS` env to change). A manifest entry whose hash is not
+in the bucket fails the job fast with a "run sync_assets first" error.
+
+Size limits: `setup_supabase.py` sets a 2GB per-bucket `file_size_limit`, but
+the **project-global upload cap** (Supabase Dashboard → Storage → Settings;
+50 MB on the Free plan) still applies on top — raise it there if big uploads
+413.
+
+## Draft mode (added 2026-08-12)
+
+Remotion jobs accept `quality: "draft" | "final"` (default final, unchanged
+behavior). Draft renders with `--scale=0.5` and `--crf=32` (CRF-capable codecs)
+and injects `{"quality": "draft"}` into the input props. For the full speedup,
+the composition should halve fps in draft via `calculateMetadata`:
+
+```tsx
+const FPS = 30;
+const DURATION_IN_FRAMES = 1360;
+
+<Composition ... fps={FPS} durationInFrames={DURATION_IN_FRAMES}
+  defaultProps={{ quality: "final" as "final" | "draft" }}
+  calculateMetadata={({ props }) =>
+    props.quality === "draft"
+      ? { fps: FPS / 2, durationInFrames: Math.round(DURATION_IN_FRAMES / 2), props }
+      : { props }}
+/>
+```
+
+Caveats: wall-clock timing is preserved only for seconds-based animations
+(`frame / fps`); frame-count-hardcoded animations run 2× fast in drafts.
+Components can also branch on `props.quality` to skip expensive effects
+(blurs, particles). Combined draft speedup is typically ~4-8×. With halved
+fps, `frame_range` refers to draft frame numbers.
+
+Typical flow: `sync_assets` → `submit_render_job(quality="draft", assets=…)` →
+iterate → same submit with `quality="final"`.
 
 ## Python engine (added 2026-07-06)
 

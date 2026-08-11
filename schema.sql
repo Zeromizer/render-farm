@@ -18,7 +18,7 @@ create table if not exists farm_render_jobs (
   signed_url    text,
   signed_url_expires_at timestamptz,
   progress      int not null default 0,            -- 0..100
-  phase         text,                              -- cloning | installing | rendering | uploading
+  phase         text,                              -- cloning | syncing_assets | installing | rendering | uploading
   error         text,
   attempts      int not null default 0,
   max_attempts  int not null default 2,

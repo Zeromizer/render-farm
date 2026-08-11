@@ -1,7 +1,13 @@
 """Remotion runner: npx remotion render in the checked-out repo.
 
 params (jsonb): composition (required), project_dir, entry, props (object),
-codec, frame_range ("0-120").
+codec, frame_range ("0-120"), quality ("draft"|"final", default final),
+assets (manifest — handled by render_worker before this runner).
+
+quality="draft" renders at --scale=0.5 with --crf=32 (CRF-capable codecs) and
+injects {"quality": "draft"} into props so the composition can halve fps via
+calculateMetadata. Note: when the composition halves fps, frame_range refers
+to the draft timeline (half the frame numbers).
 """
 import json
 import os
@@ -12,6 +18,7 @@ import proc
 
 CODEC_EXT = {"h264": "mp4", "h265": "mp4", "vp8": "webm", "vp9": "webm",
              "gif": "gif", "prores": "mov"}
+CRF_CODECS = {"h264", "h265", "vp8", "vp9"}  # --crf is invalid for prores/gif
 _PROGRESS_RE = re.compile(r"Rendered (\d+)/(\d+)")
 
 
@@ -42,10 +49,20 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         cmd.insert(3, params["entry"])  # npx remotion render <entry> <comp> <out>
     if params.get("frame_range"):
         cmd.append(f"--frames={params['frame_range']}")
-    if params.get("props"):
+
+    quality = params.get("quality") or "final"
+    if quality == "draft":
+        cmd.append("--scale=0.5")
+        if codec in CRF_CODECS:
+            cmd.append("--crf=32")
+
+    props = dict(params.get("props") or {})
+    if "quality" in params:
+        props["quality"] = quality  # preset wins for this key: CLI flags and composition fps must agree
+    if props:
         props_file = os.path.join(work_dir, "props.json")
         with open(props_file, "w", encoding="utf-8") as f:
-            json.dump(params["props"], f)
+            json.dump(props, f)
         cmd.append(f"--props={props_file}")
 
     def on_line(line):
