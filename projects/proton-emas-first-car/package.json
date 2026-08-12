@@ -1,0 +1,21 @@
+{
+  "name": "proton-emas-first-car",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "studio": "remotion studio src/index.ts --no-open",
+    "render": "remotion render src/index.ts ProtonEmasFirstCar out/proton-emas-first-car.mp4 --codec=h264 --crf=18 --audio-codec=aac"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.505",
+    "@remotion/media": "4.0.505",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.505"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "typescript": "5.9.3"
+  }
+}
