@@ -16,6 +16,13 @@ export const Root: React.FC = () => (
       <Composition id="FirstCarMessage" component={FirstCarScene} durationInFrames={150} fps={30} width={1080} height={1920} />
       <Composition id="CTA" component={CtaScene} durationInFrames={120} fps={30} width={1080} height={1920} />
     </Folder>
-    <Composition id="ProtonEmasFirstCar" component={FirstCarVideo} durationInFrames={900} fps={30} width={1080} height={1920} />
+    <Composition
+      id="ProtonEmasFirstCar"
+      component={FirstCarVideo}
+      durationInFrames={900}
+      fps={30}
+      width={1080}
+      height={1920}
+    />
   </>
 );
