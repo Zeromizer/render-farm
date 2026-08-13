@@ -6,6 +6,7 @@ import {ChoiceScene} from './scenes/ChoiceScene';
 import {BenefitsScene} from './scenes/BenefitsScene';
 import {FirstCarScene} from './scenes/FirstCarScene';
 import {CtaScene} from './scenes/CtaScene';
+import {Emas7LaunchTeaser} from './Emas7LaunchTeaser';
 
 export const Root: React.FC = () => (
   <>
@@ -20,6 +21,14 @@ export const Root: React.FC = () => (
       id="ProtonEmasFirstCar"
       component={FirstCarVideo}
       durationInFrames={900}
+      fps={30}
+      width={1080}
+      height={1920}
+    />
+    <Composition
+      id="ProtonEmas7LaunchTeaser"
+      component={Emas7LaunchTeaser}
+      durationInFrames={450}
       fps={30}
       width={1080}
       height={1920}
