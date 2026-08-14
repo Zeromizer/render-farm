@@ -32,11 +32,21 @@ def repo_dir(repo_url):
 
 
 def rmtree_robust(path):
-    """rmtree that survives node_modules long paths (\\\\?\\ prefix on Windows)."""
+    """rmtree that survives node_modules long paths (\\\\?\\ prefix on Windows)
+    and git's read-only object files (chmod +w on failure, then retry)."""
+    import stat
+
+    def _on_error(func, p, exc_info):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except OSError:
+            pass
+
     target = path
     if os.name == "nt":
         target = "\\\\?\\" + os.path.abspath(path)
-    shutil.rmtree(target, ignore_errors=True)
+    shutil.rmtree(target, onerror=_on_error)
     if os.path.exists(path):
         shutil.rmtree(path, ignore_errors=True)
     return not os.path.exists(path)
