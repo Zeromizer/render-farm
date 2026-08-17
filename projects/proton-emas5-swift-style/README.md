@@ -1,12 +1,14 @@
-# Proton e.MAS 5 — 22-second feature video
+# Proton e.MAS 5 â€” feature video
 
-Editable Remotion reconstruction of the supplied 22-second vertical reference. The composition preserves its scene flow: hook, vehicle reveal, seven feature cards, range card, and blue brand outro.
+Editable Remotion reconstruction of the supplied vertical reference. The composition preserves its scene flow: hook, vehicle reveal, animated road drive, seven feature cards, range card, and blue brand outro.
 
 ## Main composition
 
 - ID: `ProtonEmas5Showroom`
-- Format: 1080 × 1920, 30 fps
-- Duration: 660 frames / 22 seconds
+- Format: 1080 Ã— 1920, 30 fps
+- Duration: 802 frames / 26.73 seconds
+
+The supplied soundtrack is slowed to 85.5% to cover the readability-focused extension, with render-time pitch correction. The side-profile driving shot uses two rim overlays derived directly from `public/emas5/side.png`; no generated or substitute vehicle imagery is used.
 
 ## Product copy used
 

@@ -12,12 +12,12 @@ export const Root: React.FC = () => {
     <>
       <Folder name="Proton-eMAS-5-scenes">
         <Composition id="HookScene" component={HookScene} durationInFrames={60} fps={30} width={1080} height={1920} />
-        <Composition id="RevealScene" component={RevealScene} durationInFrames={120} fps={30} width={1080} height={1920} />
-        <Composition id="FeatureMontage" component={FeatureMontageScene} durationInFrames={360} fps={30} width={1080} height={1920} />
-        <Composition id="OfferScene" component={OfferScene} durationInFrames={60} fps={30} width={1080} height={1920} />
+        <Composition id="RevealScene" component={RevealScene} durationInFrames={150} fps={30} width={1080} height={1920} />
+        <Composition id="FeatureMontage" component={FeatureMontageScene} durationInFrames={462} fps={30} width={1080} height={1920} />
+        <Composition id="OfferScene" component={OfferScene} durationInFrames={70} fps={30} width={1080} height={1920} />
         <Composition id="OutroScene" component={OutroScene} durationInFrames={60} fps={30} width={1080} height={1920} />
       </Folder>
-      <Composition id="ProtonEmas5Showroom" component={ProtonEmas5Showroom} durationInFrames={660} fps={30} width={1080} height={1920} />
+      <Composition id="ProtonEmas5Showroom" component={ProtonEmas5Showroom} durationInFrames={802} fps={30} width={1080} height={1920} />
     </>
   );
 };
