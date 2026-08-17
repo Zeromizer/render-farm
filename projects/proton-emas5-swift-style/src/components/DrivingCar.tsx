@@ -48,20 +48,20 @@ export const DrivingCar: React.FC = () => {
           name="Authentic front tracking shot"
           src={staticFile(SOURCE)}
           trimBefore={1770}
-          durationInFrames={41}
+          durationInFrames={25}
           muted
           objectFit="cover"
-          style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: '58% 50%', scale: 1.43, filter: 'saturate(0.88) contrast(1.08) brightness(0.88)', opacity: interpolate(frame, [0, 5, 34, 41], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}}
+          style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: '58% 50%', scale: 1.43, filter: 'saturate(0.88) contrast(1.08) brightness(0.88)', opacity: interpolate(frame, [0, 5, 17, 24], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}}
         />
         <Video
           name="Authentic rear movement shot"
           src={staticFile(SOURCE)}
           trimBefore={3960}
-          from={35}
-          durationInFrames={29}
+          from={18}
+          durationInFrames={46}
           muted
           objectFit="cover"
-          style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: '50% 50%', scale: 1.43, filter: 'saturate(0.86) contrast(1.08) brightness(0.84)', opacity: interpolate(frame, [35, 42, 58, 63], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}}
+          style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: '50% 50%', scale: 1.43, filter: 'saturate(0.86) contrast(1.08) brightness(0.84)', opacity: interpolate(frame, [18, 25, 58, 63], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}}
         />
         <AbsoluteFill style={{background: 'linear-gradient(180deg, rgba(151,5,21,0.22), transparent 35%, transparent 66%, rgba(24,0,4,0.62))', mixBlendMode: 'multiply'}} />
         <AbsoluteFill style={{background: 'linear-gradient(108deg, rgba(255,255,255,0.2), transparent 22%, transparent 74%, rgba(255,48,66,0.22))', mixBlendMode: 'screen'}} />
