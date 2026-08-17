@@ -17,9 +17,12 @@ type FeatureCardProps = {
   videoPlaybackRate?: number;
   videoMotionFrames?: number;
   videoFreezeImage?: string;
+  stageImage?: string;
+  stageImagePosition?: string;
+  stageImageScale?: number;
 };
 
-const FeatureCard: React.FC<FeatureCardProps> = ({durationInFrames, glyph, kicker, line1, line2, car, accent = '#b60719', videoTrimBefore, videoPosition = '50% 50%', videoScale = 1.22, videoPlaybackRate = 1, videoMotionFrames, videoFreezeImage}) => {
+const FeatureCard: React.FC<FeatureCardProps> = ({durationInFrames, glyph, kicker, line1, line2, car, accent = '#b60719', videoTrimBefore, videoPosition = '50% 50%', videoScale = 1.22, videoPlaybackRate = 1, videoMotionFrames, videoFreezeImage, stageImage, stageImagePosition = '50% 50%', stageImageScale = 1.04}) => {
   const frame = useCurrentFrame();
   const exitStart = durationInFrames - 12;
   const lastFrame = durationInFrames - 1;
@@ -36,7 +39,13 @@ const FeatureCard: React.FC<FeatureCardProps> = ({durationInFrames, glyph, kicke
       </Interactive.Div>
       <div style={{position: 'absolute', left: -80, right: -80, bottom: -20, height: 830, overflow: 'visible'}}>
         <div style={{position: 'absolute', inset: 0, clipPath: 'polygon(0 6%, 100% 0, 100% 100%, 0 100%)', background: 'linear-gradient(180deg, #3b3d43 0%, #17191e 57%, #090a0d 100%)', boxShadow: '0 -22px 60px rgba(43,0,5,0.34)'}} />
-        {videoTrimBefore === undefined ? (
+        {stageImage ? (
+          <div style={{position: 'absolute', inset: 0, overflow: 'hidden', clipPath: 'polygon(0 6%, 100% 0, 100% 100%, 0 100%)'}}>
+            <Img name="Authentic feature still" src={staticFile(stageImage)} style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: stageImagePosition, scale: stageImageScale, filter: 'saturate(0.9) contrast(1.08) brightness(0.78)', opacity: interpolate(frame, [0, 8, exitStart + 2, lastFrame], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}} />
+            <div style={{position: 'absolute', inset: 0, background: `linear-gradient(180deg, ${accent}44 0%, transparent 32%, transparent 57%, rgba(5,7,11,0.8) 100%)`, mixBlendMode: 'multiply'}} />
+            <div style={{position: 'absolute', inset: 0, boxShadow: 'inset 0 0 90px rgba(0,0,0,0.48)'}} />
+          </div>
+        ) : videoTrimBefore === undefined ? (
           <>
             <div style={{position: 'absolute', left: 75, right: 75, top: 40, height: 520, borderRadius: '50%', background: `radial-gradient(ellipse, ${accent}66 0%, rgba(255,255,255,0.12) 35%, transparent 70%)`, filter: 'blur(20px)', opacity: interpolate(frame, [0, 18, exitStart - 2, lastFrame], [0, 0.9, 0.9, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}} />
             <div style={{position: 'absolute', left: 105, right: 105, bottom: 182, height: 86, borderRadius: '50%', background: 'radial-gradient(ellipse, rgba(0,0,0,0.88), rgba(0,0,0,0.2) 62%, transparent 76%)', filter: 'blur(16px)', opacity: interpolate(frame, [2, 18, exitStart + 1, lastFrame], [0, 0.94, 0.94, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}} />
@@ -67,7 +76,7 @@ export const FeatureMontageScene: React.FC = () => (
     <Sequence name="21-minute DC fast charge" from={68} durationInFrames={67} premountFor={18}><FeatureCard durationInFrames={67} glyph="21 MIN" kicker="DC CHARGING: 30%-80%" line1="FAST DC" line2="CHARGING" car="emas5/front-left.png" accent="#0069a6" /></Sequence>
     <Sequence name="14.6-inch display" from={135} durationInFrames={68} premountFor={18}><FeatureCard durationInFrames={68} glyph={'14.6\"'} kicker="14.6-INCH FULL HD DISPLAY HEAD UNIT" line1="14.6-INCH" line2="FULL HD" car="emas5/front.png" accent="#1b637c" videoTrimBefore={3282} videoPosition="50% 52%" /></Sequence>
     <Sequence name="375-litre boot" from={203} durationInFrames={67} premountFor={18}><FeatureCard durationInFrames={67} glyph="375 L" kicker="EVERYDAY BOOT SPACE" line1="375-LITRE" line2="BOOT SPACE" car="emas5/rear-three-quarter.png" accent="#90510d" videoTrimBefore={6864} videoPosition="50% 50%" /></Sequence>
-    <Sequence name="70-litre frunk" from={270} durationInFrames={68} premountFor={18}><FeatureCard durationInFrames={68} glyph="70 L" kicker="FRONT STORAGE COMPARTMENT" line1="70-LITRE" line2="FRUNK" car="emas5/front-right.png" accent="#8c3c14" videoTrimBefore={4212} videoPosition="46% 50%" videoMotionFrames={13} videoFreezeImage="footage/frunk-open-clean.png" /></Sequence>
+    <Sequence name="70-litre frunk" from={270} durationInFrames={68} premountFor={18}><FeatureCard durationInFrames={68} glyph="70 L" kicker="FRONT STORAGE COMPARTMENT" line1="70-LITRE" line2="FRUNK" car="emas5/front-right.png" accent="#8c3c14" stageImage="footage/frunk-70l.jpg" stageImagePosition="50% 48%" /></Sequence>
     <Sequence name="Rear-wheel drive" from={338} durationInFrames={67} premountFor={18}><FeatureCard durationInFrames={67} glyph="RWD" kicker="REAR-WHEEL DRIVE" line1="CONFIDENT" line2="HANDLING" car="emas5/side.png" accent="#006f83" videoTrimBefore={5520} videoPosition="50% 50%" /></Sequence>
     <Sequence name="Six airbags and ADAS" from={405} durationInFrames={68} premountFor={18}><FeatureCard durationInFrames={68} glyph="6" kicker="6 AIRBAGS + ADAS" line1="TOP-TIER" line2="SAFETY" car="emas5/front-left.png" accent="#174a74" /></Sequence>
   </AbsoluteFill>
