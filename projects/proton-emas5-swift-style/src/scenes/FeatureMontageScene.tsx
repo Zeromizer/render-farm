@@ -1,4 +1,5 @@
 import React from 'react';
+import {Video} from '@remotion/media';
 import {AbsoluteFill, Easing, Img, Interactive, Sequence, interpolate, staticFile, useCurrentFrame} from 'remotion';
 import {RacingBackground} from '../components/RacingBackground';
 
@@ -11,9 +12,13 @@ type FeatureCardProps = {
   line2?: string;
   car: string;
   accent?: string;
+  videoTrimBefore?: number;
+  videoPosition?: string;
+  videoScale?: number;
+  videoPlaybackRate?: number;
 };
 
-const FeatureCard: React.FC<FeatureCardProps> = ({glyph, kicker, line1, line2, car, accent = '#b60719'}) => {
+const FeatureCard: React.FC<FeatureCardProps> = ({glyph, kicker, line1, line2, car, accent = '#b60719', videoTrimBefore, videoPosition = '50% 50%', videoScale = 1.22, videoPlaybackRate = 1}) => {
   const frame = useCurrentFrame();
 
   return (
@@ -28,11 +33,21 @@ const FeatureCard: React.FC<FeatureCardProps> = ({glyph, kicker, line1, line2, c
       </Interactive.Div>
       <div style={{position: 'absolute', left: -80, right: -80, bottom: -20, height: 830, overflow: 'visible'}}>
         <div style={{position: 'absolute', inset: 0, clipPath: 'polygon(0 6%, 100% 0, 100% 100%, 0 100%)', background: 'linear-gradient(180deg, #3b3d43 0%, #17191e 57%, #090a0d 100%)', boxShadow: '0 -22px 60px rgba(43,0,5,0.34)'}} />
-        <div style={{position: 'absolute', left: 75, right: 75, top: 40, height: 520, borderRadius: '50%', background: `radial-gradient(ellipse, ${accent}66 0%, rgba(255,255,255,0.12) 35%, transparent 70%)`, filter: 'blur(20px)', opacity: interpolate(frame, [0, 18, 52, 65], [0, 0.9, 0.9, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}} />
-        <div style={{position: 'absolute', left: 105, right: 105, bottom: 182, height: 86, borderRadius: '50%', background: 'radial-gradient(ellipse, rgba(0,0,0,0.88), rgba(0,0,0,0.2) 62%, transparent 76%)', filter: 'blur(16px)', opacity: interpolate(frame, [2, 18, 55, 65], [0, 0.94, 0.94, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}} />
-        <Img name="Subtle vehicle floor reflection" src={staticFile(car)} style={{position: 'absolute', width: 930, height: 'auto', left: '50%', bottom: -115, translate: '-50% 0px', scale: '1 -0.28', transformOrigin: 'center bottom', opacity: interpolate(frame, [4, 18, 52, 65], [0, 0.12, 0.12, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}), filter: 'blur(8px) saturate(0.65) brightness(0.55)', WebkitMaskImage: 'linear-gradient(to bottom, rgba(0,0,0,0.7), transparent 72%)'}} />
-        <Img name="Staged Proton e.MAS 5 portrait" src={staticFile(car)} style={{position: 'absolute', width: 930, height: 'auto', left: '50%', bottom: 205, translate: interpolate(frame, [0, 20, 54, 65], ['-50% 70px', '-50% 0px', '-50% 0px', '-50% 32px'], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1)}), scale: interpolate(frame, [0, 24, 54, 65], [0.91, 1, 1.015, 1.02], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1), output: 'perceptual-scale'}), opacity: interpolate(frame, [0, 9, 56, 65], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}), filter: 'drop-shadow(0 30px 24px rgba(0,0,0,0.56)) brightness(0.98) saturate(0.92)'}} />
-        <div style={{position: 'absolute', width: 400, height: 620, left: 90, top: -120, rotate: '-18deg', background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent)', filter: 'blur(24px)', mixBlendMode: 'screen', translate: interpolate(frame, [5, 52], ['-360px 0px', '900px 0px'], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}), opacity: interpolate(frame, [5, 18, 48, 57], [0, 0.7, 0.7, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}} />
+        {videoTrimBefore === undefined ? (
+          <>
+            <div style={{position: 'absolute', left: 75, right: 75, top: 40, height: 520, borderRadius: '50%', background: `radial-gradient(ellipse, ${accent}66 0%, rgba(255,255,255,0.12) 35%, transparent 70%)`, filter: 'blur(20px)', opacity: interpolate(frame, [0, 18, 52, 65], [0, 0.9, 0.9, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}} />
+            <div style={{position: 'absolute', left: 105, right: 105, bottom: 182, height: 86, borderRadius: '50%', background: 'radial-gradient(ellipse, rgba(0,0,0,0.88), rgba(0,0,0,0.2) 62%, transparent 76%)', filter: 'blur(16px)', opacity: interpolate(frame, [2, 18, 55, 65], [0, 0.94, 0.94, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}} />
+            <Img name="Subtle vehicle floor reflection" src={staticFile(car)} style={{position: 'absolute', width: 930, height: 'auto', left: '50%', bottom: -115, translate: '-50% 0px', scale: '1 -0.28', transformOrigin: 'center bottom', opacity: interpolate(frame, [4, 18, 52, 65], [0, 0.12, 0.12, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}), filter: 'blur(8px) saturate(0.65) brightness(0.55)', WebkitMaskImage: 'linear-gradient(to bottom, rgba(0,0,0,0.7), transparent 72%)'}} />
+            <Img name="Staged Proton e.MAS 5 portrait" src={staticFile(car)} style={{position: 'absolute', width: 930, height: 'auto', left: '50%', bottom: 205, translate: interpolate(frame, [0, 20, 54, 65], ['-50% 70px', '-50% 0px', '-50% 0px', '-50% 32px'], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1)}), scale: interpolate(frame, [0, 24, 54, 65], [0.91, 1, 1.015, 1.02], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1), output: 'perceptual-scale'}), opacity: interpolate(frame, [0, 9, 56, 65], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}), filter: 'drop-shadow(0 30px 24px rgba(0,0,0,0.56)) brightness(0.98) saturate(0.92)'}} />
+            <div style={{position: 'absolute', width: 400, height: 620, left: 90, top: -120, rotate: '-18deg', background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent)', filter: 'blur(24px)', mixBlendMode: 'screen', translate: interpolate(frame, [5, 52], ['-360px 0px', '900px 0px'], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}), opacity: interpolate(frame, [5, 18, 48, 57], [0, 0.7, 0.7, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}} />
+          </>
+        ) : (
+          <div style={{position: 'absolute', inset: 0, overflow: 'hidden', clipPath: 'polygon(0 6%, 100% 0, 100% 100%, 0 100%)'}}>
+            <Video name="Authentic feature demonstration" src={staticFile('footage/emas5-freedom-1080p.mp4')} trimBefore={videoTrimBefore} durationInFrames={CARD_DURATION} playbackRate={videoPlaybackRate} muted objectFit="cover" style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: videoPosition, scale: videoScale, filter: 'saturate(0.88) contrast(1.08) brightness(0.78)', opacity: interpolate(frame, [0, 8, 56, 65], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}} />
+            <div style={{position: 'absolute', inset: 0, background: `linear-gradient(180deg, ${accent}55 0%, transparent 32%, transparent 57%, rgba(5,7,11,0.84) 100%)`, mixBlendMode: 'multiply'}} />
+            <div style={{position: 'absolute', inset: 0, boxShadow: 'inset 0 0 90px rgba(0,0,0,0.52)'}} />
+          </div>
+        )}
       </div>
       <Interactive.Div name="Feature headline" style={{position: 'absolute', bottom: 98, left: 80, right: 80, color: 'white', textAlign: 'center', fontFamily: 'Impact, Arial Black, sans-serif', fontStyle: 'italic', fontSize: 78, lineHeight: 0.94, letterSpacing: 2, textShadow: '0 7px 0 rgba(0,0,0,0.24)', opacity: interpolate(frame, [9, 22, 55, 65], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: [Easing.bezier(0.16, 1, 0.3, 1), Easing.linear, Easing.bezier(0.4, 0, 1, 1)]}), translate: interpolate(frame, [7, 24, 55, 65], ['0px 78px', '0px 0px', '0px 0px', '0px -35px'], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1)})}}>
         {line1}{line2 ? <><br />{line2}</> : null}
@@ -44,12 +59,12 @@ const FeatureCard: React.FC<FeatureCardProps> = ({glyph, kicker, line1, line2, c
 
 export const FeatureMontageScene: React.FC = () => (
   <AbsoluteFill>
-    <Sequence name="Up to 325 km WLTP range" durationInFrames={CARD_DURATION} premountFor={18}><FeatureCard glyph="325 KM" kicker="UP TO 325 KM WLTP RANGE" line1="GO FARTHER" line2="EVERY DAY" car="emas5/front-right.png" /></Sequence>
+    <Sequence name="Up to 325 km WLTP range" durationInFrames={CARD_DURATION} premountFor={18}><FeatureCard glyph="325 KM" kicker="UP TO 325 KM WLTP RANGE" line1="GO FARTHER" line2="EVERY DAY" car="emas5/front-right.png" videoTrimBefore={5580} videoPosition="52% 50%" /></Sequence>
     <Sequence name="21-minute DC fast charge" from={66} durationInFrames={CARD_DURATION} premountFor={18}><FeatureCard glyph="21 MIN" kicker="DC CHARGING: 30%-80%" line1="FAST DC" line2="CHARGING" car="emas5/front-left.png" accent="#0069a6" /></Sequence>
-    <Sequence name="14.6-inch display" from={132} durationInFrames={CARD_DURATION} premountFor={18}><FeatureCard glyph={'14.6\"'} kicker="14.6-INCH FULL HD DISPLAY HEAD UNIT" line1="14.6-INCH" line2="FULL HD" car="emas5/front.png" accent="#1b637c" /></Sequence>
-    <Sequence name="375-litre boot" from={198} durationInFrames={CARD_DURATION} premountFor={18}><FeatureCard glyph="375 L" kicker="EVERYDAY BOOT SPACE" line1="375-LITRE" line2="BOOT SPACE" car="emas5/rear-three-quarter.png" accent="#90510d" /></Sequence>
-    <Sequence name="70-litre frunk" from={264} durationInFrames={CARD_DURATION} premountFor={18}><FeatureCard glyph="70 L" kicker="FRONT STORAGE COMPARTMENT" line1="70-LITRE" line2="FRUNK" car="emas5/front-right.png" accent="#8c3c14" /></Sequence>
-    <Sequence name="Rear-wheel drive" from={330} durationInFrames={CARD_DURATION} premountFor={18}><FeatureCard glyph="RWD" kicker="REAR-WHEEL DRIVE" line1="CONFIDENT" line2="HANDLING" car="emas5/side.png" accent="#006f83" /></Sequence>
+    <Sequence name="14.6-inch display" from={132} durationInFrames={CARD_DURATION} premountFor={18}><FeatureCard glyph={'14.6\"'} kicker="14.6-INCH FULL HD DISPLAY HEAD UNIT" line1="14.6-INCH" line2="FULL HD" car="emas5/front.png" accent="#1b637c" videoTrimBefore={3282} videoPosition="50% 52%" /></Sequence>
+    <Sequence name="375-litre boot" from={198} durationInFrames={CARD_DURATION} premountFor={18}><FeatureCard glyph="375 L" kicker="EVERYDAY BOOT SPACE" line1="375-LITRE" line2="BOOT SPACE" car="emas5/rear-three-quarter.png" accent="#90510d" videoTrimBefore={6864} videoPosition="50% 50%" /></Sequence>
+    <Sequence name="70-litre frunk" from={264} durationInFrames={CARD_DURATION} premountFor={18}><FeatureCard glyph="70 L" kicker="FRONT STORAGE COMPARTMENT" line1="70-LITRE" line2="FRUNK" car="emas5/front-right.png" accent="#8c3c14" videoTrimBefore={4218} videoPosition="46% 50%" videoPlaybackRate={0.1} /></Sequence>
+    <Sequence name="Rear-wheel drive" from={330} durationInFrames={CARD_DURATION} premountFor={18}><FeatureCard glyph="RWD" kicker="REAR-WHEEL DRIVE" line1="CONFIDENT" line2="HANDLING" car="emas5/side.png" accent="#006f83" videoTrimBefore={5520} videoPosition="50% 50%" /></Sequence>
     <Sequence name="Six airbags and ADAS" from={396} durationInFrames={CARD_DURATION} premountFor={18}><FeatureCard glyph="6" kicker="6 AIRBAGS + ADAS" line1="TOP-TIER" line2="SAFETY" car="emas5/front-left.png" accent="#174a74" /></Sequence>
   </AbsoluteFill>
 );
