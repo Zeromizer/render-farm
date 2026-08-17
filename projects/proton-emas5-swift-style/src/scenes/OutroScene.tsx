@@ -11,7 +11,10 @@ export const OutroScene: React.FC = () => {
         <div style={{fontSize: 76, lineHeight: 1.02, marginTop: 16}}>BOOK A TEST DRIVE TODAY</div>
         <div style={{width: 190, height: 8, margin: '28px auto 0', borderRadius: 999, background: 'linear-gradient(90deg, #ff562f, #ffb52f)'}} />
       </Interactive.Div>
-      <Img name="Correct Proton e.MAS, Evolve Cars and contact details" src={staticFile('ending/dealer-lockup.png')} style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', mixBlendMode: 'screen', opacity: interpolate(frame, [12, 32, 178, 194], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}), scale: interpolate(frame, [12, 40], [0.96, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.spring({damping: 180}), output: 'perceptual-scale'})}} />
+      <Interactive.Div name="Official Proton e.MAS, Evolve Cars and contact details" style={{position: 'absolute', inset: 0, opacity: interpolate(frame, [12, 32, 178, 194], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}), scale: interpolate(frame, [12, 40], [0.96, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.spring({damping: 180}), output: 'perceptual-scale'})}}>
+        <Img name="Preserved Evolve Cars and dealer contact details" src={staticFile('ending/dealer-details-v9.png')} style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain'}} />
+        <Img name="Official Proton e.MAS dealer lockup" src={staticFile('ending/proton-emas-official-white-v9.png')} style={{position: 'absolute', top: 740, left: 145, width: 520, height: 'auto'}} />
+      </Interactive.Div>
     </AbsoluteFill>
   );
 };

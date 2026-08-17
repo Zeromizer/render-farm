@@ -38,7 +38,7 @@ const FeatureCard: React.FC<FeatureCardProps> = ({durationInFrames, glyph, kicke
         <div style={{position: 'absolute', bottom: -29, left: 48, right: 48, minHeight: 48, backgroundColor: accent, color: 'white', border: '5px solid white', borderRadius: 4, fontFamily: 'Arial Black, sans-serif', fontStyle: 'normal', fontSize: kicker.length > 28 ? 17 : 23, letterSpacing: kicker.length > 28 ? 0.4 : 1, whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 14px'}}>{kicker}</div>
       </Interactive.Div>
       <div style={{position: 'absolute', left: -80, right: -80, bottom: -20, height: 830, overflow: 'visible'}}>
-        <div style={{position: 'absolute', inset: 0, clipPath: 'polygon(0 6%, 100% 0, 100% 100%, 0 100%)', background: 'linear-gradient(180deg, #3b3d43 0%, #17191e 57%, #090a0d 100%)', boxShadow: '0 -22px 60px rgba(43,0,5,0.34)'}} />
+        <div style={{position: 'absolute', inset: 0, clipPath: 'polygon(0 6%, 100% 0, 100% 100%, 0 100%)', background: 'linear-gradient(180deg, #3b3d43 0%, #17191e 57%, #090a0d 100%)', boxShadow: '0 -22px 60px rgba(0,44,66,0.34)'}} />
         {stageImage ? (
           <div style={{position: 'absolute', inset: 0, overflow: 'hidden', clipPath: 'polygon(0 6%, 100% 0, 100% 100%, 0 100%)'}}>
             <Img name="Authentic feature still" src={staticFile(stageImage)} style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: stageImagePosition, scale: stageImageScale, filter: 'saturate(0.9) contrast(1.08) brightness(0.78)', opacity: interpolate(frame, [0, 8, exitStart + 2, lastFrame], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}} />

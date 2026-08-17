@@ -7,7 +7,7 @@ export const HookScene: React.FC = () => {
   return (
     <AbsoluteFill>
       <RacingBackground />
-      <Interactive.Div name="Hook copy" style={{position: 'absolute', top: 625, left: 110, right: 110, textAlign: 'center', color: 'white', fontFamily: 'Impact, Arial Black, sans-serif', fontStyle: 'italic', fontWeight: 900, lineHeight: 0.88, textShadow: '0 8px 0 rgba(89,0,8,0.35)', translate: interpolate(frame, [7, 28], ['0px 120px', '0px 0px'], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1)}), opacity: interpolate(frame, [7, 20], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1)})}}>
+      <Interactive.Div name="Hook copy" style={{position: 'absolute', top: 625, left: 110, right: 110, textAlign: 'center', color: 'white', fontFamily: 'Impact, Arial Black, sans-serif', fontStyle: 'italic', fontWeight: 900, lineHeight: 0.88, textShadow: '0 8px 0 rgba(0,72,104,0.38)', translate: interpolate(frame, [7, 28], ['0px 120px', '0px 0px'], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1)}), opacity: interpolate(frame, [7, 20], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1)})}}>
         <div style={{fontSize: 122}}>ELECTRIC</div>
         <div style={{fontFamily: 'Arial Black, sans-serif', fontSize: 58, fontStyle: 'normal', lineHeight: 1.15}}>AND</div>
         <div style={{fontSize: 122, WebkitTextStroke: '3px white', color: 'transparent'}}>PRACTICAL</div>

@@ -39,7 +39,7 @@ export const DrivingCar: React.FC = () => {
           overflow: 'hidden',
           clipPath: 'polygon(0 9%, 100% 0, 100% 91%, 0 100%)',
           backgroundColor: '#12151a',
-          boxShadow: '0 42px 80px rgba(35,0,4,0.58)',
+          boxShadow: '0 42px 80px rgba(0,39,58,0.58)',
           opacity: interpolate(frame, [0, 7, 57, 63], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}),
           scale: interpolate(frame, [0, 18, 63], [0.92, 1, 1.035], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1), output: 'perceptual-scale'}),
         }}
@@ -63,8 +63,8 @@ export const DrivingCar: React.FC = () => {
           objectFit="cover"
           style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: '50% 50%', scale: 1.43, filter: 'saturate(0.86) contrast(1.08) brightness(0.84)', opacity: interpolate(frame, [18, 25, 58, 63], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}}
         />
-        <AbsoluteFill style={{background: 'linear-gradient(180deg, rgba(151,5,21,0.22), transparent 35%, transparent 66%, rgba(24,0,4,0.62))', mixBlendMode: 'multiply'}} />
-        <AbsoluteFill style={{background: 'linear-gradient(108deg, rgba(255,255,255,0.2), transparent 22%, transparent 74%, rgba(255,48,66,0.22))', mixBlendMode: 'screen'}} />
+        <AbsoluteFill style={{background: 'linear-gradient(180deg, rgba(0,126,174,0.22), transparent 35%, transparent 66%, rgba(0,32,54,0.62))', mixBlendMode: 'multiply'}} />
+        <AbsoluteFill style={{background: 'linear-gradient(108deg, rgba(255,255,255,0.2), transparent 22%, transparent 74%, rgba(0,174,239,0.22))', mixBlendMode: 'screen'}} />
       </div>
       <div
         style={{
@@ -74,7 +74,7 @@ export const DrivingCar: React.FC = () => {
           top: 1345,
           height: 46,
           borderRadius: '50%',
-          backgroundColor: 'rgba(27,0,4,0.58)',
+          backgroundColor: 'rgba(0,35,52,0.58)',
           filter: 'blur(22px)',
           opacity: interpolate(frame, [3, 12, 55, 63], [0, 0.8, 0.8, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}),
         }}

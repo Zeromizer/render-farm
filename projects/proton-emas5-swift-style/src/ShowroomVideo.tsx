@@ -10,7 +10,7 @@ import {OutroScene} from './scenes/OutroScene';
 
 export const ProtonEmas5Showroom: React.FC = () => {
   return (
-    <AbsoluteFill style={{backgroundColor: '#b50716'}}>
+    <AbsoluteFill style={{backgroundColor: '#00AEEF'}}>
       <Series>
         <Series.Sequence name="Electric and practical hook" durationInFrames={60}><HookScene /></Series.Sequence>
         <Series.Sequence name="e.MAS 5 reveal" durationInFrames={158}><RevealScene /></Series.Sequence>
