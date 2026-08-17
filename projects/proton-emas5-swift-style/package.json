@@ -1,0 +1,22 @@
+{
+  "name": "proton-emas5-showroom-replica",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "studio": "remotion studio src/index.ts --no-open",
+    "render": "remotion render src/index.ts ProtonEmas5Showroom out/proton-emas5-showroom.mp4 --codec=h264 --audio-codec=aac"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.505",
+    "@remotion/media": "4.0.505",
+    "@remotion/transitions": "4.0.505",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.505"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "typescript": "5.9.3"
+  }
+}

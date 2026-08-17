@@ -1,0 +1,7 @@
+node_modules/
+out/
+.remotion/
+public/emas5/
+public/reference/
+studio.log
+studio-error.log
