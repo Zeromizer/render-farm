@@ -1,185 +1,82 @@
 import React from 'react';
-import {AbsoluteFill, Easing, Img, interpolate, staticFile, useCurrentFrame} from 'remotion';
+import {Video} from '@remotion/media';
+import {AbsoluteFill, Easing, interpolate, staticFile, useCurrentFrame} from 'remotion';
 
-const SideProfile: React.FC = () => {
-  const frame = useCurrentFrame();
-  const wheelRotation = interpolate(frame, [0, 38], ['0deg', '650deg'], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-    easing: Easing.bezier(0.28, 0.05, 0.22, 1),
-  });
-  const opacity = interpolate(frame, [0, 4, 30, 38], [0, 1, 1, 0], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  });
-  const translateX = interpolate(frame, [0, 38], [-980, 185], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-    easing: Easing.bezier(0.28, 0.05, 0.22, 1),
-  });
-  const speedBlur = interpolate(frame, [0, 8, 27, 38], [13, 3, 3, 15], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  });
-  const suspension = Math.sin(frame * 0.72) * 3.5;
+const SOURCE = 'footage/emas5-freedom-1080p.mp4';
 
-  return (
-    <div
-      style={{
-        position: 'absolute',
-        left: 0,
-        top: 720,
-        width: 1120,
-        height: 458,
-        opacity,
-        translate: `${translateX}px ${suspension}px`,
-        scale: interpolate(frame, [0, 38], [0.84, 1.035], {
-          extrapolateLeft: 'clamp',
-          extrapolateRight: 'clamp',
-          easing: Easing.bezier(0.28, 0.05, 0.22, 1),
-          output: 'perceptual-scale',
-        }),
-        rotate: interpolate(frame, [0, 26, 38], ['-1.6deg', '0deg', '0.7deg'], {
-          extrapolateLeft: 'clamp',
-          extrapolateRight: 'clamp',
-        }),
-      }}
-    >
-      <div
-        style={{
-          position: 'absolute',
-          left: 122,
-          top: 398,
-          width: 905,
-          height: 46,
-          borderRadius: '50%',
-          backgroundColor: 'rgba(15,8,7,0.58)',
-          filter: 'blur(18px)',
-          scale: interpolate(frame, [0, 38], [0.78, 1.08], {
-            extrapolateLeft: 'clamp',
-            extrapolateRight: 'clamp',
-            output: 'perceptual-scale',
-          }),
-        }}
-      />
-      <Img
-        name="Side-driving motion trail"
-        src={staticFile('emas5/side.png')}
-        style={{
-          position: 'absolute',
-          width: 1120,
-          height: 'auto',
-          left: -42,
-          top: 1,
-          opacity: interpolate(frame, [0, 7, 27, 38], [0.24, 0.05, 0.05, 0.28], {
-            extrapolateLeft: 'clamp',
-            extrapolateRight: 'clamp',
-          }),
-          filter: `blur(${speedBlur}px) brightness(1.08)`,
-          scale: '1.035 1',
-        }}
-      />
-      <Img
-        name="Proton e.MAS 5 side profile"
-        src={staticFile('emas5/side.png')}
-        style={{position: 'absolute', width: 1120, height: 'auto', left: 0, top: 0, filter: 'drop-shadow(0 15px 12px rgba(0,0,0,0.24))'}}
-      />
-      <Img
-        name="Rotating rear alloy"
-        src={staticFile('emas5/wheels/rear-rim.png')}
-        style={{position: 'absolute', width: 123, height: 123, left: 129, top: 306, rotate: wheelRotation}}
-      />
-      <Img
-        name="Rotating front alloy"
-        src={staticFile('emas5/wheels/front-rim.png')}
-        style={{position: 'absolute', width: 120, height: 120, left: 885, top: 311, rotate: wheelRotation}}
-      />
-      <div
-        style={{
-          position: 'absolute',
-          left: 260,
-          top: 28,
-          width: 660,
-          height: 210,
-          borderRadius: '50%',
-          background: 'linear-gradient(105deg, transparent 5%, rgba(255,239,206,0.2) 50%, transparent 78%)',
-          mixBlendMode: 'screen',
-          translate: interpolate(frame, [0, 38], ['-180px 0px', '260px 0px'], {
-            extrapolateLeft: 'clamp',
-            extrapolateRight: 'clamp',
-          }),
-          rotate: '-8deg',
-          filter: 'blur(18px)',
-        }}
-      />
-    </div>
-  );
-};
 export const DrivingCar: React.FC = () => {
   const frame = useCurrentFrame();
-  const curveOpacity = interpolate(frame, [31, 40, 61, 64], [0, 1, 1, 0.92], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  });
 
   return (
     <AbsoluteFill>
-      <SideProfile />
+      <Video
+        name="Ambient road footage"
+        src={staticFile(SOURCE)}
+        trimBefore={1770}
+        durationInFrames={64}
+        muted
+        objectFit="cover"
+        style={{
+          position: 'absolute',
+          inset: -70,
+          width: 1220,
+          height: 2060,
+          objectFit: 'cover',
+          objectPosition: '58% 50%',
+          filter: 'blur(34px) saturate(0.72) brightness(0.52)',
+          opacity: interpolate(frame, [0, 8, 54, 63], [0, 0.42, 0.42, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}),
+          scale: 1.08,
+        }}
+      />
       <div
         style={{
           position: 'absolute',
-          left: 76,
-          bottom: 215,
-          width: 850,
-          height: 72,
-          borderRadius: '50%',
-          backgroundColor: 'rgba(7,8,12,0.6)',
-          filter: 'blur(24px)',
-          opacity: curveOpacity * 0.9,
-          scale: interpolate(frame, [31, 48, 64], [0.56, 1, 1.06], {
-            extrapolateLeft: 'clamp',
-            extrapolateRight: 'clamp',
-            easing: Easing.bezier(0.16, 1, 0.3, 1),
-            output: 'perceptual-scale',
-          }),
+          left: 42,
+          right: 42,
+          top: 585,
+          height: 790,
+          borderRadius: 64,
+          overflow: 'hidden',
+          clipPath: 'polygon(0 9%, 100% 0, 100% 91%, 0 100%)',
+          backgroundColor: '#12151a',
+          boxShadow: '0 42px 80px rgba(35,0,4,0.58)',
+          opacity: interpolate(frame, [0, 7, 57, 63], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}),
+          scale: interpolate(frame, [0, 18, 63], [0.92, 1, 1.035], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1), output: 'perceptual-scale'}),
         }}
-      />
-      <Img
-        name="Curved-road Proton e.MAS 5"
-        src={staticFile('emas5/front-left.png')}
+      >
+        <Video
+          name="Authentic front tracking shot"
+          src={staticFile(SOURCE)}
+          trimBefore={1770}
+          durationInFrames={41}
+          muted
+          objectFit="cover"
+          style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: '58% 50%', scale: 1.43, filter: 'saturate(0.88) contrast(1.08) brightness(0.88)', opacity: interpolate(frame, [0, 5, 34, 41], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}}
+        />
+        <Video
+          name="Authentic rear movement shot"
+          src={staticFile(SOURCE)}
+          trimBefore={3960}
+          from={35}
+          durationInFrames={29}
+          muted
+          objectFit="cover"
+          style={{position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: '50% 50%', scale: 1.43, filter: 'saturate(0.86) contrast(1.08) brightness(0.84)', opacity: interpolate(frame, [35, 42, 58, 63], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})}}
+        />
+        <AbsoluteFill style={{background: 'linear-gradient(180deg, rgba(151,5,21,0.22), transparent 35%, transparent 66%, rgba(24,0,4,0.62))', mixBlendMode: 'multiply'}} />
+        <AbsoluteFill style={{background: 'linear-gradient(108deg, rgba(255,255,255,0.2), transparent 22%, transparent 74%, rgba(255,48,66,0.22))', mixBlendMode: 'screen'}} />
+      </div>
+      <div
         style={{
           position: 'absolute',
-          width: 1030,
-          height: 'auto',
-          left: '50%',
-          bottom: 185,
-          opacity: curveOpacity,
-          translate: interpolate(frame, [31, 48, 64], ['-940px 105px', '-515px 0px', '-475px -18px'], {
-            extrapolateLeft: 'clamp',
-            extrapolateRight: 'clamp',
-            easing: Easing.bezier(0.16, 1, 0.3, 1),
-          }),
-          scale: interpolate(frame, [31, 48, 64], [0.72, 0.97, 1.035], {
-            extrapolateLeft: 'clamp',
-            extrapolateRight: 'clamp',
-            easing: Easing.bezier(0.16, 1, 0.3, 1),
-            output: 'perceptual-scale',
-          }),
-          rotate: interpolate(frame, [31, 48, 64], ['-4deg', '-0.5deg', '0.8deg'], {
-            extrapolateLeft: 'clamp',
-            extrapolateRight: 'clamp',
-          }),
-          filter: 'drop-shadow(0 28px 22px rgba(0,0,0,0.48)) brightness(1.035)',
-        }}
-      />
-      <AbsoluteFill
-        style={{
-          background: 'radial-gradient(circle at 70% 58%, rgba(255,238,177,0.96), rgba(255,79,55,0.52) 34%, transparent 66%)',
-          opacity: interpolate(frame, [26, 31, 36, 43], [0, 0.95, 0.54, 0], {
-            extrapolateLeft: 'clamp',
-            extrapolateRight: 'clamp',
-          }),
-          mixBlendMode: 'screen',
+          left: 92,
+          right: 92,
+          top: 1345,
+          height: 46,
+          borderRadius: '50%',
+          backgroundColor: 'rgba(27,0,4,0.58)',
+          filter: 'blur(22px)',
+          opacity: interpolate(frame, [3, 12, 55, 63], [0, 0.8, 0.8, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}),
         }}
       />
     </AbsoluteFill>
