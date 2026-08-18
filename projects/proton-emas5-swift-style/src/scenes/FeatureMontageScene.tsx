@@ -38,7 +38,7 @@ const FeatureCard: React.FC<FeatureCardProps> = ({durationInFrames, glyph, kicke
         {glyph}
         <div style={{position: 'absolute', bottom: -29, left: 48, right: 48, minHeight: 48, backgroundColor: accent, color: 'white', border: '5px solid white', borderRadius: 4, fontFamily: 'Arial Black, sans-serif', fontStyle: 'normal', fontSize: kicker.length > 28 ? 17 : 23, letterSpacing: kicker.length > 28 ? 0.4 : 1, whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 14px'}}>{kicker}</div>
       </Interactive.Div>
-      <div style={{position: 'absolute', left: -80, right: -80, bottom: 180, height: 830, overflow: 'visible'}}>
+      <div style={{position: 'absolute', left: -80, right: -80, bottom: 260, height: 830, overflow: 'visible'}}>
         <div style={{position: 'absolute', inset: 0, clipPath: 'polygon(0 6%, 100% 0, 100% 100%, 0 100%)', background: 'linear-gradient(180deg, #3b3d43 0%, #17191e 57%, #090a0d 100%)', boxShadow: '0 -22px 60px rgba(0,44,66,0.34)'}} />
         {stageImage ? (
           <div style={{position: 'absolute', inset: 0, overflow: 'hidden', clipPath: 'polygon(0 6%, 100% 0, 100% 100%, 0 100%)'}}>
@@ -63,10 +63,10 @@ const FeatureCard: React.FC<FeatureCardProps> = ({durationInFrames, glyph, kicke
           </div>
         )}
       </div>
-      {showMediaHeadline ? <Interactive.Div name="Feature headline" style={{position: 'absolute', bottom: 298, left: 80, right: 80, color: 'white', textAlign: 'center', fontFamily: 'Impact, Arial Black, sans-serif', fontStyle: 'italic', fontSize: 78, lineHeight: 0.94, letterSpacing: 2, textShadow: '0 7px 0 rgba(0,0,0,0.24)', opacity: interpolate(frame, [9, 22, exitStart + 1, lastFrame], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: [Easing.bezier(0.16, 1, 0.3, 1), Easing.linear, Easing.bezier(0.4, 0, 1, 1)]}), translate: interpolate(frame, [7, 24, exitStart + 1, lastFrame], ['0px 78px', '0px 0px', '0px 0px', '0px -35px'], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1)})}}>
+      {showMediaHeadline ? <Interactive.Div name="Feature headline" style={{position: 'absolute', bottom: 378, left: 80, right: 80, color: 'white', textAlign: 'center', fontFamily: 'Impact, Arial Black, sans-serif', fontStyle: 'italic', fontSize: 78, lineHeight: 0.94, letterSpacing: 2, textShadow: '0 7px 0 rgba(0,0,0,0.24)', opacity: interpolate(frame, [9, 22, exitStart + 1, lastFrame], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: [Easing.bezier(0.16, 1, 0.3, 1), Easing.linear, Easing.bezier(0.4, 0, 1, 1)]}), translate: interpolate(frame, [7, 24, exitStart + 1, lastFrame], ['0px 78px', '0px 0px', '0px 0px', '0px -35px'], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1)})}}>
         {line1}{line2 ? <><br />{line2}</> : null}
       </Interactive.Div> : null}
-      {showMediaHeadline ? <div style={{position: 'absolute', bottom: 242, left: 465, display: 'flex', gap: 14, opacity: interpolate(frame, [18, 28, exitStart + 1, lastFrame], [0, 0.48, 0.48, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}), color: 'white', fontSize: 24}}><span>&lsaquo;</span><span>&lsaquo;</span><span>&lsaquo;</span></div> : null}
+      {showMediaHeadline ? <div style={{position: 'absolute', bottom: 322, left: 465, display: 'flex', gap: 14, opacity: interpolate(frame, [18, 28, exitStart + 1, lastFrame], [0, 0.48, 0.48, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}), color: 'white', fontSize: 24}}><span>&lsaquo;</span><span>&lsaquo;</span><span>&lsaquo;</span></div> : null}
     </AbsoluteFill>
   );
 };
