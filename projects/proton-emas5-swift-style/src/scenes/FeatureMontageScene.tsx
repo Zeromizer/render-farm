@@ -20,9 +20,10 @@ type FeatureCardProps = {
   stageImage?: string;
   stageImagePosition?: string;
   stageImageScale?: number;
+  showMediaHeadline?: boolean;
 };
 
-const FeatureCard: React.FC<FeatureCardProps> = ({durationInFrames, glyph, kicker, line1, line2, car, accent = '#b60719', videoTrimBefore, videoPosition = '50% 50%', videoScale = 1.22, videoPlaybackRate = 1, videoMotionFrames, videoFreezeImage, stageImage, stageImagePosition = '50% 50%', stageImageScale = 1.04}) => {
+const FeatureCard: React.FC<FeatureCardProps> = ({durationInFrames, glyph, kicker, line1, line2, car, accent = '#b60719', videoTrimBefore, videoPosition = '50% 50%', videoScale = 1.22, videoPlaybackRate = 1, videoMotionFrames, videoFreezeImage, stageImage, stageImagePosition = '50% 50%', stageImageScale = 1.04, showMediaHeadline = true}) => {
   const frame = useCurrentFrame();
   const exitStart = durationInFrames - 12;
   const lastFrame = durationInFrames - 1;
@@ -37,7 +38,7 @@ const FeatureCard: React.FC<FeatureCardProps> = ({durationInFrames, glyph, kicke
         {glyph}
         <div style={{position: 'absolute', bottom: -29, left: 48, right: 48, minHeight: 48, backgroundColor: accent, color: 'white', border: '5px solid white', borderRadius: 4, fontFamily: 'Arial Black, sans-serif', fontStyle: 'normal', fontSize: kicker.length > 28 ? 17 : 23, letterSpacing: kicker.length > 28 ? 0.4 : 1, whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 14px'}}>{kicker}</div>
       </Interactive.Div>
-      <div style={{position: 'absolute', left: -80, right: -80, bottom: -20, height: 830, overflow: 'visible'}}>
+      <div style={{position: 'absolute', left: -80, right: -80, bottom: 180, height: 830, overflow: 'visible'}}>
         <div style={{position: 'absolute', inset: 0, clipPath: 'polygon(0 6%, 100% 0, 100% 100%, 0 100%)', background: 'linear-gradient(180deg, #3b3d43 0%, #17191e 57%, #090a0d 100%)', boxShadow: '0 -22px 60px rgba(0,44,66,0.34)'}} />
         {stageImage ? (
           <div style={{position: 'absolute', inset: 0, overflow: 'hidden', clipPath: 'polygon(0 6%, 100% 0, 100% 100%, 0 100%)'}}>
@@ -62,10 +63,10 @@ const FeatureCard: React.FC<FeatureCardProps> = ({durationInFrames, glyph, kicke
           </div>
         )}
       </div>
-      <Interactive.Div name="Feature headline" style={{position: 'absolute', bottom: 98, left: 80, right: 80, color: 'white', textAlign: 'center', fontFamily: 'Impact, Arial Black, sans-serif', fontStyle: 'italic', fontSize: 78, lineHeight: 0.94, letterSpacing: 2, textShadow: '0 7px 0 rgba(0,0,0,0.24)', opacity: interpolate(frame, [9, 22, exitStart + 1, lastFrame], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: [Easing.bezier(0.16, 1, 0.3, 1), Easing.linear, Easing.bezier(0.4, 0, 1, 1)]}), translate: interpolate(frame, [7, 24, exitStart + 1, lastFrame], ['0px 78px', '0px 0px', '0px 0px', '0px -35px'], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1)})}}>
+      {showMediaHeadline ? <Interactive.Div name="Feature headline" style={{position: 'absolute', bottom: 298, left: 80, right: 80, color: 'white', textAlign: 'center', fontFamily: 'Impact, Arial Black, sans-serif', fontStyle: 'italic', fontSize: 78, lineHeight: 0.94, letterSpacing: 2, textShadow: '0 7px 0 rgba(0,0,0,0.24)', opacity: interpolate(frame, [9, 22, exitStart + 1, lastFrame], [0, 1, 1, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: [Easing.bezier(0.16, 1, 0.3, 1), Easing.linear, Easing.bezier(0.4, 0, 1, 1)]}), translate: interpolate(frame, [7, 24, exitStart + 1, lastFrame], ['0px 78px', '0px 0px', '0px 0px', '0px -35px'], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1)})}}>
         {line1}{line2 ? <><br />{line2}</> : null}
-      </Interactive.Div>
-      <div style={{position: 'absolute', bottom: 42, left: 465, display: 'flex', gap: 14, opacity: interpolate(frame, [18, 28, exitStart + 1, lastFrame], [0, 0.48, 0.48, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}), color: 'white', fontSize: 24}}><span>&lsaquo;</span><span>&lsaquo;</span><span>&lsaquo;</span></div>
+      </Interactive.Div> : null}
+      {showMediaHeadline ? <div style={{position: 'absolute', bottom: 242, left: 465, display: 'flex', gap: 14, opacity: interpolate(frame, [18, 28, exitStart + 1, lastFrame], [0, 0.48, 0.48, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}), color: 'white', fontSize: 24}}><span>&lsaquo;</span><span>&lsaquo;</span><span>&lsaquo;</span></div> : null}
     </AbsoluteFill>
   );
 };
@@ -73,10 +74,10 @@ const FeatureCard: React.FC<FeatureCardProps> = ({durationInFrames, glyph, kicke
 export const FeatureMontageScene: React.FC = () => (
   <AbsoluteFill>
     <Sequence name="Up to 325 km WLTP range" durationInFrames={68} premountFor={18}><FeatureCard durationInFrames={68} glyph="325 KM" kicker="UP TO 325 KM WLTP RANGE" line1="GO FURTHER" line2="EVERY DAY" car="emas5/front-right-v8.png" videoTrimBefore={5580} videoPosition="52% 50%" /></Sequence>
-    <Sequence name="21-minute DC fast charge" from={68} durationInFrames={67} premountFor={18}><FeatureCard durationInFrames={67} glyph="21 MIN" kicker="DC CHARGING: 30%-80%" line1="FAST DC" line2="CHARGING" car="emas5/front-left-v8.png" accent="#0069a6" /></Sequence>
-    <Sequence name="14.6-inch display" from={135} durationInFrames={68} premountFor={18}><FeatureCard durationInFrames={68} glyph={'14.6\"'} kicker="14.6-INCH FULL HD DISPLAY HEAD UNIT" line1="14.6-INCH" line2="FULL HD" car="emas5/front-v8.png" accent="#1b637c" videoTrimBefore={3282} videoPosition="50% 52%" /></Sequence>
-    <Sequence name="375-litre boot" from={203} durationInFrames={67} premountFor={18}><FeatureCard durationInFrames={67} glyph="375 L" kicker="EVERYDAY BOOT SPACE" line1="375-LITRE" line2="BOOT SPACE" car="emas5/rear-three-quarter-v8.png" accent="#90510d" videoTrimBefore={6864} videoPosition="50% 50%" /></Sequence>
-    <Sequence name="70-litre frunk" from={270} durationInFrames={68} premountFor={18}><FeatureCard durationInFrames={68} glyph="70 L" kicker="FRONT STORAGE COMPARTMENT" line1="70-LITRE" line2="FRUNK" car="emas5/front-right-v8.png" accent="#8c3c14" stageImage="footage/frunk-70l.jpg" stageImagePosition="50% 48%" /></Sequence>
+    <Sequence name="21-minute DC fast charge" from={68} durationInFrames={67} premountFor={18}><FeatureCard durationInFrames={67} glyph="21 MIN" kicker="DC CHARGING: 30%-80%" line1="FAST DC" line2="CHARGING" car="emas5/front-left-v8.png" accent="#0069a6" showMediaHeadline={false} /></Sequence>
+    <Sequence name="14.6-inch display" from={135} durationInFrames={68} premountFor={18}><FeatureCard durationInFrames={68} glyph={'14.6\"'} kicker="14.6-INCH FULL HD DISPLAY HEAD UNIT" line1="14.6-INCH" line2="FULL HD" car="emas5/front-v8.png" accent="#1b637c" videoTrimBefore={3282} videoPosition="50% 52%" showMediaHeadline={false} /></Sequence>
+    <Sequence name="375-litre boot" from={203} durationInFrames={67} premountFor={18}><FeatureCard durationInFrames={67} glyph="375 L" kicker="EVERYDAY BOOT SPACE" line1="375-LITRE" line2="BOOT SPACE" car="emas5/rear-three-quarter-v8.png" accent="#90510d" videoTrimBefore={6864} videoPosition="50% 50%" showMediaHeadline={false} /></Sequence>
+    <Sequence name="70-litre frunk" from={270} durationInFrames={68} premountFor={18}><FeatureCard durationInFrames={68} glyph="70 L" kicker="FRONT STORAGE COMPARTMENT" line1="70-LITRE" line2="FRUNK" car="emas5/front-right-v8.png" accent="#8c3c14" stageImage="footage/frunk-70l.jpg" stageImagePosition="50% 48%" showMediaHeadline={false} /></Sequence>
     <Sequence name="Rear-wheel drive" from={338} durationInFrames={67} premountFor={18}><FeatureCard durationInFrames={67} glyph="RWD" kicker="REAR-WHEEL DRIVE" line1="CONFIDENT" line2="HANDLING" car="emas5/side.png" accent="#006f83" videoTrimBefore={5520} videoPosition="50% 50%" /></Sequence>
     <Sequence name="Six airbags and ADAS" from={405} durationInFrames={68} premountFor={18}><FeatureCard durationInFrames={68} glyph="6" kicker="6 AIRBAGS + ADAS" line1="TOP-TIER" line2="SAFETY" car="emas5/front-left-v8.png" accent="#174a74" /></Sequence>
   </AbsoluteFill>
