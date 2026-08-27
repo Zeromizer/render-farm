@@ -26,7 +26,13 @@ server.tool(
     composition: z.string().optional().describe("Remotion: composition id (required for remotion)"),
     project_dir: z.string().optional().describe("Remotion: subdir of the repo containing package.json"),
     entry: z.string().optional().describe("Remotion: entry point if not auto-detected, e.g. src/index.ts"),
-    codec: z.string().optional().describe("Remotion: h264 (default), vp9, gif, prores..."),
+    codec: z.string().optional().describe("Remotion: h264 (default), vp9, gif, prores... (video only)"),
+    output_kind: z.enum(["video", "still"]).optional()
+      .describe("Remotion: 'still' renders one image via `remotion still` instead of a video. Named output_kind because `output` already belongs to the python engine."),
+    image_format: z.enum(["png", "jpeg", "webp"]).optional()
+      .describe("Remotion: image format when output_kind=still (default png)"),
+    frame: z.number().int().optional()
+      .describe("Remotion: which frame to capture when output_kind=still (zero-based, default 0)"),
     frame_range: z.string().optional().describe("Remotion: e.g. '0-120'"),
     props: z.record(z.any()).optional().describe("Remotion: input props object"),
     quality: z.enum(["draft", "final"]).optional()
@@ -57,7 +63,7 @@ server.tool(
         throw new Error("python jobs require 'script' and 'output'");
       const params = {};
       for (const k of ["composition", "project_dir", "entry", "codec", "frame_range",
-        "props", "quality", "assets",
+        "props", "quality", "assets", "output_kind", "image_format", "frame",
         "blend_file", "frame_start", "frame_end", "single_frame", "output_format",
         "script", "args", "requirements", "output"]) {
         if (args[k] !== undefined) params[k] = args[k];
