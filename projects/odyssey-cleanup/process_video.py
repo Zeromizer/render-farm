@@ -83,6 +83,7 @@ def video_info(path: Path) -> tuple[int, int, float, int]:
 
 def make_masks(
     mask_dir: Path,
+    video_path: Path,
     width: int,
     height: int,
     fps: float,
@@ -91,33 +92,69 @@ def make_masks(
 ) -> None:
     mask_dir.mkdir(parents=True, exist_ok=True)
 
-    # Coordinates were measured on the 576x1024 source. Scale them if the
-    # input dimensions ever differ. The small padding covers text outlines.
+    # Coordinates were measured on the 576x1024 source. Text pixels are
+    # selected inside these regions instead of masking the entire rectangle;
+    # this avoids asking the model to reconstruct intact car/body details.
     sx = width / 576.0
     sy = height / 1024.0
-    subtitle = (
-        round(48 * sx),
-        round(738 * sy),
-        round(528 * sx),
-        round(816 * sy),
-    )
-    title = (
-        round(58 * sx),
-        round(338 * sy),
-        round(566 * sx),
-        round(425 * sy),
-    )
+    subtitle = (round(25 * sx), round(700 * sy), round(551 * sx), round(865 * sy))
+    title = (round(35 * sx), round(315 * sy), round(575 * sx), round(450 * sy))
     title_frames = round(1.05 * fps)
+    dilation = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+
+    def detect_text(frame: np.ndarray, region: tuple[int, int, int, int], cyan: bool) -> np.ndarray:
+        x1, y1, x2, y2 = region
+        roi = frame[y1:y2, x1:x2]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+        # Cyan subtitle fill.
+        cyan_seed = np.zeros(gray.shape, dtype=np.uint8)
+        if cyan:
+            cyan_seed[
+                (hsv[:, :, 0] >= 72)
+                & (hsv[:, :, 0] <= 102)
+                & (hsv[:, :, 1] >= 75)
+                & (hsv[:, :, 2] >= 125)
+            ] = 255
+
+        # White title/subtitle fill is distinguished from the bright showroom
+        # by requiring a nearby dark outline/shadow.
+        local_min = cv2.erode(gray, np.ones((9, 9), dtype=np.uint8))
+        white_seed = np.zeros(gray.shape, dtype=np.uint8)
+        white_seed[
+            (hsv[:, :, 1] <= 80)
+            & (hsv[:, :, 2] >= 175)
+            & ((gray.astype(np.int16) - local_min.astype(np.int16)) >= 48)
+        ] = 255
+
+        letters = cv2.bitwise_or(cyan_seed, white_seed)
+        letters = cv2.morphologyEx(
+            letters,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3)),
+        )
+        letters = cv2.dilate(letters, dilation, iterations=1)
+        detected = np.zeros((height, width), dtype=np.uint8)
+        detected[y1:y2, x1:x2] = letters
+        return detected
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video for mask generation: {video_path}")
 
     for index in range(frames):
-        mask = np.zeros((height, width), dtype=np.uint8)
-        x1, y1, x2, y2 = subtitle
-        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
+        ok, frame = cap.read()
+        if not ok:
+            cap.release()
+            raise RuntimeError(f"Could not read video frame {index} for masking")
+        mask = detect_text(frame, subtitle, cyan=True)
         if include_title and index < title_frames:
-            x1, y1, x2, y2 = title
-            cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
+            mask = cv2.bitwise_or(mask, detect_text(frame, title, cyan=False))
         if not cv2.imwrite(str(mask_dir / f"{index:05d}.png"), mask):
+            cap.release()
             raise RuntimeError(f"Could not write mask frame {index}")
+    cap.release()
 
 
 def main() -> None:
@@ -209,6 +246,7 @@ def main() -> None:
         mask_dir = work_root / f"masks_{segment_index:02d}"
         make_masks(
             mask_dir,
+            segment_input,
             seg_width,
             seg_height,
             seg_fps,
