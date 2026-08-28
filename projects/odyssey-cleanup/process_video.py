@@ -19,7 +19,7 @@ import numpy as np
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-PROPAINTER_DIR = PROJECT_DIR / ".propainter-runtime"
+PROPAINTER_DIR = PROJECT_DIR / ".propainter-runtime-e870e793"
 PROPAINTER_REPO = "https://github.com/sczhou/ProPainter.git"
 PROPAINTER_REVISION = "e870e79321c31b733e2031af5aa2fb1fe3ac7eec"
 
