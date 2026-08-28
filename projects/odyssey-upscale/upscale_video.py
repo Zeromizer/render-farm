@@ -65,7 +65,8 @@ def ensure_realesrgan(cache_root: Path) -> Path:
     if runtime.exists():
         shutil.rmtree(runtime)
     shutil.move(str(extracted_root), str(runtime))
-    shutil.rmtree(staging)
+    if staging.exists():
+        shutil.rmtree(staging)
     if not executable.exists():
         raise FileNotFoundError(executable)
     return executable
