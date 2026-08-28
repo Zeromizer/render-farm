@@ -21,7 +21,7 @@ import numpy as np
 PROJECT_DIR = Path(__file__).resolve().parent
 PROPAINTER_DIR = PROJECT_DIR / ".propainter-runtime"
 PROPAINTER_REPO = "https://github.com/sczhou/ProPainter.git"
-PROPAINTER_RELEASE = "v0.1.0"
+PROPAINTER_REVISION = "e870e79321c31b733e2031af5aa2fb1fe3ac7eec"
 
 
 def run(command: list[str], cwd: Path | None = None) -> None:
@@ -51,12 +51,19 @@ def ensure_propainter() -> None:
             "clone",
             "--depth",
             "1",
-            "--branch",
-            PROPAINTER_RELEASE,
             PROPAINTER_REPO,
             str(PROPAINTER_DIR),
         ]
     )
+    head = subprocess.check_output(
+        ["git", "-C", str(PROPAINTER_DIR), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    if head != PROPAINTER_REVISION:
+        run(["git", "-C", str(PROPAINTER_DIR), "fetch", "--depth", "1", "origin", PROPAINTER_REVISION])
+        run(["git", "-C", str(PROPAINTER_DIR), "checkout", "--detach", PROPAINTER_REVISION])
+    if not inference.exists():
+        raise RuntimeError(f"ProPainter inference entry point missing after clone: {inference}")
 
 
 def video_info(path: Path) -> tuple[int, int, float, int]:
