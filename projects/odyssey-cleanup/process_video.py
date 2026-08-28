@@ -8,6 +8,7 @@ weights and source are reused between the draft and final jobs.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import shutil
 import subprocess
@@ -80,7 +81,14 @@ def video_info(path: Path) -> tuple[int, int, float, int]:
     return width, height, fps, frames
 
 
-def make_masks(mask_dir: Path, width: int, height: int, fps: float, frames: int) -> None:
+def make_masks(
+    mask_dir: Path,
+    width: int,
+    height: int,
+    fps: float,
+    frames: int,
+    include_title: bool,
+) -> None:
     mask_dir.mkdir(parents=True, exist_ok=True)
 
     # Coordinates were measured on the 576x1024 source. Scale them if the
@@ -105,13 +113,11 @@ def make_masks(mask_dir: Path, width: int, height: int, fps: float, frames: int)
         mask = np.zeros((height, width), dtype=np.uint8)
         x1, y1, x2, y2 = subtitle
         cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
-        if index < title_frames:
+        if include_title and index < title_frames:
             x1, y1, x2, y2 = title
             cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
         if not cv2.imwrite(str(mask_dir / f"{index:05d}.png"), mask):
             raise RuntimeError(f"Could not write mask frame {index}")
-        if index and index % max(1, frames // 10) == 0:
-            print(f"PROGRESS {min(10, round(index / frames * 10))}", flush=True)
 
 
 def main() -> None:
@@ -119,6 +125,7 @@ def main() -> None:
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--draft-seconds", type=float, default=0.0)
+    parser.add_argument("--chunk-seconds", type=float, default=4.0)
     args = parser.parse_args()
 
     source = (PROJECT_DIR.parent.parent / args.input).resolve()
@@ -158,51 +165,123 @@ def main() -> None:
         )
 
     width, height, fps, frames = video_info(working_input)
-    print(f"Input: {width}x{height}, {fps:.3f} fps, {frames} frames", flush=True)
-    mask_dir = work_root / "masks"
-    if mask_dir.exists():
-        shutil.rmtree(mask_dir)
-    make_masks(mask_dir, width, height, fps, frames)
+    duration = frames / fps
+    segment_count = max(1, math.ceil(duration / args.chunk_seconds))
+    print(
+        f"Input: {width}x{height}, {fps:.3f} fps, {frames} frames; "
+        f"processing {segment_count} temporal segments",
+        flush=True,
+    )
     ensure_propainter()
-    print("PROGRESS 12", flush=True)
+    print("PROGRESS 8", flush=True)
 
-    result_root = work_root / "propainter-results"
+    inpainted_segments: list[Path] = []
+    for segment_index in range(segment_count):
+        start = duration * segment_index / segment_count
+        end = duration * (segment_index + 1) / segment_count
+        segment_input = work_root / f"segment_{segment_index:02d}.mp4"
+        run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-y",
+                "-ss",
+                f"{start:.6f}",
+                "-i",
+                str(working_input),
+                "-t",
+                f"{end - start:.6f}",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "15",
+                "-pix_fmt",
+                "yuv420p",
+                str(segment_input),
+            ]
+        )
+        seg_width, seg_height, seg_fps, seg_frames = video_info(segment_input)
+        mask_dir = work_root / f"masks_{segment_index:02d}"
+        make_masks(
+            mask_dir,
+            seg_width,
+            seg_height,
+            seg_fps,
+            seg_frames,
+            include_title=segment_index == 0,
+        )
+        result_root = work_root / f"propainter-results-{segment_index:02d}"
+        run(
+            [
+                sys.executable,
+                "-u",
+                str(PROPAINTER_DIR / "inference_propainter.py"),
+                "--video",
+                str(segment_input),
+                "--mask",
+                str(mask_dir),
+                "--output",
+                str(result_root),
+                "--height",
+                str(seg_height),
+                "--width",
+                str(seg_width),
+                "--save_fps",
+                str(round(seg_fps)),
+                "--mask_dilation",
+                "2",
+                "--subvideo_length",
+                "50",
+                "--neighbor_length",
+                "10",
+                "--ref_stride",
+                "10",
+                "--raft_iter",
+                "20",
+                "--fp16",
+            ],
+            cwd=PROPAINTER_DIR,
+        )
+        inpainted = result_root / segment_input.stem / "inpaint_out.mp4"
+        if not inpainted.exists():
+            raise FileNotFoundError(f"ProPainter output missing: {inpainted}")
+        inpainted_segments.append(inpainted)
+        print(
+            f"PROGRESS {8 + round((segment_index + 1) / segment_count * 80)}",
+            flush=True,
+        )
+
+    concat_list = work_root / "inpainted-segments.ffconcat"
+    concat_lines = ["ffconcat version 1.0"]
+    for path in inpainted_segments:
+        escaped = path.as_posix().replace("'", "'\\''")
+        concat_lines.append(f"file '{escaped}'")
+    concat_list.write_text("\n".join(concat_lines) + "\n", encoding="utf-8")
+    inpainted = work_root / "inpainted-full.mp4"
     run(
         [
-            sys.executable,
-            "-u",
-            str(PROPAINTER_DIR / "inference_propainter.py"),
-            "--video",
-            str(working_input),
-            "--mask",
-            str(mask_dir),
-            "--output",
-            str(result_root),
-            "--height",
-            str(height),
-            "--width",
-            str(width),
-            "--save_fps",
-            str(round(fps)),
-            "--mask_dilation",
-            "2",
-            "--subvideo_length",
-            "50",
-            "--neighbor_length",
-            "10",
-            "--ref_stride",
-            "10",
-            "--raft_iter",
-            "20",
-            "--fp16",
-        ],
-        cwd=PROPAINTER_DIR,
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_list),
+            "-c",
+            "copy",
+            str(inpainted),
+        ]
     )
-    print("PROGRESS 88", flush=True)
-
-    inpainted = result_root / working_input.stem / "inpaint_out.mp4"
-    if not inpainted.exists():
-        raise FileNotFoundError(f"ProPainter output missing: {inpainted}")
+    print("PROGRESS 90", flush=True)
 
     run(
         [
