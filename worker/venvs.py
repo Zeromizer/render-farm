@@ -48,12 +48,18 @@ def venv_python(requirements_path, log, run_kw):
 def cleanup_old(log):
     """Drop venvs unused for VENV_MAX_AGE_DAYS; they rebuild on demand.
 
-    Content-hash keying means every requirements bump strands the previous
-    build forever — measured on the desktop at 14GB across seven venvs, 79%
-    of it two torch builds, one of which no requirements hash will ever ask
-    for again. Age is the .ready marker's mtime, which venv_python touches on
-    every cache hit, so this is time-since-last-use. A half-built venv (no
-    marker) is judged by the directory's own mtime and swept the same way.
+    Content-hash keying means a superseded requirements hash strands its build
+    forever, so the cache only grows. Note the big builds are usually big
+    because they are USED (torch venvs in live service survive any age cutoff
+    — that is correct); this sweeps the genuinely idle tail. Age is the .ready
+    marker's mtime, which venv_python touches on every cache hit, so this is
+    time-since-last-use. A half-built venv (no marker) is judged by the
+    directory's own mtime and swept the same way.
+
+    First run after upgrading to this code touches every existing marker and
+    sweeps nothing: pre-upgrade markers carry their BUILD date (touch-on-hit
+    did not exist), and judging by that would silently drop an old venv that
+    was in daily use until yesterday.
     """
     root = os.path.join(config.CACHE_DIR, "venvs")
     if not os.path.isdir(root):
@@ -61,6 +67,20 @@ def cleanup_old(log):
     max_age = float(os.environ.get("VENV_MAX_AGE_DAYS", "30")) * 86400
     import shutil as _shutil
     import time as _time
+
+    sentinel = os.path.join(root, ".eviction-init")
+    if not os.path.exists(sentinel):
+        for name in os.listdir(root):
+            marker = os.path.join(root, name, ".ready")
+            if os.path.exists(marker):
+                try:
+                    os.utime(marker, None)
+                except OSError:
+                    pass
+        with open(sentinel, "w") as f:
+            f.write("last-use tracking starts here\n")
+        log("venv cleanup: initialised last-use markers; first sweep deferred")
+        return
 
     now = _time.time()
     for name in os.listdir(root):
