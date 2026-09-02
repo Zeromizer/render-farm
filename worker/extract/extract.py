@@ -396,47 +396,105 @@ def _audio_segments(y, sr, duration):
     return segments, music, speech
 
 
-def stage_motion(ctx):
-    frames = ctx.get("frames") or []
-    times = ctx.get("frame_times") or []
-    if len(frames) < 2:
-        raise RuntimeError("needs the frames stage")
-    small = []
-    for p in frames:
-        im = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
-        h = round(im.shape[0] * 320 / im.shape[1])
-        small.append(cv2.resize(im, (320, h)))
+def _motion_frames(video, t0, t1, target_fps, native_fps):
+    """Grayscale 320px-wide frames over [t0, t1) at ~target_fps, read
+    sequentially (seek once, then step through native frames — a per-frame
+    POS_MSEC seek is both slow and keyframe-inaccurate)."""
+    step = max(1, round(native_fps / target_fps))
+    cap = cv2.VideoCapture(video)
+    frames, times = [], []
+    try:
+        cap.set(cv2.CAP_PROP_POS_MSEC, t0 * 1000)
+        n = 0
+        while True:
+            ok = cap.grab()
+            if not ok:
+                break
+            t = t0 + n / native_fps
+            if t >= t1:
+                break
+            if n % step == 0:
+                ok, frame = cap.retrieve()
+                if not ok:
+                    break
+                g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                h = round(g.shape[0] * 320 / g.shape[1])
+                frames.append(cv2.resize(g, (320, h)))
+                times.append(t)
+            n += 1
+    finally:
+        cap.release()
+    return frames, times
 
-    h, w = small[0].shape
+
+def _flow_stats(frames, times):
+    """Per-frame-pair Farneback stats: (t, magnitude, dx, dy, divergence, rotation)."""
+    h, w = frames[0].shape
     cy, cx = h / 2, w / 2
     ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
     rx, ry = xs - cx, ys - cy
     rnorm = np.sqrt(rx ** 2 + ry ** 2) + 1e-6
     rx, ry = rx / rnorm, ry / rnorm  # unit radial field
 
-    per_frame = []  # (t, magnitude, mean_dx, mean_dy, divergence, rotation)
-    for i in range(len(small) - 1):
+    out = []
+    for i in range(len(frames) - 1):
         flow = cv2.calcOpticalFlowFarneback(
-            small[i], small[i + 1], None, 0.5, 3, 15, 3, 5, 1.2, 0)
+            frames[i], frames[i + 1], None, 0.5, 3, 15, 3, 5, 1.2, 0)
         fx, fy = flow[..., 0], flow[..., 1]
         mag = float(np.sqrt(fx ** 2 + fy ** 2).mean())
         div = float((fx * rx + fy * ry).mean())          # + = outward = push_in
         rot = float((fx * -ry + fy * rx).mean())          # tangential = rotation
-        per_frame.append((times[i], mag, float(fx.mean()), float(fy.mean()), div, rot))
+        out.append((times[i], mag, float(fx.mean()), float(fy.mean()), div, rot))
+    return out
+
+
+MOTION_FPS = 10.0       # motion's own sampling rate (amendment to §4.5) —
+RESAMPLE_FPS = 15.0     # decoupled from the global 2fps that colour/OCR/
+                        # composition keep; hot shots re-sample at 15.
+
+
+def stage_motion(ctx):
+    base_fps = float(ctx.get("motion_fps") or MOTION_FPS)
+    frames, times = _motion_frames(ctx["video"], 0.0, ctx["duration"],
+                                   base_fps, ctx["fps"])
+    if len(frames) < 2:
+        raise RuntimeError("could not read frames for motion")
+    w = frames[0].shape[1]
+    per_frame = _flow_stats(frames, times)
+
+    # Clip-median per-frame magnitude is the yardstick for "hot": a shot whose
+    # PEAK exceeds 2x it gets a second pass at RESAMPLE_FPS, so whips and speed
+    # ramps that live between 10fps samples are actually captured.
+    clip_median = float(np.median([r[1] for r in per_frame])) or 1e-6
 
     bounds = ctx.get("shot_bounds") or [(0.0, ctx["duration"])]
     per_shot = []
+    resampled = []
     handheld = 0
     for si, (s, e) in enumerate(bounds):
-        rows = [r for r in per_frame if s <= r[0] < e] or None
+        rows = [r for r in per_frame if s <= r[0] < e]
         if not rows:
             per_shot.append({"shot": si, "label": "unknown", "confidence": 0.0, "magnitude": 0.0})
             continue
+
+        flow_curve = None
+        peak = max(r[1] for r in rows)
+        if peak > 2 * clip_median and base_fps < RESAMPLE_FPS:
+            rframes, rtimes = _motion_frames(ctx["video"], s, e, RESAMPLE_FPS, ctx["fps"])
+            if len(rframes) >= 2:
+                rows = _flow_stats(rframes, rtimes)
+                flow_curve = [round(r[1], 3) for r in rows]
+                resampled.append(si)
+
         label, conf, mag = _camera_label(rows, w)
         if label == "handheld":
             handheld += 1
-        per_shot.append({"shot": si, "label": label,
-                         "confidence": round(conf, 2), "magnitude": round(mag, 3)})
+        entry = {"shot": si, "label": label,
+                 "confidence": round(conf, 2), "magnitude": round(mag, 3)}
+        if flow_curve is not None:
+            entry["flow_curve"] = flow_curve
+            entry["sample_fps"] = RESAMPLE_FPS
+        per_shot.append(entry)
 
     # motion energy per second, normalised by p95 (§4.5: used later to check
     # "does the output move when the reference moves")
@@ -452,10 +510,52 @@ def stage_motion(ctx):
     curve = np.clip(curve / p95, 0, 1)
 
     return {
+        "sample_fps": base_fps,
+        "resampled_shots": resampled,
         "per_shot": per_shot,
         "energy_curve": [round(float(v), 3) for v in curve],
         "handheld_ratio": round(handheld / len(bounds), 2),
     }
+
+
+def _has_speed_ramp(mags, frame_w):
+    """A sustained monotonic run of flow magnitude covering >3x, at real speed.
+
+    Smooth (window 3), split at direction reversals, then accept any segment of
+    >=8 samples (~0.5s at 15fps — filters the sub-second text slides that
+    false-positived as ramps) whose fast end is real motion and whose slow end,
+    floored at a noise epsilon, sits >3x below it. A ramp decelerating into a
+    hold legitimately bottoms out near zero, so the low end is floored, never
+    gated.
+    """
+    if len(mags) < 10:
+        return False
+    smoothed = np.convolve(np.asarray(mags, dtype=float), np.ones(3) / 3, mode="valid")
+    if len(smoothed) < 8:
+        return False
+    steps = np.diff(smoothed)
+    seg_start = 0
+    direction = 0
+    segments = []
+    for i, s in enumerate(steps):
+        d = 1 if s > 0 else (-1 if s < 0 else direction)
+        if direction == 0:
+            direction = d
+        elif d != direction:
+            segments.append((seg_start, i))
+            seg_start = i
+            direction = d
+    segments.append((seg_start, len(smoothed) - 1))
+
+    floor = frame_w * 0.001
+    for a, b in segments:
+        if b - a + 1 < 8:
+            continue
+        seg = smoothed[a : b + 1]
+        hi, lo = float(seg.max()), float(seg.min())
+        if hi > frame_w * 0.008 and hi / max(lo, floor) > 3:
+            return True
+    return False
 
 
 def _camera_label(rows, frame_w):
@@ -471,6 +571,16 @@ def _camera_label(rows, frame_w):
         return "static", 0.9, mag
     if len(rows) >= 2 and mags.max() > 4 * max(mags.mean(), 1e-6) and mags.max() > frame_w * 0.06:
         return "whip", 0.6, mag
+    # speed_ramp (§4.5 amendment): magnitude accelerating or decelerating
+    # monotonically by >3x with no cut. Detected per sustained monotonic
+    # SEGMENT rather than whole-shot, because the real reference clip turned
+    # out to be four consecutive decel ramps inside one detected shot (each
+    # 3.4→0.27-style, separated by jump-backs the cut detector missed) — a
+    # whole-shot test scores that 0.33 monotonic and misses it, while 5-sample
+    # micro-shots trivially pass one. Checked before the direction split — a
+    # ramped push-in reads as the ramp, the more actionable label.
+    if _has_speed_ramp(mags, frame_w):
+        return "speed_ramp", 0.7, mag
     adx, ady, adiv = abs(dxs.mean()), abs(dys.mean()), abs(divs.mean())
     total = adx + ady + adiv + 1e-6
     # translation/zoom means cancel out under shake; strong magnitude with no
@@ -707,6 +817,7 @@ def main():
     ap.add_argument("--reference-id", default=None)
     ap.add_argument("--threshold", type=float, default=27.0)
     ap.add_argument("--ocr-fps", type=float, default=None)
+    ap.add_argument("--motion-fps", type=float, default=None)
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -720,7 +831,8 @@ def main():
             print(f"WARN unknown stage ignored: {s}")
 
     ctx = {"video": args.video, "out_dir": args.out_dir,
-           "threshold": args.threshold, "ocr_fps": args.ocr_fps}
+           "threshold": args.threshold, "ocr_fps": args.ocr_fps,
+           "motion_fps": args.motion_fps}
     spec = {
         "spec_version": "1.0",
         "reference_id": args.reference_id,
@@ -728,11 +840,15 @@ def main():
         "status": "ok",
         "timings": {},
     }
-    # probe always runs (duration/fps feed everything); frames/shots feed the
-    # rest, so pull them in whenever any downstream stage was requested
+    # probe always runs (duration/fps feed everything). Shots feed audio's
+    # cuts_on_beat, motion's per-shot grouping, grade's duration weights and
+    # composition's keyframes; the 2fps frames set now feeds ONLY text — the
+    # motion stage samples the video itself at its own rate (§4.5 amendment).
     wanted = set(stages) | {"probe"}
-    if wanted & {"shots", "motion", "grade", "text", "composition"}:
-        wanted |= {"frames", "shots"}
+    if wanted & {"audio", "motion", "grade", "composition"}:
+        wanted |= {"shots"}
+    if "text" in wanted:
+        wanted |= {"frames"}
     stages = [s for s in ALL_STAGES if s in wanted]
 
     for s in stages:

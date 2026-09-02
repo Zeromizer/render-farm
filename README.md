@@ -132,8 +132,15 @@ repo is cloned — `repo_url` is a `"-"` placeholder; params:
                "reference_id" | "render_id": "<uuid>",
                "bucket": "assets" | "renders", "path": "<object path>",
                "stages": ["probe","shots","audio","motion","grade","composition"],
-               "ocr_fps": 1 } }
+               "ocr_fps": 1, "motion_fps": 10 } }
 ```
+
+Motion samples at its own rate (default 10fps, `motion_fps` param) decoupled
+from the 2fps colour/OCR set; shots whose peak flow exceeds 2x the clip
+median re-sample at 15fps and carry a per-frame `flow_curve`, and the camera
+vocabulary includes `speed_ramp` (a sustained monotonic >3x magnitude run).
+Budget: ~90s typical, may stretch toward ~2 minutes on clips with many
+high-motion shots (§9 amendment).
 
 The runner downloads the object, runs `worker/extract/extract.py` in a cached
 venv keyed on `worker/extract/requirements.txt` (the worker's own venv stays

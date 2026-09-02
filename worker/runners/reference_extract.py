@@ -11,6 +11,7 @@ params (jsonb):
     stages        list of stage names (see extract/extract.py ALL_STAGES)
     threshold     optional ContentDetector threshold override
     ocr_fps       optional OCR sample rate (drop to 1 if the 90s budget busts)
+    motion_fps    optional motion sampling rate (default 10; §4.5 amendment)
 
 Split of responsibilities: extract/extract.py is pure compute (video in,
 JSON + artefacts out) and runs in a cached venv keyed by
@@ -62,6 +63,8 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         cmd += ["--threshold", str(params["threshold"])]
     if params.get("ocr_fps"):
         cmd += ["--ocr-fps", str(params["ocr_fps"])]
+    if params.get("motion_fps"):
+        cmd += ["--motion-fps", str(params["motion_fps"])]
 
     def on_line(line):
         if line.startswith("PROGRESS "):
