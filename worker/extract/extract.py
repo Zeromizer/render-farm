@@ -18,15 +18,51 @@ Times in seconds, positions normalised 0-1 (§5). Wrong labels are worse than
 missing ones — camera/reveal classifiers emit "unknown" freely.
 """
 import argparse
+import glob
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import time
 
 import cv2
 import numpy as np
+
+
+def _find_ffmpeg_tool(name):
+    """Resolve ffmpeg/ffprobe without relying on the worker's PATH.
+
+    The worker is launched by a Startup-shortcut supervisor, whose environment
+    can predate any PATH edit — the first real job on the desktop failed with
+    WinError 2 exactly this way. Order: FFMPEG_DIR env (set it in
+    render-farm\\.env; the runner passes it through), then PATH, then the
+    winget install layout both machines use.
+    """
+    env_dir = os.environ.get("FFMPEG_DIR")
+    if env_dir:
+        exe = os.path.join(env_dir, f"{name}.exe")
+        if os.path.exists(exe):
+            return exe
+    found = shutil.which(name)
+    if found:
+        return found
+    pattern = os.path.join(
+        os.environ.get("LOCALAPPDATA", ""),
+        "Microsoft", "WinGet", "Packages", "Gyan.FFmpeg*", "ffmpeg-*", "bin", f"{name}.exe",
+    )
+    hits = sorted(glob.glob(pattern), reverse=True)
+    if hits:
+        return hits[0]
+    raise RuntimeError(
+        f"{name} not found: set FFMPEG_DIR in render-farm\\.env to its bin directory, "
+        "or install with `winget install Gyan.FFmpeg`"
+    )
+
+
+FFMPEG = None
+FFPROBE = None  # resolved once in main()
 
 ALL_STAGES = ["probe", "frames", "shots", "audio", "motion", "grade", "text", "composition"]
 PROGRESS_AT = {"probe": 5, "frames": 15, "shots": 35, "audio": 50, "motion": 65,
@@ -70,7 +106,7 @@ def _jsonable(v):
 
 def stage_probe(ctx):
     out = json.loads(_run([
-        "ffprobe", "-v", "error", "-print_format", "json",
+        FFPROBE, "-v", "error", "-print_format", "json",
         "-show_format", "-show_streams", ctx["video"],
     ]))
     vstream = next((s for s in out.get("streams", []) if s.get("codec_type") == "video"), None)
@@ -106,7 +142,7 @@ def stage_frames(ctx):
     rate = min(SAMPLE_FPS, MAX_FRAMES / ctx["duration"])
     frames_dir = os.path.join(ctx["out_dir"], "frames")
     os.makedirs(frames_dir, exist_ok=True)
-    _run(["ffmpeg", "-y", "-v", "error", "-i", ctx["video"],
+    _run([FFMPEG, "-y", "-v", "error", "-i", ctx["video"],
           "-vf", f"fps={rate:.6f}", "-q:v", "2",
           os.path.join(frames_dir, "f_%04d.jpg")])
     files = sorted(f for f in os.listdir(frames_dir) if f.startswith("f_"))
@@ -259,7 +295,7 @@ def stage_audio(ctx):
     import librosa
 
     wav = os.path.join(ctx["out_dir"], "audio.wav")
-    _run(["ffmpeg", "-y", "-v", "error", "-i", ctx["video"],
+    _run([FFMPEG, "-y", "-v", "error", "-i", ctx["video"],
           "-ac", "1", "-ar", "22050", "-vn", wav])
     y, sr = librosa.load(wav, sr=22050, mono=True)
 
@@ -674,6 +710,9 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
+    global FFMPEG, FFPROBE
+    FFMPEG = _find_ffmpeg_tool("ffmpeg")
+    FFPROBE = _find_ffmpeg_tool("ffprobe")
     requested = [s for s in args.stages.split(",") if s.strip()]
     stages = [s for s in ALL_STAGES if s in requested]  # canonical order
     for s in requested:
