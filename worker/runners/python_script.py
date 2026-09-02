@@ -12,42 +12,14 @@ params (jsonb):
 The script runs with cwd=<repo> and gets RENDER_WORK_DIR in its env. Lines
 matching "PROGRESS <0-100>" on stdout update the job's progress.
 """
-import hashlib
 import os
 import re
-import subprocess
-import sys
 import zipfile
 
-import config
 import proc
+from venvs import venv_python
 
 _PROGRESS_RE = re.compile(r"^PROGRESS\s+(\d{1,3})\b")
-
-
-def _venv_python(requirements_path, log, run_kw):
-    """Create/reuse a venv keyed by the requirements file's content hash."""
-    if not requirements_path:
-        return sys.executable
-    with open(requirements_path, "rb") as f:
-        digest = hashlib.sha256(f.read()).hexdigest()[:12]
-    venv_dir = os.path.join(config.CACHE_DIR, "venvs", digest)
-    py = os.path.join(venv_dir, "Scripts", "python.exe")
-    marker = os.path.join(venv_dir, ".ready")
-    if os.path.exists(py) and os.path.exists(marker):
-        log(f"venv cache hit: {digest}")
-        return py
-    log(f"creating venv {digest} (first run for these requirements)")
-    os.makedirs(os.path.dirname(venv_dir), exist_ok=True)
-    subprocess.run([sys.executable, "-m", "venv", venv_dir], check=True,
-                   capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-    proc.run_streaming(
-        [py, "-m", "pip", "install", "--no-input", "-r", requirements_path],
-        cwd=venv_dir, **run_kw,
-    )
-    with open(marker, "w") as f:
-        f.write(digest)
-    return py
 
 
 def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
@@ -71,7 +43,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         requirements = os.path.join(repo, params["requirements"])
         if not os.path.exists(requirements):
             raise RuntimeError(f"requirements not found in repo: {params['requirements']}")
-    py = _venv_python(requirements, log, run_kw)
+    py = venv_python(requirements, log, run_kw)
     heartbeat.progress = 5
 
     env = dict(os.environ)

@@ -48,10 +48,15 @@ import db
 import git_cache
 import proc
 from heartbeat import Heartbeat
-from runners import blender, python_script, remotion
+from runners import blender, python_script, reference_extract, remotion
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
-           "python": python_script.run}
+           "python": python_script.run,
+           "reference_extract": reference_extract.run}
+
+# Engines that work on a storage object, not a repo — the clone is skipped and
+# repo_url is a "-" placeholder (the column is NOT NULL).
+NO_CLONE = {"reference_extract"}
 
 
 def log(msg):
@@ -73,13 +78,17 @@ def run_job(job):
         return db.cancel_requested(jid)
 
     with Heartbeat(jid) as hb:
-        db.set_phase(jid, "cloning", 1)
-        repo = git_cache.checkout(job["repo_url"], job.get("git_ref") or "main", log)
+        if engine in NO_CLONE:
+            db.set_phase(jid, "downloading", 1)
+            repo = None
+        else:
+            db.set_phase(jid, "cloning", 1)
+            repo = git_cache.checkout(job["repo_url"], job.get("git_ref") or "main", log)
 
-        manifest = (job.get("params") or {}).get("assets")
-        if manifest:
-            db.set_phase(jid, "syncing_assets", 2)
-            assets.ensure(manifest, repo, log)
+            manifest = (job.get("params") or {}).get("assets")
+            if manifest:
+                db.set_phase(jid, "syncing_assets", 2)
+                assets.ensure(manifest, repo, log)
 
         db.set_phase(jid, "rendering", 2)
         out_local, ext, content_type = runner(

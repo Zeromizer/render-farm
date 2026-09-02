@@ -9,9 +9,10 @@ create table if not exists farm_render_jobs (
   id            uuid primary key default gen_random_uuid(),
   status        text not null default 'pending'
       check (status in ('pending','processing','done','failed','canceled')),
-  engine        text not null,                     -- remotion | blender
-  repo_url      text not null,
+  engine        text not null,                     -- remotion | blender | python | reference_extract
+  repo_url      text not null,                     -- "-" for no-clone engines (reference_extract)
   git_ref       text not null default 'main',      -- branch / tag / commit sha
+  priority      int  not null default 100,         -- lower claims sooner; renders 100, extracts 200
   params        jsonb not null default '{}',
   output_ext    text,
   output_path   text,                              -- outputs/<id>.<ext> in 'renders' bucket
@@ -30,9 +31,14 @@ create table if not exists farm_render_jobs (
   completed_at  timestamptz
 );
 
-create index if not exists farm_render_jobs_status_idx on farm_render_jobs (status, created_at);
+-- Migration for pre-priority installs (idempotent; the create table above
+-- already carries the column on fresh ones):
+alter table farm_render_jobs add column if not exists priority int not null default 100;
+drop index if exists farm_render_jobs_status_idx;
+create index if not exists farm_render_jobs_status_idx on farm_render_jobs (status, priority, created_at);
 
 -- Atomic claim: one worker owns the job; SKIP LOCKED makes concurrent workers safe.
+-- Priority before age so reference_extract jobs (200) never starve renders (100).
 create or replace function claim_farm_job()
 returns setof farm_render_jobs language sql as $$
   update farm_render_jobs
@@ -41,7 +47,7 @@ returns setof farm_render_jobs language sql as $$
   where id = (
     select id from farm_render_jobs
     where status = 'pending' and cancel_requested = false
-    order by created_at
+    order by priority, created_at
     for update skip locked
     limit 1)
   returning *;

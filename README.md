@@ -119,6 +119,41 @@ cd <render-farm checkout> && git pull
 # the startup shortcut relaunches it. No new worker deps needed.
 ```
 
+## reference_extract engine (added 2026-09-02)
+
+`engine: "reference_extract"` measures a video into a `motion_spec` JSON for
+the render-platform's reference library (HANDOFF-reference-extraction.md):
+ffprobe, PySceneDetect cuts, librosa tempo/beats, optical-flow camera labels,
+k-means grade, OCR captions (once easyocr lands), saliency composition. No
+repo is cloned — `repo_url` is a `"-"` placeholder; params:
+
+```json
+{ "extract": { "kind": "reference" | "render_output",
+               "reference_id" | "render_id": "<uuid>",
+               "bucket": "assets" | "renders", "path": "<object path>",
+               "stages": ["probe","shots","audio","motion","grade","composition"],
+               "ocr_fps": 1 } }
+```
+
+The runner downloads the object, runs `worker/extract/extract.py` in a cached
+venv keyed on `worker/extract/requirements.txt` (the worker's own venv stays
+supabase-only), uploads keyframes + contact sheet to `renders/refs/<id>/`
+(upsert — idempotent per id), writes the spec onto
+`rp_references.motion_spec` / `rp_renders.motion_spec` with the service key,
+and returns the JSON as the job's single output. Partial stage failures mark
+that section `failed` and continue; only a broken probe fails the job.
+
+These jobs insert with `priority: 200` (renders default 100) and the updated
+`claim_farm_job()` orders by `(priority, created_at)` — a queued extraction
+never delays a render. **Deploy: paste the changed statements from schema.sql
+(priority column + index + claim_farm_job) into the Supabase SQL editor, pull
+on the render PC, restart the worker** (kill the real python.exe worker child,
+never the pythonw stub — see the restart note in project memory). The Phase 2
+requirements bump (torch + easyocr) must be pre-built by hand:
+`pip install -r worker\extract\requirements.txt` into the hashed venv path, and
+run `easyocr.Reader(['en'])` once to pre-download models — a cold build blows
+the 15-minute job timeout.
+
 ## Notes
 
 - Private repos work if the PC's Git Credential Manager has credentials

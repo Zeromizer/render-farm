@@ -1,0 +1,16 @@
+# reference_extract pipeline deps (Phase 1: probe/frames/shots/audio + motion/composition which need only cv2).
+# Phase 2 adds torch+easyocr, Phase 3 adds scikit-learn — each bump re-keys the cached venv (worker/venvs.py);
+# extract.py imports OCR/sklearn lazily inside their stages, so those stages fail cleanly until then.
+numpy==2.2.6
+opencv-python==4.11.0.86
+scenedetect==0.6.7
+librosa==0.11.0
+soundfile==0.13.1
+Pillow==11.3.0
+scikit-learn==1.6.1
+# Phase 2 bump (uncomment together; pre-build the venv + pre-warm the EasyOCR
+# model download by hand on the desktop — ~2.5GB torch, ~100MB models — or the
+# first extract job blows its 15-minute timeout):
+# --extra-index-url https://download.pytorch.org/whl/cu121
+# torch==2.5.1+cu121
+# easyocr==1.7.2
