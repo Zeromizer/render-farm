@@ -122,7 +122,12 @@ def stage_frames(ctx):
 def stage_shots(ctx):
     from scenedetect import ContentDetector, detect
 
-    scenes = detect(ctx["video"], ContentDetector(threshold=ctx["threshold"]))
+    # min_scene_len must sit well under the default 15 frames: the stutter runs
+    # these ads live on (four cuts in 1.6s, 0.43s spacings) are 12-13 frames
+    # apart at 30fps and the default silently merges them — measured on the
+    # "Hook" reference: 12 detected of 21 real cuts before, 21 after.
+    scenes = detect(ctx["video"],
+                    ContentDetector(threshold=ctx["threshold"], min_scene_len=4))
     if scenes:
         bounds = [(s.get_seconds(), e.get_seconds()) for s, e in scenes]
     else:  # no cuts found: the whole clip is one shot
