@@ -49,11 +49,24 @@ def cleanup_old(log):
     """Drop venvs unused for VENV_MAX_AGE_DAYS; they rebuild on demand.
 
     Content-hash keying means every requirements bump strands the previous
-    build forever — measured on the desktop at 14GB across seven venvs, 79%
-    of it two torch builds, one of which no requirements hash will ever ask
-    for again. Age is the .ready marker's mtime, which venv_python touches on
-    every cache hit, so this is time-since-last-use. A half-built venv (no
-    marker) is judged by the directory's own mtime and swept the same way.
+    build forever. Measured on the desktop at 14.19GB across seven venvs, 79%
+    of it two torch-class builds — ProPainter and the OCR extract venv. Note
+    both of those are in ACTIVE use, so age alone does not reclaim them: the
+    first pass there dropped 1.32GB from two builds idle ~57 days and left the
+    big ones exactly where they were. Bounding this cache by SIZE would need an
+    LRU cap, which this is not — it only stops the tail growing forever.
+
+    Age is the .ready marker's mtime, which venv_python touches on every cache
+    hit, so this is time-since-last-use. A half-built venv (no marker) is
+    judged by the directory's own mtime and swept the same way.
+
+    THE FIRST PASS EVICTS NOTHING, on purpose. Markers written before the
+    touch-on-hit existed carry their BUILD date, so a venv built 60 days ago
+    and used daily until yesterday reads as 60 days idle and would be deleted
+    on the very first bounce after upgrading. The sentinel below makes that
+    first pass touch every marker instead, so real last-use ages accumulate
+    from then on. Being wrong here costs a multi-GB rebuild in front of a
+    waiting job, which is worth one deferred sweep to avoid.
     """
     root = os.path.join(config.CACHE_DIR, "venvs")
     if not os.path.isdir(root):
@@ -63,12 +76,21 @@ def cleanup_old(log):
     import time as _time
 
     now = _time.time()
+    baseline = os.path.join(root, ".evict-baseline")
+    first_run = not os.path.exists(baseline)
+
     for name in os.listdir(root):
         venv_dir = os.path.join(root, name)
         if not os.path.isdir(venv_dir):
             continue
         marker = os.path.join(venv_dir, ".ready")
         ref = marker if os.path.exists(marker) else venv_dir
+        if first_run:
+            try:
+                os.utime(ref, None)
+            except OSError:
+                pass
+            continue
         try:
             age = now - os.path.getmtime(ref)
         except OSError:
@@ -76,3 +98,13 @@ def cleanup_old(log):
         if age > max_age:
             log(f"venv cleanup: dropping {name} (unused {age / 86400:.0f}d)")
             _shutil.rmtree(venv_dir, ignore_errors=True)
+
+    if first_run:
+        try:
+            with open(baseline, "w") as f:
+                f.write("last-use ages count from this file's creation")
+            log("venv cleanup: first pass, baselined existing venvs (nothing evicted)")
+        except OSError as err:
+            # Without the sentinel the next pass baselines again rather than
+            # evicting — the safe direction to fail in.
+            log(f"venv cleanup: could not write baseline ({err}); will re-baseline next start")
