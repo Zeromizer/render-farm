@@ -119,6 +119,35 @@ cd <render-farm checkout> && git pull
 # the startup shortcut relaunches it. No new worker deps needed.
 ```
 
+## hyperframes engine (added 2026-09-03)
+
+`engine: "hyperframes"` renders a [HyperFrames](https://hyperframes.heygen.com)
+project — an `index.html` whose clips carry `data-start`/`data-duration` and
+whose motion is a paused GSAP timeline — through headless Chrome and the
+**system** ffmpeg. Params: `entry` (composition .html, default `index.html`),
+`project_dir`, `format` (mp4 default, webm/mov with alpha, gif, png-sequence →
+zip), `quality` (draft|standard|final→standard|high), `fps`, `variables`
+(object → `--variables-file --strict-variables`), `workers`, `gpu` (NVENC),
+`resolution`, `crf`; `output_kind: "still"` + `at: <seconds>` returns one PNG
+via `hyperframes snapshot`. `assets` manifests work as for remotion.
+
+Nothing to `npm ci`: the project's package.json pins `npx --yes
+hyperframes@X.Y.Z` and the runner reads that pin (else `HYPERFRAMES_VERSION`,
+else 0.8.26). The CLI needs **Node >= 22** and ffmpeg on PATH. Chrome headless
+shell is downloaded once into `~/.cache\hyperframes\chrome` by `hyperframes
+browser ensure`, which the runner calls the first time each worker process
+renders; fonts pulled from Google Fonts are cached under
+`~/.cache\hyperframes\fonts`, so warm them once online. Telemetry and update
+checks are disabled through the environment. Measured on the laptop iGPU: a
+645-frame 1080x1920 footage reel with music in 69 s, A/V offset 0 ms (no AAC
+priming compensation needed, unlike Remotion's ~+40 ms).
+
+`quality: "draft"` only lowers the bitrate (capture dominates); send `fps: 15`
+for a genuinely fast preview.
+
+**Deploy on the render PC** (one-time): `git pull`, confirm `node -v` is 22+,
+restart the worker. First hyperframes job downloads the CLI and Chrome (~1-2 min).
+
 ## reference_extract engine (added 2026-09-02)
 
 `engine: "reference_extract"` measures a video into a `motion_spec` JSON for

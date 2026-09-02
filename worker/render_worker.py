@@ -49,11 +49,14 @@ import git_cache
 import proc
 import venvs
 from heartbeat import Heartbeat
-from runners import (asset_check, blender, frame_extract, python_script,
-                     reference_extract, remotion, video_split)
+from runners import (asset_check, blender, frame_extract, hyperframes,
+                     python_script, reference_extract, remotion, video_split)
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            "python": python_script.run,
+           # HTML/GSAP compositions rendered by headless Chrome + system ffmpeg
+           # (HeyGen HyperFrames). Clones like remotion; no npm ci needed.
+           "hyperframes": hyperframes.run,
            "reference_extract": reference_extract.run,
            # The asset gate (render-platform lib/scenes): checks on a candidate
            # still, frames out of a static-lock pan, shots out of a take.

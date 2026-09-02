@@ -15,12 +15,12 @@ const fail = (e) => ({ content: [{ type: "text", text: `Error: ${e.message}` }],
 
 server.tool(
   "submit_render_job",
-  "Submit a GPU job (Remotion render, Blender render, or a Python script — e.g. " +
+  "Submit a GPU job (Remotion render, HyperFrames HTML render, Blender render, or a Python script — e.g. " +
     "rembg matting, upscaling) to the home render farm. " +
     "The repo+ref must be pushed first; the farm clones it and runs on an RTX 4080. " +
     "Returns a job_id — poll with get_job_status, then download_result.",
   {
-    engine: z.enum(["remotion", "blender", "python"]),
+    engine: z.enum(["remotion", "blender", "python", "hyperframes"]),
     repo_url: z.string().describe("Git URL, e.g. https://github.com/user/repo"),
     ref: z.string().default("main").describe("Branch, tag, or commit SHA (must be pushed)"),
     composition: z.string().optional().describe("Remotion: composition id (required for remotion)"),
@@ -51,6 +51,13 @@ server.tool(
     args: z.array(z.string()).optional().describe("Python: CLI args for the script"),
     requirements: z.string().optional().describe("Python: repo-relative requirements.txt; venv is cached per content hash"),
     output: z.string().optional().describe("Python: repo-relative output file/dir the script writes (dir → zip; required for python)"),
+    format: z.enum(["mp4", "webm", "mov", "gif", "png-sequence"]).optional()
+      .describe("HyperFrames: output container (default mp4; webm/mov carry alpha; png-sequence → zip). entry (default index.html) names the composition file, project_dir the project subdir; quality accepts draft|standard|final|high; output_kind='still' + at=<seconds> returns one PNG via `hyperframes snapshot`."),
+    fps: z.number().int().min(1).max(240).optional().describe("HyperFrames: override the composition fps (fps=15 is the real fast-draft knob)"),
+    variables: z.record(z.any()).optional().describe("HyperFrames: values for data-composition-variables, passed as --variables-file --strict-variables"),
+    workers: z.number().int().min(1).max(24).optional().describe("HyperFrames: parallel Chrome instances (default auto)"),
+    gpu: z.boolean().optional().describe("HyperFrames: NVENC encode (--gpu)"),
+    at: z.number().min(0).optional().describe("HyperFrames: seconds into the composition for output_kind=still (default 0)"),
     timeout_minutes: z.number().int().optional().describe("Kill the job after this long (default 120)"),
   },
   async (args) => {
@@ -61,11 +68,14 @@ server.tool(
         throw new Error("blender jobs require 'blend_file'");
       if (args.engine === "python" && (!args.script || !args.output))
         throw new Error("python jobs require 'script' and 'output'");
+      if (args.engine === "hyperframes" && args.entry && !/\.html?$/i.test(args.entry))
+        throw new Error("hyperframes jobs take 'entry' as a composition .html file (default index.html)");
       const params = {};
       for (const k of ["composition", "project_dir", "entry", "codec", "frame_range",
         "props", "quality", "assets", "output_kind", "image_format", "frame",
         "blend_file", "frame_start", "frame_end", "single_frame", "output_format",
-        "script", "args", "requirements", "output"]) {
+        "script", "args", "requirements", "output",
+        "format", "fps", "variables", "workers", "gpu", "at"]) {
         if (args[k] !== undefined) params[k] = args[k];
       }
       const job = await insertJob({
