@@ -47,6 +47,7 @@ import config
 import db
 import git_cache
 import proc
+import venvs
 from heartbeat import Heartbeat
 from runners import blender, python_script, reference_extract, remotion
 
@@ -119,6 +120,7 @@ def main():
     log(f"render worker starting (cache={config.CACHE_DIR})")
     git_cache.cleanup_old(log)
     assets.cleanup_old(log)
+    venvs.cleanup_old(log)
     try:
         n = db.reclaim_stale()
         if n:
