@@ -49,15 +49,21 @@ import git_cache
 import proc
 import venvs
 from heartbeat import Heartbeat
-from runners import blender, python_script, reference_extract, remotion
+from runners import (asset_check, blender, frame_extract, python_script,
+                     reference_extract, remotion, video_split)
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            "python": python_script.run,
-           "reference_extract": reference_extract.run}
+           "reference_extract": reference_extract.run,
+           # The asset gate (render-platform lib/scenes): checks on a candidate
+           # still, frames out of a static-lock pan, shots out of a take.
+           "asset_check": asset_check.run,
+           "frame_extract": frame_extract.run,
+           "video_split": video_split.run}
 
 # Engines that work on a storage object, not a repo — the clone is skipped and
 # repo_url is a "-" placeholder (the column is NOT NULL).
-NO_CLONE = {"reference_extract"}
+NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split"}
 
 
 def log(msg):
