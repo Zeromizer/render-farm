@@ -145,7 +145,11 @@ def segment(frames, alpha_dir, model, providers):
             cut = remove(im.convert("RGB"), session=session)
         alpha = np.array(cut.convert("RGBA"))[:, :, 3]
         dst = os.path.join(alpha_dir, f"a-{i:06d}.png")
-        Image.fromarray(alpha, mode="L").save(dst)
+        # No mode= here: a 2-D uint8 array already infers "L", and the mode
+        # parameter is removed in Pillow 13 (2026-10-15). Passing it would make
+        # every matte job die at this line the day the pin in requirements.txt
+        # moves, with a traceback naming Pillow rather than the pin.
+        Image.fromarray(alpha).save(dst)
         out.append(dst)
         if i % 5 == 0 or i == len(frames) - 1:
             emit("PROGRESS", str(int((i + 1) / len(frames) * 100)))
