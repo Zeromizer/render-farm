@@ -1,0 +1,30 @@
+# Matte engine: rembg segmentation on the GPU.
+#
+# onnxruntime-gpu, NOT onnxruntime. The CPU package is exactly what made the
+# agent container cost 9.5 s/frame on birefnet-general-lite at 720x1280, and
+# the failure is SILENT: with the CUDA/cuDNN libraries missing, onnxruntime
+# does not raise, it drops to CPUExecutionProvider and runs. On this worker
+# that is worse than an error, because render_worker.main() is a single-job
+# loop - a matte that quietly falls back to CPU blocks every live render
+# behind it for the better part of an hour. matte.py asserts the provider
+# before the first frame and fails the job in seconds instead.
+#
+# rembg[gpu] rather than rembg: the plain package leaves onnxruntime entirely
+# to extras (onnxruntime under [cpu], onnxruntime-gpu under [gpu]), and both
+# provide the same `onnxruntime` module, so pulling the wrong extra would
+# install the CPU build under the name this engine imports.
+#
+# [cuda,cudnn] rather than hand-pinned nvidia-* wheels: onnxruntime-gpu 1.29
+# declares its own CUDA 13 stack (nvidia-cuda-nvrtc~=13.0, nvidia-cuda-runtime
+# ~=13.0, nvidia-cufft, nvidia-curand, nvidia-cudnn-cu13~=9.0) behind those
+# extras. Letting it choose is the difference between a matched set and my
+# guess at one - the first version of this file pinned a CUDA 12 stack against
+# an onnxruntime that wanted 13, and an onnxruntime-gpu==1.20.1 that has never
+# existed. The venv still carries its own CUDA, so no system install is needed.
+#
+# numpy and opencv-python-headless are deliberately unpinned here: rembg
+# already requires both, and pinning them separately only creates resolution
+# conflicts to no benefit.
+rembg[gpu]==2.0.67
+onnxruntime-gpu[cuda,cudnn]==1.29.0
+Pillow==11.3.0
