@@ -40,7 +40,12 @@ def cancel_requested(job_id):
 
 
 def upload_output(job_id, local_path, ext, content_type):
-    remote = f"outputs/{job_id}.{ext}"
+    return upload_file(f"outputs/{job_id}.{ext}", local_path, content_type)
+
+
+def upload_file(remote, local_path, content_type):
+    """Upload to an explicit remote path, for the sidecars a job emits
+    alongside its one real output (the matte proof sheet is the first)."""
     with open(local_path, "rb") as f:
         # Pass the file object (not f.read()) so httpx streams the body —
         # large finals no longer load fully into memory.

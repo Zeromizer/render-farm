@@ -69,6 +69,11 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
            "--feather-px", str(int(p.get("feather_px", 1))),
            "--close-px", str(int(p.get("close_px", 3))),
            "--temporal-median", str(int(p.get("temporal_median", 0)))]
+    # Absent means ON. The caller has to say drop_detached: false to get the
+    # multi-subject behaviour, because the caller who needs it off knows it and
+    # the caller who needs it on does not know what is about to float.
+    if p.get("drop_detached") is False:
+        cmd.append("--no-drop-detached")
     # Optional keys are OMITTED by the platform rather than sent as null, so
     # absence is meaningful: no fps means every frame, no scale means source
     # resolution. Only forward what was actually asked for.
@@ -103,6 +108,23 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     for line in measured:
         log(line.strip())
     log(f"matte done: {kind} -> {os.path.getsize(out_local)} bytes")
+
+    # The proof sheet goes up as a SIBLING of the real output, at a path the
+    # platform can derive from output_path without being told: replace the
+    # extension with "-proof.png". Deliberately not a new column and not a
+    # second job row - farm_render_jobs has no spare jsonb to put it in, and a
+    # migration for one predictable filename is a worse trade than a convention.
+    # A failure here must not fail the job: the matte is the deliverable and the
+    # proof is an aid to reading it.
+    proof_local = os.path.splitext(out_local)[0] + "-proof.png"
+    if os.path.exists(proof_local):
+        try:
+            remote = db.upload_file(f"outputs/{jid}-proof.png", proof_local, "image/png")
+            log(f"proof sheet -> {remote} ({os.path.getsize(proof_local)} bytes)")
+        except Exception as exc:  # noqa: BLE001 - never lose a good matte over this
+            log(f"proof sheet upload failed (matte itself is fine): {exc}")
+    else:
+        log("no proof sheet emitted")
 
     # Returning the local path is all it takes: run_job uploads to
     # outputs/<farm_job_id>.<ext> in the renders bucket and writes output_path,

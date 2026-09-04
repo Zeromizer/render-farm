@@ -157,7 +157,68 @@ def segment(frames, alpha_dir, model, providers):
     return out
 
 
-def refine(alpha_paths, frames, rgba_dir, mask_dir, close_px, feather_px, temporal_median):
+def anchor_edge(alpha_paths, sample=12):
+    """Which frame edge does the subject enter from? Most alpha on it wins.
+
+    Decided ONCE over a sample of the clip, not per frame. A per-frame answer
+    flips on any frame where the subject is briefly clear of its edge, which is
+    precisely the frame drop_detached's fallback exists to survive - so letting
+    it also move the anchor would compound the problem instead of containing it.
+    """
+    import cv2
+    import numpy as np
+
+    n = min(sample, len(alpha_paths))
+    idx = np.unique(np.linspace(0, len(alpha_paths) - 1, n).astype(int))
+    totals = {"top": 0.0, "bottom": 0.0, "left": 0.0, "right": 0.0}
+    for i in idx:
+        a = cv2.imread(alpha_paths[int(i)], cv2.IMREAD_GRAYSCALE)
+        totals["top"] += float(a[0, :].mean())
+        totals["bottom"] += float(a[-1, :].mean())
+        totals["left"] += float(a[:, 0].mean())
+        totals["right"] += float(a[:, -1].mean())
+    return max(totals, key=totals.get), totals
+
+
+def drop_detached(a, anchor, min_area_frac=0.0004):
+    """Keep only the alpha blobs anchored to the edge the subject enters from.
+
+    birefnet-portrait keeps the person and drops the cards, but anything else
+    SALIENT and detached survives - on the reference clip the food photos
+    sitting on the cards did, in half the sampled frames. No model setting
+    removes those, because the property that separates them from the subject is
+    geometric rather than semantic: an arm runs off frame at the edge it came
+    in from, and a photo of fries touches nothing.
+
+    THE FALLBACK IS LOAD-BEARING. If the subject is entirely inside the frame -
+    a hand lifted clear of the bottom - then no component touches the anchor and
+    the plain rule blanks that frame outright. That is a worse failure than the
+    one being fixed and a silent one, so we keep the largest component instead
+    and let the proof sheet show what happened.
+    """
+    import cv2
+    import numpy as np
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((a > 127).astype(np.uint8), 8)
+    if n <= 1:  # nothing but background; leave it alone
+        return a
+    h, w = a.shape
+    min_area = max(1, int(min_area_frac * h * w))
+    keep = []
+    for i in range(1, n):
+        x, y, cw, ch, area = stats[i]
+        if area < min_area:
+            continue  # specks along the anchor edge are not the subject either
+        if {"top": y == 0, "bottom": y + ch >= h,
+            "left": x == 0, "right": x + cw >= w}[anchor]:
+            keep.append(i)
+    if not keep:
+        keep = [1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))]
+    return np.where(np.isin(labels, keep), a, 0).astype(np.uint8)
+
+
+def refine(alpha_paths, frames, rgba_dir, mask_dir, close_px, feather_px,
+           temporal_median, anchor=None):
     """Morphology, feather and (optional) temporal median; writes RGBA + mask."""
     import cv2
     import numpy as np
@@ -178,6 +239,12 @@ def refine(alpha_paths, frames, rgba_dir, mask_dir, close_px, feather_px, tempor
         if close_px and close_px > 0:
             k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_px * 2 + 1,) * 2)
             a = cv2.morphologyEx(a, cv2.MORPH_CLOSE, k)
+        # After CLOSE and before feather, deliberately: close first so a
+        # fingertip bridged by a one-pixel gap is one component and does not get
+        # dropped, feather after so the blur is not asked to soften an edge that
+        # is about to be deleted.
+        if anchor:
+            a = drop_detached(a, anchor)
         if feather_px and feather_px > 0:
             k = feather_px * 2 + 1
             a = cv2.GaussianBlur(a, (k, k), 0)
@@ -186,6 +253,75 @@ def refine(alpha_paths, frames, rgba_dir, mask_dir, close_px, feather_px, tempor
         Image.fromarray(np.dstack([rgb, a])).save(os.path.join(rgba_dir, f"r-{i:06d}.png"))
         if i % 10 == 0:
             emit("PHASE", f"refining {i + 1}/{len(alpha_paths)}")
+
+
+def proof_sheet(rgba_dir, out_png, start_s, fps, model, anchor, tiles=8):
+    """One picture that answers every question anyone asks about a matte.
+
+    WHY THIS IS HERE AND NOT DOWNSTREAM. All three ways to check alpha after
+    the fact fail SILENTLY, returning a plausible answer instead of an error:
+
+      ffprobe                 reports pix_fmt=yuv420p on a correct alpha webm
+      ffmpeg default decoder  returns a fully opaque frame unless you put
+                              -c:v libvpx-vp9 BEFORE -i (measured on a real
+                              output: 0.0% transparent vs 85.8% with the flag)
+      seek + canvas drawImage hands back frame 1 every time, so a moving matte
+                              reads as frozen
+
+    An agent that trips any one of them reports a bug that does not exist and
+    then iterates on it. Here, before encoding, none of them exist - the alpha
+    is an array in memory. So the proof is composed at the only point where it
+    cannot be got wrong, and everyone downstream just looks at the picture.
+
+    Magenta ground, not black or a checkerboard: #ff00ff is the one colour a
+    real subject never is, so a hole reads unambiguously as a hole. Over black,
+    a hole and a correctly matted dark subject look the same.
+    """
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+
+    paths = sorted(glob.glob(os.path.join(rgba_dir, "r-*.png")))
+    if not paths:
+        return None
+    idx = np.unique(np.linspace(0, len(paths) - 1, min(tiles, len(paths))).astype(int))
+
+    try:
+        font = ImageFont.load_default(size=13)
+    except TypeError:  # Pillow < 10.1 takes no size here
+        font = ImageFont.load_default()
+
+    cells = []
+    for i in idx:
+        with Image.open(paths[int(i)]) as im:
+            im = im.convert("RGBA")
+            a = np.asarray(im)[:, :, 3]
+            ground = Image.new("RGBA", im.size, (255, 0, 255, 255))
+            flat = Image.alpha_composite(ground, im).convert("RGB")
+        total = a.size
+        clear = 100.0 * np.count_nonzero(a < 8) / total
+        solid = 100.0 * np.count_nonzero(a > 247) / total
+        cells.append((flat, float(start_s or 0) + int(i) / float(fps), clear, solid,
+                      max(0.0, 100.0 - clear - solid)))
+
+    tw = 240
+    th = max(1, round(cells[0][0].height * tw / cells[0][0].width))
+    band, head, cols = 30, 26, 4
+    rows = (len(cells) + cols - 1) // cols
+    sheet = Image.new("RGB", (cols * tw, head + rows * (th + band)), (20, 20, 20))
+    d = ImageDraw.Draw(sheet)
+    d.text((6, 7), f"matte proof - {model} - {len(paths)} frames @ {fps:g} fps"
+                   f" - anchor edge {anchor or 'none'} - magenta = transparent",
+           fill=(235, 235, 235), font=font)
+
+    for n, (flat, t, clear, solid, feather) in enumerate(cells):
+        x, y = (n % cols) * tw, head + (n // cols) * (th + band)
+        sheet.paste(flat.resize((tw, th), Image.LANCZOS), (x, y))
+        d.text((x + 5, y + th + 3), f"t={t:6.2f}s", fill=(235, 235, 235), font=font)
+        d.text((x + 5, y + th + 15),
+               f"clear {clear:5.1f}  solid {solid:5.1f}  feather {feather:4.1f}",
+               fill=(170, 170, 170), font=font)
+    sheet.save(out_png)
+    return out_png
 
 
 def encode(kind, rgba_dir, mask_dir, out_path, fps, ffmpeg):
@@ -221,6 +357,12 @@ def main():
     ap.add_argument("--feather-px", type=int, default=1)
     ap.add_argument("--close-px", type=int, default=3)
     ap.add_argument("--temporal-median", type=int, default=0)
+    # Default ON: the agent that needs it off is matting two separate subjects
+    # and knows it, whereas the agent that needs it on does not know the food
+    # photos are coming.
+    ap.add_argument("--drop-detached", dest="drop_detached",
+                    action="store_true", default=True)
+    ap.add_argument("--no-drop-detached", dest="drop_detached", action="store_false")
     a = ap.parse_args()
 
     if a.model not in MODELS:
@@ -258,12 +400,30 @@ def main():
     print(f"[matte] MEASURED {per_frame:.3f} s/frame for {a.model} at "
           f"{src_w}x{src_h} over {len(frames)} frames", flush=True)
 
+    anchor = None
+    if a.drop_detached:
+        anchor, totals = anchor_edge(alphas)
+        print(f"[matte] anchor edge {anchor} (mean alpha per edge: "
+              + ", ".join(f"{k}={v / max(1, len(totals)):.1f}" for k, v in totals.items())
+              + ")", flush=True)
+
     emit("PHASE", "refining")
-    refine(alphas, frames, os.path.join(work, "_rgba"), os.path.join(work, "_mask"),
-           a.close_px, a.feather_px, a.temporal_median)
+    rgba_dir = os.path.join(work, "_rgba")
+    refine(alphas, frames, rgba_dir, os.path.join(work, "_mask"),
+           a.close_px, a.feather_px, a.temporal_median, anchor)
+
+    # Before encode() and before the cleanup below: the proof is built from the
+    # refined RGBA frames, so it shows the alpha the consumer actually gets -
+    # after drop_detached, after feather - and those directories do not survive
+    # this function.
+    emit("PHASE", "proof sheet")
+    proof = proof_sheet(rgba_dir, os.path.splitext(a.out_path)[0] + "-proof.png",
+                        a.start_s, out_fps, a.model, anchor)
+    if proof:
+        print(f"[matte] PROOF {proof}", flush=True)
 
     emit("PHASE", "encoding")
-    encode(a.output, os.path.join(work, "_rgba"), os.path.join(work, "_mask"),
+    encode(a.output, rgba_dir, os.path.join(work, "_mask"),
            a.out_path, out_fps, ffmpeg)
     for d in ("_frames", "_alpha", "_rgba", "_mask"):
         shutil.rmtree(os.path.join(work, d), ignore_errors=True)
