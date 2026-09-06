@@ -95,7 +95,8 @@ def main():
         t0 = time.monotonic()
         pid = comfy_client.submit(graph)
         log(f"submitted {pid} ({label})")
-        outputs = comfy_client.wait(pid, lambda ph, pr: log(f"  {ph}"), lambda: False, a.timeout_min * 60)
+        outputs = comfy_client.wait(pid, lambda ph, fr, eta: log(f"  {ph} ({fr:.0%}, ~{eta:.0f}s left)"),
+                                    lambda: False, a.timeout_min * 60)
         comfy_client.fetch_output(outputs, out)
         log(f"{label} DONE in {time.monotonic() - t0:.0f}s -> {out} ({os.path.getsize(out)} bytes)")
         vram(f"after {label}")

@@ -49,6 +49,7 @@ import git_cache
 import proc
 import venvs
 from heartbeat import Heartbeat
+import queue_status
 from runners import (asset_check, blender, frame_extract, hyperframes, matte,
                      python_script, reference_extract, remotion, video_gen,
                      video_split)
@@ -156,6 +157,11 @@ def main():
                 db.reclaim_stale()
             except Exception:
                 pass
+        if polls % 10 == 1:
+            try:
+                queue_status.annotate(log)   # "queued: N ahead, starts in ~M min" on waiting rows
+            except Exception as e:
+                log(f"queue annotate error (ignored): {str(e)[:120]}")
         try:
             job = db.claim_job()
             claim_err_logged = False

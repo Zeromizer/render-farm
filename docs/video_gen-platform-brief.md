@@ -55,10 +55,26 @@ ownership before filing the job, same as it does for `params.matte.source`.
 
 ## Read progress and the result
 
-Poll the row (or subscribe): `status` (`pending` → `processing` → `done` | `failed` | `canceled`),
-`phase` (`downloading inputs`, `starting comfyui`, `uploading inputs`, `queued`, `running`,
-`fetching`, `uploading`, `done`), `progress` 0-100 (coarse), `error`, `output_path`, `signed_url`,
-`signed_url_expires_at`, `heartbeat_at`. Cancel with `update ... set cancel_requested = true`.
+Poll the row or, better, subscribe to it (Supabase Realtime, `postgres_changes` on
+`farm_render_jobs` with `filter: id=eq.<farm_job_id>`) and render a live card. Columns:
+
+- `status`: `pending` → `processing` → `done` | `failed` | `canceled`.
+- `progress`: 0-100, monotonic within a job, real (sampling steps are read from ComfyUI).
+- `phase`: human-readable text, meant to be shown verbatim. Formats you will see (2026-09-06):
+  - while pending: `queued: 2 ahead, starts in ~15 min` or `queued: next up` (the worker
+    refreshes every ~30 s from the (priority, created_at) order and per-job estimates)
+  - generation: `generate: loading model - ~9 min left`, then `generate: sampling 3/8 - ~5 min left`,
+    `generate: decoding - ~30 s left`; with a resize pass the text ends `· job ~6 min - then upscale`
+  - upscale: `upscale 1/4: ...` per 3 s segment (SeedVR2) or `upscale: lanczos`
+  - turntable: `turntable half 1 (front to rear): sampling 5/8 - ~4 min left - job ~14 min - then half 2 + join`,
+    then `half 2 ...`, optional `... try 2` (backdrop drift, reseeded) or `repair rear ...` (mid-turn cut),
+    then `checking halves for cuts`, `joining pieces`, `remapping to constant speed + interpolating`, `encoding`
+  - `uploading`, then `done`.
+  The `~N min left` / `job ~N min` parts are estimates (ETA); parse `~(\d+) (s|min)` if you want a number.
+- `heartbeat_at`: refreshed every 15 s while the worker is alive; stale > 5 min = the worker died,
+  the farm reclaims the job.
+- `error`: set with `failed`. `output_path` + `signed_url` (7-day) with `done`. Cancel by setting
+  `cancel_requested = true`; the worker interrupts within ~3 s and the row ends `canceled`.
 
 On `done`: download `signed_url` (or sign `output_path` in `renders` yourself) and file the clip
 into the asset library the way matte outputs are filed (content-addressed into `assets`, an

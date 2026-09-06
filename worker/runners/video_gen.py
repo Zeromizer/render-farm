@@ -56,11 +56,12 @@ single-instance render worker for minutes; use `priority` on the row.
 """
 import os
 import time
+from datetime import datetime
 
 import db
 import proc
 from runners import gate_common
-from videogen import comfy_client, graphs, segments, tts_guard
+from videogen import comfy_client, estimate, graphs, segments, tts_guard
 from studio import turntable as turntable_flow
 
 _IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp")
@@ -77,20 +78,48 @@ def _fetch(ref, work_dir, name, log, allowed):
     return local
 
 
-def _run_prompt(jid, graph, label, heartbeat, cancel_check, deadline, dest, log):
-    """Submit one graph, wait for it, fetch its video to dest. Raises on cancel/timeout."""
-    db.set_phase(jid, f"{label}: queued", int(heartbeat.progress))
-    prompt_id = comfy_client.submit(graph)
-    log(f"comfyui prompt {prompt_id} ({label})")
+def _run_prompt(jid, graph, label, heartbeat, cancel_check, deadline, dest, log, prange=None, hint=None,
+                after_seconds=0.0, after_text=""):
+    """Submit one graph, wait for it, fetch its video to dest. Raises on cancel/timeout.
 
-    def on_status(phase, _progress):
-        db.set_phase(jid, f"{label}: {phase}"[:60])
+    prange         (lo, hi) job-progress percent this prompt spans (default: from the current
+                   heartbeat progress to 90)
+    hint           videogen.estimate.sampling_hint(...) for the ETA before the first step
+    after_seconds  work that still follows this prompt inside the job (for the "job ~N min" text)
+    after_text     e.g. " - then half 2 + join" appended to the phase
+    """
+    lo, hi = prange or (int(heartbeat.progress), 90)
 
-    remaining = max(30, int(deadline - time.monotonic()))
-    try:
-        outputs = comfy_client.wait(prompt_id, on_status, cancel_check, remaining)
-    except comfy_client._CanceledSignal:
-        raise proc.Canceled()
+    def on_status(phase, frac, eta):
+        heartbeat.progress = int(lo + (hi - lo) * max(0.0, min(1.0, frac)))
+        left = eta + after_seconds
+        text = f"{label}: {phase} - ~{estimate.fmt_eta(eta)} left"
+        if after_seconds:
+            text += f" - job ~{estimate.fmt_eta(left)}{after_text}"
+        db.set_phase(jid, text[:120], heartbeat.progress)
+
+    outputs = None
+    for attempt in (1, 2):
+        since = datetime.now().isoformat()
+        db.set_phase(jid, f"{label}: queued" + (" (retry)" if attempt > 1 else ""), lo)
+        prompt_id = comfy_client.submit(graph)
+        log(f"comfyui prompt {prompt_id} ({label})" + (" retry" if attempt > 1 else ""))
+        remaining = max(30, int(deadline - time.monotonic()))
+        try:
+            outputs = comfy_client.wait(prompt_id, on_status, cancel_check, remaining, hint=hint, since_iso=since)
+            break
+        except comfy_client._CanceledSignal:
+            raise proc.Canceled()
+        except comfy_client.ComfyError as exc:
+            # --fast-disk streams the checkpoint from disk; twice today a read failed the moment a
+            # freshly /free'd model was re-staged ("HostBuffer.read_file_slice failed",
+            # "hostbuf_file_reader_read failed"). A retry after a /free has always succeeded.
+            if attempt == 1 and "hostbuf" in str(exc).lower():
+                log(f"{label}: transient weight-stream read error, retrying once: {exc}")
+                comfy_client.free()
+                time.sleep(5)
+                continue
+            raise
     db.set_phase(jid, f"{label}: fetching")
     comfy_client.fetch_output(outputs, dest)
     if not os.path.exists(dest) or os.path.getsize(dest) == 0:
@@ -142,11 +171,12 @@ class _TurntableApi:
         self.work_dir = os.path.join(work_dir, "turntable")
         os.makedirs(self.work_dir, exist_ok=True)
         self._n, self._results = 0, {}
+        self.halves_done = 0   # the flow tells us via phase() text; we count finished generations
 
     def phase(self, text, progress=None):
         if progress is not None:
             self.heartbeat.progress = progress
-        db.set_phase(self.jid, text[:60], progress)
+        db.set_phase(self.jid, text[:120], progress)
 
     def check_cancel(self):
         if self.cancel_check():
@@ -162,8 +192,16 @@ class _TurntableApi:
         graph, meta = graphs.build("i2v", vg, names, f"video_gen/{self.jid}-tt{key}")
         self.log(f"turntable {label}: {meta['width']}x{meta['height']} {meta['length']}f seed={meta['seed']}")
         dest = os.path.join(self.work_dir, f"tt{key}.mp4")
-        self._results[key] = _run_prompt(self.jid, graph, f"turntable {label}"[:40], self.heartbeat, self.cancel_check,
-                                         self.deadline, dest, self.log)
+        # Progress: the two planned halves take 5-45 and 45-85; retries and repairs squeeze into 85-88.
+        n = self._n
+        prange = (5, 45) if n == 1 else (45, 85) if n == 2 else (85, 88)
+        halves_left = max(0, 2 - n)
+        after = halves_left * estimate.generation_seconds(vg, "i2v") + estimate.TURNTABLE_POST_S
+        after_text = (" - then half 2 + join" if halves_left == 1 else " - then join + 60 fps")
+        self._results[key] = _run_prompt(self.jid, graph, f"turntable {label}"[:48], self.heartbeat, self.cancel_check,
+                                         self.deadline, dest, self.log, prange=prange,
+                                         hint=estimate.sampling_hint(vg, "i2v"), after_seconds=after,
+                                         after_text=after_text)
         return key
 
     def wait(self, key, label):
@@ -259,8 +297,11 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
                 log(f"video_gen {mode} {meta['width']}x{meta['height']} {meta['length']}f (~{meta['seconds']}s) "
                     f"steps={meta['steps']} turbo={meta['turbo']} seed={meta['seed']} family={meta['family']}")
                 heartbeat.progress = 8
+                up_secs = estimate.upscale_seconds(upscale, meta["seconds"]) if upscale else 0.0
                 base_local = _run_prompt(jid, graph, "generate", heartbeat, cancel_check, deadline,
-                                         os.path.join(work_dir, "video_gen.mp4"), log)
+                                         os.path.join(work_dir, "video_gen.mp4"), log,
+                                         prange=(8, 55 if upscale else 90), hint=estimate.sampling_hint(p, mode),
+                                         after_seconds=up_secs, after_text=" - then upscale" if upscale else "")
                 out_local = base_local
                 if upscale:
                     # Free H3 before SeedVR2 so the two never share the 16 GB.

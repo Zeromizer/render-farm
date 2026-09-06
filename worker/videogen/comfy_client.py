@@ -10,6 +10,8 @@ resident, so the second job of the day skips the ~minute of model paging.
 free() after each job hands VRAM back to the TTS workers.
 """
 import json
+import re
+from datetime import datetime
 import os
 import subprocess
 import time
@@ -124,12 +126,45 @@ def _queue_position(prompt_id):
     return None
 
 
-def wait(prompt_id, on_status, cancel_check, timeout_seconds, poll=2.0):
-    """Block until /history has the prompt. on_status(phase, progress_0_100) is
-    called as things change; progress here is coarse (queue → running), the
-    fine-grained sampler steps come from the /progress websocket which we skip.
+_TQDM = re.compile(r"(\d+)/(\d+) \[(\d+):(\d+)<[^,]*,\s*([\d.]+)(s/it|it/s)\]")
+
+
+def sampling_progress(since_iso):
+    """(step, total, seconds_per_step) from the newest tqdm line ComfyUI logged
+    after since_iso (its /internal/logs/raw buffer keeps the last 300 lines,
+    each stamped with a local ISO time), or None before sampling starts. This
+    replaces the /ws progress socket, which would need a websocket client."""
+    try:
+        entries = httpx.get(_url("/internal/logs/raw"), timeout=5).json().get("entries") or []
+    except (httpx.HTTPError, ValueError):
+        return None
+    for e in reversed(entries):
+        if e.get("t", "") < since_iso:
+            break
+        m = _TQDM.search(e.get("m") or "")
+        if m:
+            rate = float(m.group(5))
+            if m.group(6) == "it/s":
+                rate = 1.0 / rate if rate else 0.0
+            return int(m.group(1)), int(m.group(2)), rate
+    return None
+
+
+def wait(prompt_id, on_status, cancel_check, timeout_seconds, poll=2.0, hint=None, since_iso=None):
+    """Block until /history has the prompt. on_status(phase, fraction, eta_seconds)
+    is called as things change: fraction is 0..1 through this prompt's work
+    (queue -> load -> sampling steps -> decode), eta_seconds the estimated time
+    left for it. `hint` = videogen.estimate.sampling_hint(...) seeds the ETA
+    before the first step; once ComfyUI logs a step the measured s/it wins.
     """
     started = time.monotonic()
+    since_iso = since_iso or datetime.now().isoformat()
+    hint = hint or {}
+    steps_hint = int(hint.get("steps") or 8)
+    step_s = float(hint.get("step_seconds") or 30.0)
+    load_s = float(hint.get("load_seconds") or 45.0)
+    tail_s = float(hint.get("tail_seconds") or 20.0)
+    total_est = load_s + steps_hint * step_s + tail_s
     last_phase = None
     unreachable_since = None
     while True:
@@ -163,15 +198,28 @@ def wait(prompt_id, on_status, cancel_check, timeout_seconds, poll=2.0):
                 raise ComfyError(f"comfyui execution error at {node}: {detail}")
             return entry.get("outputs") or {}
         pos = _queue_position(prompt_id)
-        if pos is None:
-            phase = "running"
-        elif pos == 0:
-            phase = "running"
+        if pos:
+            phase, frac, eta = f"queued ({pos} ahead)", 0.0, total_est
         else:
-            phase = f"queued ({pos} ahead)"
-        if phase != last_phase:
-            on_status(phase, 10 if phase.startswith("queued") else 15)
-            last_phase = phase
+            prog = sampling_progress(since_iso)
+            if prog is None:
+                # Loading the checkpoint (streamed from disk) and the text encoder.
+                frac = min(0.08, 0.08 * elapsed / max(load_s, 1))
+                eta = max(total_est - elapsed, tail_s + steps_hint * step_s)
+                phase = "loading model"
+            else:
+                i, n, rate = prog
+                rate = rate or step_s
+                if i >= n:
+                    phase, frac, eta = "decoding", 0.9, tail_s
+                else:
+                    phase = f"sampling {i}/{n}"
+                    frac = 0.1 + 0.8 * i / max(n, 1)
+                    eta = (n - i) * rate + tail_s
+        key = (phase, int(frac * 100))
+        if key != last_phase:
+            on_status(phase, frac, eta)
+            last_phase = key
         time.sleep(poll)
 
 
