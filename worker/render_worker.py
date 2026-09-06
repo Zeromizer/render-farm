@@ -50,7 +50,8 @@ import proc
 import venvs
 from heartbeat import Heartbeat
 from runners import (asset_check, blender, frame_extract, hyperframes, matte,
-                     python_script, reference_extract, remotion, video_split)
+                     python_script, reference_extract, remotion, video_gen,
+                     video_split)
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            "python": python_script.run,
@@ -66,12 +67,16 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # GPU alpha matting. Lives here rather than in the agent container
            # because that container has no GPU device request at all, where
            # rembg costs 9.5 s/frame on CPU.
-           "matte": matte.run}
+           "matte": matte.run,
+           # MiniMax H3 text/image/reference-to-video with native audio, via
+           # the headless ComfyUI at C:\ComfyUI. Replaces the remote Seedance
+           # credits for b-roll. Minutes per clip on a 16 GB card.
+           "video_gen": video_gen.run}
 
 # Engines that work on a storage object, not a repo — the clone is skipped and
 # repo_url is a "-" placeholder (the column is NOT NULL).
 NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split",
-            "matte"}
+            "matte", "video_gen"}
 
 
 def log(msg):

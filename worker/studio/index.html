@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>H3 Studio</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --panel2:#1f2330; --line:#2a2f3d; --text:#e6e8ee; --muted:#8b93a7; --accent:#5b9cff; --ok:#3ecf8e; --warn:#f5b84f; --bad:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, Segoe UI, sans-serif; }
+  header { display:flex; align-items:center; gap:18px; padding:12px 20px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5; }
+  header h1 { font-size:16px; margin:0; letter-spacing:.3px; }
+  header .tabs { display:flex; gap:4px; }
+  .tab { padding:7px 14px; border-radius:8px; cursor:pointer; color:var(--muted); border:1px solid transparent; }
+  .tab.active { color:var(--text); background:var(--panel2); border-color:var(--line); }
+  header .right { margin-left:auto; color:var(--muted); font-size:12px; }
+  main { padding:18px 20px 60px; max-width:1500px; margin:0 auto; }
+  section { display:none; } section.active { display:block; }
+  .grid2 { display:grid; grid-template-columns: minmax(0,1.4fr) minmax(0,1fr); gap:18px; }
+  @media (max-width:1000px){ .grid2 { grid-template-columns:1fr; } }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.8px; color:var(--muted); margin:0 0 12px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  input[type=text], input[type=number], textarea, select { width:100%; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:inherit; }
+  textarea { min-height:120px; resize:vertical; }
+  .row { display:grid; gap:12px; } .row.c2{grid-template-columns:1fr 1fr;} .row.c3{grid-template-columns:1fr 1fr 1fr;} .row.c4{grid-template-columns:repeat(4,1fr);}
+  .inline { display:flex; align-items:center; gap:8px; }
+  button { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 14px; cursor:pointer; font:inherit; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  button.small { padding:4px 9px; font-size:12px; }
+  button.danger:hover { border-color:var(--bad); color:var(--bad); }
+  button:disabled { opacity:.5; cursor:default; }
+  .drop { border:1px dashed var(--line); border-radius:10px; padding:10px; min-height:52px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; cursor:pointer; color:var(--muted); font-size:12px; }
+  .drop.over { border-color:var(--accent); color:var(--text); }
+  .chip { display:inline-flex; align-items:center; gap:6px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:4px 6px; color:var(--text); }
+  .chip img, .chip video { height:40px; width:64px; object-fit:cover; border-radius:4px; background:#000; }
+  .chip .x { cursor:pointer; color:var(--muted); padding:0 4px; } .chip .x:hover { color:var(--bad); }
+  .hint { color:var(--muted); font-size:12px; margin-top:6px; }
+  .lib { display:grid; grid-template-columns:repeat(auto-fill, minmax(330px, 1fr)); gap:14px; }
+  .item { background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
+  .item .media { position:relative; background:#000; aspect-ratio:16/9; display:flex; align-items:center; justify-content:center; }
+  .item .media img, .item .media video { width:100%; height:100%; object-fit:contain; display:block; }
+  .item .media .play { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:46px; color:#fff; text-shadow:0 2px 12px #000; opacity:.85; }
+  .item .media .ph { color:var(--muted); font-size:12px; text-align:center; padding:20px; }
+  .item .body { padding:10px 12px 12px; display:flex; flex-direction:column; gap:6px; }
+  .item .title { font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .item .meta { color:var(--muted); font-size:12px; }
+  .item .prompt { color:var(--muted); font-size:12px; max-height:3.9em; overflow:hidden; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; font-weight:600; border:1px solid var(--line); }
+  .pill.done{color:var(--ok);border-color:var(--ok);} .pill.processing{color:var(--accent);border-color:var(--accent);} .pill.pending{color:var(--muted);} .pill.failed,.pill.canceled{color:var(--bad);border-color:var(--bad);}
+  .bar { height:4px; background:var(--panel2); border-radius:2px; overflow:hidden; } .bar i { display:block; height:100%; background:var(--accent); }
+  .actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+  .err { color:var(--bad); font-size:12px; white-space:pre-wrap; }
+  .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
+  .toolbar input[type=text]{ width:260px; } .toolbar select { width:auto; }
+  dialog { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:18px; width:460px; max-width:95vw; }
+  dialog::backdrop { background:rgba(0,0,0,.6); }
+  dialog h3 { margin:0 0 6px; font-size:15px; }
+  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--panel2); border:1px solid var(--line); padding:10px 16px; border-radius:10px; display:none; z-index:20; }
+  code { background:var(--panel2); padding:1px 5px; border-radius:4px; font-size:12px; }
+  details summary { cursor:pointer; color:var(--muted); font-size:12px; }
+  .log { font:11px/1.4 ui-monospace, Consolas, monospace; color:var(--muted); white-space:pre-wrap; max-height:120px; overflow:auto; }
+  .steps { color:var(--muted); font-size:12px; line-height:1.6; }
+</style>
+</head>
+<body>
+<header>
+  <h1>H3 Studio</h1>
+  <div class="tabs">
+    <div class="tab active" data-tab="generate">Generate</div>
+    <div class="tab" data-tab="turntable">Car turntable</div>
+    <div class="tab" data-tab="library">Library <span id="libcount"></span></div>
+  </div>
+  <div class="right" id="status">connecting…</div>
+</header>
+
+<main>
+<!-- ============================================================ GENERATE -->
+<section id="generate" class="active">
+  <div class="grid2">
+    <div class="card">
+      <h2>Prompt</h2>
+      <textarea id="g_prompt" placeholder="Describe the subject, the motion, the camera move and the sound. H3 generates synced audio."></textarea>
+      <div class="row c4">
+        <div><label>Mode</label><select id="g_mode"><option value="auto">auto</option><option value="t2v">text to video</option><option value="i2v">image to video</option><option value="r2v">reference to video</option></select></div>
+        <div><label>Duration (s)</label><input type="number" id="g_duration" min="1" max="15" step="1" value="5"></div>
+        <div><label>Resolution</label><select id="g_res"><option>480p</option><option>768p</option></select></div>
+        <div><label>Ratio</label><select id="g_ratio"><option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option><option>3:4</option><option>21:9</option></select></div>
+      </div>
+      <div class="row c4">
+        <div><label>Seed</label><div class="inline"><input type="number" id="g_seed" value="0"><button class="small" onclick="$('g_seed').value=Math.floor(Math.random()*1e6)">🎲</button></div></div>
+        <div><label>Turbo</label><select id="g_turbo"><option value="1">on (8 / 4 steps)</option><option value="0">off (20 steps, ~2.5x slower)</option></select></div>
+        <div><label>Steps override</label><input type="number" id="g_steps" placeholder="auto"></div>
+        <div><label>Priority</label><input type="number" id="g_priority" value="50"></div>
+      </div>
+      <div class="hint">768p works up to 10 s on this card; 15 s at 768p runs out of memory. 480p ≈ 90 s per 3 s; 768p ≈ 5–9 min per 10 s.</div>
+      <label>Label (optional)</label><input type="text" id="g_label" placeholder="shown in the library">
+    </div>
+    <div>
+      <div class="card">
+        <h2>Inputs</h2>
+        <label>First frame (i2v)</label><div class="drop" id="d_first" data-kind="image" data-multi="0">drop or click: png / jpg</div>
+        <label>Last frame (i2v)</label><div class="drop" id="d_last" data-kind="image" data-multi="0">drop or click: png / jpg</div>
+        <label>Reference images (r2v, up to 9)</label><div class="drop" id="d_refimg" data-kind="image" data-multi="9">drop or click</div>
+        <label>Reference videos (r2v, up to 3, 2–15 s)</label><div class="drop" id="d_refvid" data-kind="video" data-multi="3">drop or click</div>
+        <label>Reference audio (r2v, up to 3)</label><div class="drop" id="d_refaud" data-kind="audio" data-multi="3">drop or click</div>
+        <label>Reference image size</label><select id="g_refsize"><option value="">match (default)</option><option value="max">max (better badges / text, slower)</option></select>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h2>Upscale after generation</h2>
+        <div id="up_gen"></div>
+      </div>
+      <div style="margin-top:14px; display:flex; gap:10px; align-items:center">
+        <button class="primary" id="g_submit">Generate</button>
+        <span class="hint" id="g_msg"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =========================================================== TURNTABLE -->
+<section id="turntable">
+  <div class="grid2">
+    <div class="card">
+      <h2>Car turntable · anchored 2 × 180°</h2>
+      <div class="row c2">
+        <div><label>Front photo (straight on)</label><div class="drop" id="d_front" data-kind="image" data-multi="0">drop or click</div></div>
+        <div><label>Rear photo (straight on)</label><div class="drop" id="d_rear" data-kind="image" data-multi="0">drop or click</div></div>
+      </div>
+      <div class="hint">Same scale and framing, plain background. The photos become the anchor frames, so the 360 passes through exactly these two images and loops.</div>
+      <label>Car (one line)</label><input type="text" id="t_car" placeholder="A light teal-green metallic Proton e.MAS 7 SUV">
+      <label>Details to hold (badge, plate text…)</label><input type="text" id="t_details" placeholder="Front badge is the Proton tiger emblem; the number plates read exactly e.MAS 7.">
+      <div class="row c4">
+        <div><label>Seconds per half</label><input type="number" id="t_spf" value="10" min="4" max="10"></div>
+        <div><label>Resolution</label><select id="t_res"><option>768p</option><option>480p</option></select></div>
+        <div><label>Seed</label><div class="inline"><input type="number" id="t_seed" value="21"><button class="small" onclick="$('t_seed').value=Math.floor(Math.random()*1e6)">🎲</button></div></div>
+        <div><label>Priority</label><input type="number" id="t_priority" value="50"></div>
+      </div>
+      <div class="row c3">
+        <div><label>Output fps</label><select id="t_fps"><option>60</option><option>48</option><option>30</option><option>24</option></select></div>
+        <div><label>Output short edge</label><select id="t_short"><option>1080</option><option>768</option><option>1440</option></select></div>
+        <div><label>Label</label><input type="text" id="t_label" placeholder="optional"></div>
+      </div>
+      <div style="margin-top:14px; display:flex; gap:10px; align-items:center">
+        <button class="primary" id="t_submit">Start turntable</button>
+        <span class="hint" id="t_msg"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>What happens</h2>
+      <div class="steps">
+        1. Both photos are padded to the generation canvas (no crop) in their own background colour.<br>
+        2. Half 1: image-to-video from the front photo to the rear photo. Half 2: rear photo back to the front photo. Seams are pixel-exact.<br>
+        3. Each half is checked for a mid-turn “teleport”. If found, the clean part is kept and the rest is regenerated from its last clean frame.<br>
+        4. Pieces are joined on their shared frames, time-remapped to constant speed (the model eases at anchors), and interpolated with RIFE to the output fps.<br><br>
+        Cost at 768p on the 4080: about 9 min per half plus 5 min per repair, then under a minute of post. The 24 fps pieces are kept next to the result.<br><br>
+        Then key the background out downstream: the backdrop is flat, there is no floor contact shadow.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================= LIBRARY -->
+<section id="library">
+  <div class="toolbar">
+    <input type="text" id="l_search" placeholder="search prompt / label">
+    <select id="l_kind"><option value="">all kinds</option><option value="generate">generate</option><option value="upscale">upscale</option><option value="interpolate">60 fps</option><option value="turntable">turntable</option></select>
+    <select id="l_status"><option value="">all statuses</option><option value="processing">running</option><option value="pending">queued</option><option value="done">done</option><option value="failed">failed</option></select>
+    <span class="hint" id="l_dir"></span>
+  </div>
+  <div class="lib" id="lib"></div>
+</section>
+</main>
+
+<!-- dialogs -->
+<dialog id="dlg_up">
+  <h3>Upscale</h3>
+  <div class="hint" id="dlg_up_src"></div>
+  <div id="up_dlg"></div>
+  <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:14px"><button onclick="$('dlg_up').close()">Cancel</button><button class="primary" id="dlg_up_go">Queue upscale</button></div>
+</dialog>
+<dialog id="dlg_fps">
+  <h3>Interpolate (RIFE)</h3>
+  <div class="hint" id="dlg_fps_src"></div>
+  <div class="row c2">
+    <div><label>Target fps</label><select id="f_fps"><option>60</option><option>48</option><option>30</option><option>120</option></select></div>
+    <div><label>Short edge after</label><select id="f_short"><option value="">keep</option><option>1080</option><option>1440</option><option>2160</option></select></div>
+  </div>
+  <div class="hint">Runs locally on the PC in seconds. Best on smooth, predictable motion.</div>
+  <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:14px"><button onclick="$('dlg_fps').close()">Cancel</button><button class="primary" id="dlg_fps_go">Run</button></div>
+</dialog>
+<dialog id="dlg_info"><h3>Details</h3><pre class="log" id="dlg_info_body" style="max-height:60vh"></pre><div style="text-align:right; margin-top:10px"><button onclick="$('dlg_info').close()">Close</button></div></dialog>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = { items: [], config: null, uploads: {} };
+const UP_HTML = (pfx) => `
+  <div class="row c3">
+    <div><label>Method</label><select id="${pfx}_method"><option value="none">none</option><option value="lanczos">lanczos (default, instant)</option><option value="seedvr2">SeedVR2 (restoration, slow)</option></select></div>
+    <div><label>Target</label><select id="${pfx}_target"><option value="short:1080">short edge 1080</option><option value="short:1440">short edge 1440</option><option value="short:2160">short edge 2160</option><option value="factor:2">× 2</option><option value="factor:1.5">× 1.5</option><option value="factor:3">× 3</option></select></div>
+    <div><label>Blend (SeedVR2 share)</label><input type="number" id="${pfx}_blend" value="0.5" min="0" max="1" step="0.05"></div>
+  </div>
+  <div class="row c2">
+    <div><label>Colour correction (SeedVR2)</label><select id="${pfx}_color"><option>wavelet</option><option>lab</option><option>adain</option><option>none</option></select></div>
+    <div><label>Frames per chunk (SeedVR2)</label><input type="number" id="${pfx}_fpc" placeholder="auto (4n+1)" step="4"></div>
+  </div>
+  <div class="hint">Lanczos is faithful and free. SeedVR2 adds detail but over-etches clean 768p footage at full strength, hence the 50/50 blend; ~55 s per second of video, 1080p ceiling on 16 GB.</div>`;
+$('up_gen').innerHTML = UP_HTML('ug');
+$('up_dlg').innerHTML = UP_HTML('ud');
+
+function readUpscale(pfx) {
+  const m = $(`${pfx}_method`).value;
+  if (m === 'none') return null;
+  const [kind, val] = $(`${pfx}_target`).value.split(':');
+  const u = { method: m };
+  if (kind === 'short') u.shorter_size = +val; else u.factor = +val;
+  if (m === 'seedvr2') {
+    u.blend = +$(`${pfx}_blend`).value; u.color_correction = $(`${pfx}_color`).value;
+    if ($(`${pfx}_fpc`).value) u.frames_per_chunk = +$(`${pfx}_fpc`).value;
+  }
+  return u;
+}
+
+// ---------------------------------------------------------------- tabs
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => showTab(t.dataset.tab));
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('section').forEach(s => s.classList.toggle('active', s.id === name));
+  location.hash = name;
+}
+if (location.hash) showTab(location.hash.slice(1));
+
+function toast(msg, ms = 2600) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', ms); }
+async function api(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const j = await r.json();
+  if (!r.ok || j.error) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+// ------------------------------------------------------------- uploads
+document.querySelectorAll('.drop').forEach(d => {
+  state.uploads[d.id] = [];
+  const inp = document.createElement('input'); inp.type = 'file'; inp.style.display = 'none';
+  inp.accept = { image: 'image/*', video: 'video/*', audio: 'audio/*' }[d.dataset.kind];
+  inp.multiple = d.dataset.multi !== '0';
+  d.appendChild(inp);
+  d.onclick = e => { if (e.target === d || e.target.tagName === 'SPAN') inp.click(); };
+  inp.onchange = () => uploadFiles(d, inp.files);
+  d.ondragover = e => { e.preventDefault(); d.classList.add('over'); };
+  d.ondragleave = () => d.classList.remove('over');
+  d.ondrop = e => { e.preventDefault(); d.classList.remove('over'); uploadFiles(d, e.dataTransfer.files); };
+  renderDrop(d);
+});
+async function uploadFiles(d, files) {
+  const max = d.dataset.multi === '0' ? 1 : +d.dataset.multi;
+  for (const f of files) {
+    if (state.uploads[d.id].length >= max) state.uploads[d.id].shift();
+    try {
+      d.classList.add('over');
+      const r = await fetch('/api/upload', { method: 'POST', headers: { 'X-Filename': encodeURIComponent(f.name) }, body: f });
+      const j = await r.json(); if (j.error) throw new Error(j.error);
+      state.uploads[d.id].push(j);
+    } catch (e) { toast('upload failed: ' + e.message, 5000); }
+    finally { d.classList.remove('over'); }
+  }
+  renderDrop(d);
+}
+function renderDrop(d) {
+  const list = state.uploads[d.id];
+  const inp = d.querySelector('input');
+  d.innerHTML = list.length ? '' : `<span>drop or click: ${d.dataset.kind}${d.dataset.multi !== '0' ? ' (up to ' + d.dataset.multi + ')' : ''}</span>`;
+  list.forEach((u, i) => {
+    const c = document.createElement('div'); c.className = 'chip';
+    c.innerHTML = (u.kind === 'image' ? `<img src="${u.url}">` : u.kind === 'video' ? `<video src="${u.url}" muted></video>` : '🔊') + `<span>${u.name.slice(0, 22)}</span><span class="x" title="remove">✕</span>`;
+    c.querySelector('.x').onclick = e => { e.stopPropagation(); list.splice(i, 1); renderDrop(d); };
+    d.appendChild(c);
+  });
+  d.appendChild(inp);
+}
+const refs = id => state.uploads[id].map(u => ({ bucket: u.bucket, path: u.path, local: u.local, url: u.url, name: u.name }));
+
+// ------------------------------------------------------------ generate
+$('g_submit').onclick = async () => {
+  const p = {
+    prompt: $('g_prompt').value, mode: $('g_mode').value, duration_s: +$('g_duration').value, resolution: $('g_res').value,
+    ratio: $('g_ratio').value, seed: +$('g_seed').value, turbo: $('g_turbo').value === '1', priority: +$('g_priority').value,
+    label: $('g_label').value, upscale: readUpscale('ug'),
+  };
+  if ($('g_steps').value) p.steps = +$('g_steps').value;
+  if ($('g_refsize').value) p.ref_image_size = $('g_refsize').value;
+  if (refs('d_first')[0]) p.first_frame = refs('d_first')[0];
+  if (refs('d_last')[0]) p.last_frame = refs('d_last')[0];
+  if (refs('d_refimg').length) p.ref_images = refs('d_refimg');
+  if (refs('d_refvid').length) p.ref_videos = refs('d_refvid');
+  if (refs('d_refaud').length) p.ref_audios = refs('d_refaud');
+  $('g_submit').disabled = true; $('g_msg').textContent = 'queueing…';
+  try { await api('/api/generate', p); toast('queued'); showTab('library'); refresh(); }
+  catch (e) { $('g_msg').textContent = e.message; }
+  finally { $('g_submit').disabled = false; $('g_msg').textContent = ''; }
+};
+
+$('t_submit').onclick = async () => {
+  const p = {
+    front: refs('d_front')[0], rear: refs('d_rear')[0], car: $('t_car').value, details: $('t_details').value,
+    seconds_per_half: +$('t_spf').value, resolution: $('t_res').value, seed: +$('t_seed').value, priority: +$('t_priority').value,
+    fps: +$('t_fps').value, shorter_size: +$('t_short').value, label: $('t_label').value,
+  };
+  $('t_submit').disabled = true;
+  try { await api('/api/turntable', p); toast('turntable started'); showTab('library'); refresh(); }
+  catch (e) { $('t_msg').textContent = e.message; }
+  finally { $('t_submit').disabled = false; }
+};
+
+// ------------------------------------------------------------- library
+let current = null;
+function fmt(it) {
+  const i = it.info; const parts = [it.kind];
+  if (i) parts.push(`${i.width}×${i.height}`, `${i.fps} fps`, `${i.duration} s`);
+  const p = it.params || {};
+  if (it.kind === 'generate') parts.push(p.resolution || '', p.mode || 'auto', p.upscale ? `→ ${p.upscale.method}` : '');
+  if (it.kind === 'upscale' && p.upscale) parts.push(p.upscale.method, p.upscale.shorter_size ? p.upscale.shorter_size + 'p' : '×' + p.upscale.factor, p.upscale.blend != null ? 'blend ' + p.upscale.blend : '');
+  parts.push(new Date(it.created * 1000).toLocaleString());
+  return parts.filter(Boolean).join(' · ');
+}
+function card(it) {
+  const el = document.createElement('div'); el.className = 'item'; el.dataset.id = it.id;
+  const running = !['done', 'failed', 'canceled'].includes(it.status);
+  const media = it.video
+    ? `<div class="media"><img src="/media/${it.thumb}?v=${it.finished | 0}"><div class="play">▶</div></div>`
+    : `<div class="media"><div class="ph">${running ? it.phase || it.status : (it.error ? 'no output' : '')}</div></div>`;
+  el.innerHTML = `${media}<div class="body">
+    <div class="title" title="${esc(it.label || it.prompt)}">${esc(it.label || it.prompt || it.id)}</div>
+    <div class="meta">${esc(fmt(it))}</div>
+    <div class="inline"><span class="pill ${it.status}">${it.status}</span><span class="meta">${running ? esc(it.phase || '') : ''}</span></div>
+    ${running ? `<div class="bar"><i style="width:${it.progress || 0}%"></i></div>` : ''}
+    ${it.error ? `<div class="err">${esc(it.error)}</div>` : ''}
+    ${it.prompt && it.kind !== 'turntable' ? `<div class="prompt">${esc(it.prompt)}</div>` : ''}
+    <div class="actions"></div></div>`;
+  const a = el.querySelector('.actions');
+  const btn = (t, fn, cls = '') => { const b = document.createElement('button'); b.className = 'small ' + cls; b.textContent = t; b.onclick = fn; a.appendChild(b); return b; };
+  if (it.video) {
+    btn('Upscale', () => openUpscale(it));
+    if (state.config && state.config.rife) btn('60 fps', () => openFps(it));
+    btn('Download', () => { const l = document.createElement('a'); l.href = `/media/${it.video}`; l.download = `${(it.label || it.id).replace(/[^\w.-]+/g, '_')}.mp4`; l.click(); });
+  }
+  if (it.prompt && it.kind !== 'turntable') btn('Reuse', () => reuse(it));
+  btn('Details', () => { $('dlg_info_body').textContent = JSON.stringify({ ...it, log: undefined }, null, 1) + '\n\n' + (it.log || []).join('\n'); $('dlg_info').showModal(); });
+  if (running) btn('Cancel', async () => { await api('/api/cancel', { item_id: it.id }); toast('cancel requested'); }, 'danger');
+  else btn('Delete', async () => { if (confirm('Delete this item and its files?')) { await api('/api/delete', { item_id: it.id }); refresh(); } }, 'danger');
+  (it.pieces || []).forEach((p, i) => { const b = document.createElement('a'); b.href = `/media/${p}`; b.target = '_blank'; b.className = 'meta'; b.textContent = i < it.pieces.length - 1 ? `piece ${i + 1}` : '24 fps join'; b.style.alignSelf = 'center'; a.appendChild(b); });
+  const play = el.querySelector('.play');
+  if (play) play.onclick = () => { const m = el.querySelector('.media'); m.innerHTML = `<video src="/media/${it.video}" controls autoplay loop playsinline></video>`; };
+  return el;
+}
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const sig = it => JSON.stringify([it.status, it.phase, it.progress, it.error, it.video, it.finished, it.label, (it.pieces || []).length]);
+function renderLib() {
+  const q = $('l_search').value.toLowerCase(), k = $('l_kind').value, s = $('l_status').value;
+  const lib = $('lib');
+  const want = state.items.filter(it => (!k || it.kind === k) && (!s || it.status === s) && (!q || (it.prompt + ' ' + it.label).toLowerCase().includes(q)));
+  const have = {}; lib.querySelectorAll('.item').forEach(e => have[e.dataset.id] = e);
+  const keep = new Set(want.map(i => i.id));
+  Object.entries(have).forEach(([id, e]) => { if (!keep.has(id)) e.remove(); });
+  let prev = null;
+  want.forEach(it => {
+    let e = have[it.id];
+    if (!e || e.dataset.sig !== sig(it)) {
+      // keep a playing video alive when only progress text changed
+      const playing = e && e.querySelector('video');
+      const n = card(it); n.dataset.sig = sig(it);
+      if (playing && it.video) n.querySelector('.media').replaceWith(e.querySelector('.media'));
+      if (e) e.replaceWith(n); else lib.insertBefore(n, prev ? prev.nextSibling : lib.firstChild);
+      e = n;
+    }
+    prev = e;
+  });
+  $('libcount').textContent = state.items.length ? `(${state.items.length})` : '';
+}
+['l_search', 'l_kind', 'l_status'].forEach(id => $(id).oninput = renderLib);
+
+function reuse(it) {
+  const p = it.params || {};
+  $('g_prompt').value = it.prompt || ''; $('g_mode').value = p.mode || 'auto'; $('g_duration').value = p.duration_s || 5;
+  $('g_res').value = p.resolution || '480p'; $('g_ratio').value = p.ratio || '16:9'; $('g_seed').value = p.seed || 0;
+  $('g_turbo').value = p.turbo === false ? '0' : '1'; $('g_steps').value = p.steps || ''; $('g_refsize').value = p.ref_image_size || '';
+  showTab('generate'); toast('prompt loaded (re-add any input files)');
+}
+function openUpscale(it) {
+  current = it; $('dlg_up_src').textContent = `${it.label || it.id} · ${it.info ? it.info.width + '×' + it.info.height : ''}`;
+  $('ud_method').value = 'lanczos'; $('dlg_up').showModal();
+}
+$('dlg_up_go').onclick = async () => {
+  const u = readUpscale('ud'); if (!u) return toast('pick a method');
+  try { await api('/api/upscale', { item_id: current.id, upscale: u }); $('dlg_up').close(); toast('upscale queued'); refresh(); }
+  catch (e) { toast(e.message, 5000); }
+};
+function openFps(it) { current = it; $('dlg_fps_src').textContent = `${it.label || it.id} · ${it.info ? it.info.fps + ' fps, ' + it.info.frames + ' frames' : ''}`; $('dlg_fps').showModal(); }
+$('dlg_fps_go').onclick = async () => {
+  try { await api('/api/interpolate', { item_id: current.id, fps: +$('f_fps').value, shorter_size: $('f_short').value || null }); $('dlg_fps').close(); toast('interpolating'); refresh(); }
+  catch (e) { toast(e.message, 5000); }
+};
+
+// ------------------------------------------------------------- polling
+async function refresh() {
+  try {
+    const r = await fetch('/api/state'); const j = await r.json();
+    state.items = j.items; state.config = j.config;
+    const running = j.items.filter(i => !['done', 'failed', 'canceled'].includes(i.status)).length;
+    $('status').textContent = `${running ? running + ' running · ' : ''}${j.items.length} items · ${j.config.rife ? 'RIFE ready' : 'RIFE missing'}`;
+    $('l_dir').textContent = j.config.studio_dir;
+    renderLib();
+  } catch (e) { $('status').textContent = 'server unreachable'; }
+}
+refresh(); setInterval(refresh, 4000);
+</script>
+</body>
+</html>

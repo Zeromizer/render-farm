@@ -196,3 +196,62 @@ the 15-minute job timeout.
   (seed once with a manual `git clone`).
 - First Remotion render of a new repo downloads Chromium — takes minutes.
 - One worker process only: it serializes the single GPU.
+
+## video_gen engine: MiniMax H3 (added 2026-09-06)
+
+Local AI video with native audio on the 4080, replacing remote Seedance
+credits for b-roll. `engine: "video_gen"` needs no repo (`repo_url` is `-`);
+everything lives in `params.video_gen` (see `worker/runners/video_gen.py`
+docstring): `prompt` (required), `mode` t2v|i2v|r2v, `duration_s` 1-15,
+`resolution` 480p|768p, `ratio`, `seed`, `turbo`, `steps`, and
+`{bucket, path}` inputs `first_frame` / `last_frame` (i2v) or
+`ref_images[]` / `ref_videos[]` / `ref_audios[]` (r2v). Output is one mp4 at
+`outputs/<job_id>.mp4` like every other engine.
+
+The generation runs in a headless ComfyUI at `C:\ComfyUI` (own venv, torch
+2.8.0+cu128, official Comfy-Org H3 safetensors: pruned fp8 FL2VA/Ref2VA,
+NVFP4 Qwen3-VL text encoder, both VAEs, turbo LoRAs). The worker starts it
+on demand via `C:\ComfyUI\run-headless.bat` (`--fast-disk --reserve-vram 0.9`,
+mandatory on a 31 GB RAM / 16 GB VRAM box), pauses the TTS workers for the
+duration (`VIDEO_GEN_PAUSE_TTS=0` to disable), and calls `/free` afterwards.
+Expect minutes per clip; a video job blocks the single render worker, so
+set `priority` accordingly. 480p is the sane default on this card.
+
+Optional resize pass (`upscale` object, or `mode: "upscale"` + `source` for
+an existing clip): `method` `lanczos` (default: plain ffmpeg, instant, no
+GPU) or `seedvr2` (3B restoration model), `factor` or `shorter_size`. SeedVR2
+extras: `color_correction` (wavelet default), `frames_per_chunk`,
+`temporal_overlap`, `seed`, `blend` (share of SeedVR2 vs lanczos, default
+0.5: raw SeedVR2 over-etches clean H3 768p footage), `segment_frames`. Long
+SeedVR2 clips run in 73-frame segments (RAM ceiling) and are re-joined with
+the source audio; the base clip is kept at `outputs/<job_id>-base.mp4`.
+SeedVR2 output ceiling is ~2 MP/frame (1080p), so 768p sources use
+`shorter_size: 1080`; ~150-165 s per 3 s segment on the 4080.
+
+**H3 Studio** (`worker\start-studio.bat` -> http://127.0.0.1:8790, added
+2026-09-06): a local web UI over the same queue. Prompt H3 with every knob
+(mode, duration, resolution, ratio, seed, turbo, first/last frame, reference
+images/videos/audio, reference size) plus the resize pass; a library of every
+result with thumbnails, inline playback, params, upscale (lanczos / SeedVR2 +
+blend), 60 fps (RIFE, local), reuse, download, delete, cancel; and the **car
+turntable** flow (`worker/studio/turntable.py`): two photos (front, rear) ->
+two anchored 180-degree image-to-video halves -> automatic reseed of a half
+whose scene drifts off the backdrop (grey floor / overhead camera, seen with
+seed 7) and repair of a half that teleports mid-turn -> seam-exact join -> constant-speed time remap ->
+RIFE to 60 fps. Library lives in `STUDIO_DIR` (default
+`%USERPROFILE%\Videos\H3-Studio`), RIFE is the portable rife-ncnn-vulkan at
+`RIFE_DIR` (default `C:\Coding	ools
+ife-ncnn-vulkan`). Stdlib server,
+binds 127.0.0.1 only; `studio\import_clip.py` adds existing mp4s.
+
+`mode: "turntable"` (added 2026-09-06): the car 360 as one farm job, same
+flow the studio uses (`worker/studio/turntable.py`, run in-process against
+ComfyUI). `params.video_gen.turntable = {front, rear, car, details,
+seconds_per_half, resolution, seed, fps, shorter_size}`; result is the 60 fps
+loop plus `outputs/<id>-piece1..N.mp4` and `-joined24.mp4` sidecars. 25-45
+GPU minutes; file with `timeout_minutes` 150. Exposed in the MCP
+`submit_render_job` as `video_gen.turntable`.
+
+PC-side checks without Supabase: `worker\videogen\smoke.py` (t2v/i2v/r2v
+flags, prints VRAM before/after and wall time). Queue path:
+`worker\insert_test_job.py --engine video_gen --params "{\"prompt\": \"...\"}"`.

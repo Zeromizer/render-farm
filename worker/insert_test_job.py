@@ -1,4 +1,4 @@
-﻿"""Insert a test render job directly (PC-side smoke test, bypasses the MCP).
+"""Insert a test render job directly (PC-side smoke test, bypasses the MCP).
 
 Examples:
   python insert_test_job.py --engine remotion --repo https://github.com/user/proj --composition Demo
@@ -15,8 +15,11 @@ import db  # noqa: E402
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", required=True, choices=["remotion", "blender"])
-    ap.add_argument("--repo", required=True)
+    ap.add_argument("--engine", required=True, choices=["remotion", "blender", "video_gen"])
+    ap.add_argument("--repo", help="git URL (not used by video_gen)")
+    ap.add_argument("--params", help="video_gen: JSON for params.video_gen (prompt, mode, duration_s, ...)")
+    ap.add_argument("--timeout-minutes", type=int)
+    ap.add_argument("--priority", type=int)
     ap.add_argument("--ref", default="main")
     ap.add_argument("--composition")
     ap.add_argument("--project-dir")
@@ -43,14 +46,25 @@ def main():
         params["props"] = json.loads(args.props)
     if args.assets:
         params["assets"] = json.loads(args.assets)
+    if args.engine == "video_gen":
+        if not args.params:
+            ap.error("video_gen needs --params '<json>' with at least a prompt")
+        params = {"video_gen": json.loads(args.params)}
+    elif not args.repo:
+        ap.error("--repo is required for this engine")
 
-    row = db.sb.table("farm_render_jobs").insert({
+    row = {
         "status": "pending",
         "engine": args.engine,
-        "repo_url": args.repo,
+        "repo_url": args.repo or "-",
         "git_ref": args.ref,
         "params": params,
-    }).execute().data[0]
+    }
+    if args.timeout_minutes:
+        row["timeout_minutes"] = args.timeout_minutes
+    if args.priority is not None:
+        row["priority"] = args.priority
+    row = db.sb.table("farm_render_jobs").insert(row).execute().data[0]
     print(f"inserted job {row['id']}")
 
 

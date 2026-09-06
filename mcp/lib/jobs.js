@@ -1,8 +1,9 @@
 ﻿import { sb } from "./supabase.js";
 
-export async function insertJob({ engine, repo_url, git_ref, params, timeout_minutes }) {
+export async function insertJob({ engine, repo_url, git_ref, params, timeout_minutes, priority }) {
   const row = { status: "pending", engine, repo_url, git_ref: git_ref || "main", params };
   if (timeout_minutes) row.timeout_minutes = timeout_minutes;
+  if (priority !== undefined && priority !== null) row.priority = priority;
   const { data, error } = await sb.from("farm_render_jobs").insert(row).select().single();
   if (error) throw new Error(error.message);
   return data;

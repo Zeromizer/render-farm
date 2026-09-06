@@ -35,5 +35,21 @@ WORK_MAX_AGE_DAYS = 2
 ASSET_CACHE_MAX_AGE_DAYS = int(os.environ.get("ASSET_CACHE_MAX_AGE_DAYS", "30"))
 SIGNED_URL_SECONDS = 7 * 24 * 3600
 
+# --- video_gen (MiniMax H3 via headless ComfyUI) ---
+COMFYUI_DIR = os.environ.get("COMFYUI_DIR", r"C:\ComfyUI")
+COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
+# Pause the OmniVoice/Chatterbox TTS workers (6-8 GB VRAM) for the duration
+# of a video job; "0" to leave them alone.
+VIDEO_GEN_PAUSE_TTS = os.environ.get("VIDEO_GEN_PAUSE_TTS", "1") not in ("0", "false", "no")
+TTS_STUDIO_DIR = os.environ.get("TTS_STUDIO_DIR", r"C:\Coding\Voice Output")
+VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES = int(os.environ.get("VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES", "60"))
+
 for _d in (REPOS_DIR, WORK_DIR, ASSETS_DIR):
     os.makedirs(_d, exist_ok=True)
+
+# Studio: local web UI for video_gen (worker/studio/server.py, start-studio.bat).
+# Library, uploads and turntable work dirs live under STUDIO_DIR; binds 127.0.0.1 only.
+STUDIO_DIR = os.environ.get("STUDIO_DIR") or os.path.join(os.path.expanduser("~"), "Videos", "H3-Studio")
+STUDIO_PORT = int(os.environ.get("STUDIO_PORT", "8790"))
+# Portable rife-ncnn-vulkan (frame interpolation) for the 60 fps option and the turntable flow.
+RIFE_DIR = os.environ.get("RIFE_DIR", r"C:\Coding\tools\rife-ncnn-vulkan")
