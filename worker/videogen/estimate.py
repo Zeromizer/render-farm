@@ -8,7 +8,8 @@ instead of a spinner. Calibrated on the RTX 4080 SUPER 2026-09-06:
   decode + save    ~1.2e-7 s per pixel-frame (768p 10 s -> ~30 s)
   SeedVR2          ~55 s per second of video at 1080p (3 s segment ~165 s)
   lanczos          ~10 s
-  turntable        2 halves + ~90 s of post; retries/repairs add a half each
+  turntable        one generation per segment (2 halves or 4 quarters, minus reused
+                   ones) + ~90 s of post; retries/repairs add a segment each
 
 Everything here is an estimate for progress text; the runner reports real
 step counts from ComfyUI's log once sampling starts.
@@ -71,9 +72,14 @@ def job_seconds(params):
                 else "r2v" if vg.get("ref_images") or vg.get("ref_videos") or vg.get("ref_audios") else "t2v")
     if mode == "turntable":
         tt = vg.get("turntable") or {}
-        half = {"duration_s": tt.get("seconds_per_half", 10), "resolution": tt.get("resolution", "768p"),
-                "ratio": tt.get("ratio", "16:9")}
-        return 2 * generation_seconds(half, "i2v") + TURNTABLE_POST_S
+        try:
+            from studio import turntable as flow
+            pl = flow.plan(tt)
+            n, secs = len(pl["generate"]), pl["seconds"]
+        except Exception:  # noqa: BLE001 - an invalid job fails fast in the runner; estimate something
+            n, secs = 2, tt.get("seconds_per_half", 10)
+        seg = {"duration_s": secs, "resolution": tt.get("resolution", "768p"), "ratio": tt.get("ratio", "16:9")}
+        return n * generation_seconds(seg, "i2v") + TURNTABLE_POST_S
     if mode == "upscale":
         return upscale_seconds(vg.get("upscale") or {}, 10)
     secs = generation_seconds(vg, mode)

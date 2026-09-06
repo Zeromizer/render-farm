@@ -21,13 +21,28 @@ params (jsonb):
     ref_images / ref_videos / ref_audios   [{bucket, path}]   (r2v; max 9 / 3 / 3)
     ref_image_size       match | max              (r2v; max is several times slower)
     source               {bucket, path}           (upscale mode: the clip to upscale)
-    turntable            {front, rear: {bucket, path}, car, details, seconds_per_half (default 10),
-                          resolution (default 768p), seed, fps (default 60), shorter_size (default 1080)}
-                         mode "turntable": the anchored car 360 (studio/turntable.py): two 180-degree
-                         image-to-video halves between the two photos, drift/cut checks with automatic
-                         reseed/repair, seam-exact join, constant-speed remap, RIFE to fps. ~25-45 GPU
-                         minutes at 768p; file it with timeout_minutes 120+. Sidecars: outputs/<jid>-piece1..N.mp4
-                         (the 24 fps halves) and outputs/<jid>-joined24.mp4.
+    turntable            mode "turntable": the anchored car 360 (studio/turntable.py).
+                           front, rear          {bucket, path} straight-on photos (two-anchor: 2 x 180 degrees)
+                           left, right          {bucket, path} the VEHICLE's left/right sides; giving both
+                                                switches to four-anchor mode (4 x 90 degrees:
+                                                front_to_left, left_to_rear, rear_to_right, right_to_front,
+                                                clockwise seen from above). One side alone is rejected.
+                           car, details         one line about the car; things to hold (badge, exact plate text)
+                           seconds_per_half     default 10 (two-anchor); seconds_per_quarter default 5 (four-anchor)
+                           segments             optional consecutive subset of the sequence to make, e.g.
+                                                ["front_to_left"] for a reviewable quarter; omit for the full turn
+                           ready_segments       {name: {bucket, path}} native 24 fps segment clips to reuse
+                                                instead of regenerating (a previous job's outputs/<id>-<name>.mp4
+                                                or a platform asset); mix with generated ones freely
+                           resolution (768p), seed, fps (60), shorter_size (1080)
+                         Each segment is one image-to-video generation between its two anchor photos, drift
+                         and cut checked with automatic reseed/repair inside the segment, then the requested
+                         segments are joined on their shared frames, checked at every seam, remapped to
+                         constant speed and RIFE'd to fps. Only a complete sequence loops. Sidecars:
+                         outputs/<jid>-<segment>.mp4 (native 24 fps, one per segment), outputs/<jid>-joined24.mp4,
+                         outputs/<jid>-manifest.json (segments, seams, defects, timing); two-anchor jobs also
+                         keep outputs/<jid>-piece1..2.mp4 as before. ~9 min per 10 s half, ~5 min per 5 s
+                         quarter at 768p, plus retries; file with timeout_minutes 150 (two) / 180 (four).
     upscale              optional resize pass, on generation modes (runs after the
                          clip is made) or the whole job in upscale mode:
                            method   lanczos (default: plain ffmpeg resize, instant, faithful)
@@ -58,24 +73,27 @@ import os
 import time
 from datetime import datetime
 
+import config
 import db
 import proc
 from runners import gate_common
-from videogen import comfy_client, estimate, graphs, segments, tts_guard
+import json
+
+from videogen import comfy_client, estimate, graphs, media_type, segments, tts_guard
 from studio import turntable as turntable_flow
 
-_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp")
-_VIDEO_EXT = (".mp4", ".mov", ".webm", ".mkv")
-_AUDIO_EXT = (".wav", ".mp3", ".flac", ".ogg", ".m4a")
+_IMAGE, _VIDEO, _AUDIO = ("image",), ("video",), ("audio",)
 
 
-def _fetch(ref, work_dir, name, log, allowed):
+def _fetch(ref, work_dir, name, log, allowed, download=None):
+    """Download one {bucket, path} input and return a local path whose suffix matches
+    its content. Platform assets are content-addressed (assets/sha256/<hex>, no
+    extension), so the type comes from the bytes, verified with ffprobe; a file
+    that is neither a decodable image/video/audio of the expected kind is rejected."""
     if not isinstance(ref, dict) or not ref.get("bucket") or not ref.get("path"):
         raise RuntimeError(f"video_gen input {name} must be {{bucket, path}}, got {ref!r}")
-    local = gate_common.download(ref["bucket"], ref["path"], work_dir, name, log)
-    if not local.lower().endswith(allowed):
-        raise RuntimeError(f"video_gen input {name}: unsupported type {os.path.splitext(local)[1]!r}")
-    return local
+    local = (download or gate_common.download)(ref["bucket"], ref["path"], work_dir, name, log)
+    return media_type.ensure_extension(local, allowed, name=name)
 
 
 def _run_prompt(jid, graph, label, heartbeat, cancel_check, deadline, dest, log, prange=None, hint=None,
@@ -162,6 +180,48 @@ def _upscale_clip(jid, src_local, u, work_dir, heartbeat, cancel_check, deadline
     return segments.concat(done, src_local, dest, log)
 
 
+def turntable_manifest(jid, res):
+    """The storage contract for a turntable job's pieces: which native 24 fps segment lives where,
+    how the seams measured, and what still looks wrong. outputs/<jid>-manifest.json."""
+    segs = {}
+    for name in res["order"]:
+        s = res["segments"][name]
+        segs[name] = {"bucket": config.BUCKET, "path": f"outputs/{jid}-{name}.mp4", "frames": s["frames"],
+                      "seconds": s["seconds"], "fps": graphs.FPS, "reused": s["reused"], "attempts": s["attempts"],
+                      "repairs": s["repairs"]}
+    return {"job_id": jid, "variant": f"{res['variant']}_anchor", "sequence": turntable_flow.SEQUENCES[res["variant"]],
+            "segments_in_order": res["order"], "complete": res["complete"], "loops": res["loops"],
+            "canvas": {"width": res["canvas"][0], "height": res["canvas"][1], "fps": graphs.FPS},
+            "output": {"bucket": config.BUCKET, "path": f"outputs/{jid}.mp4", "width": res["width"],
+                       "height": res["height"], "fps": res["fps"], "frames": res["frames"],
+                       "note": "RIFE-interpolated and lanczos-resized master; detail is that of the canvas"},
+            "joined_native": {"bucket": config.BUCKET, "path": f"outputs/{jid}-joined24.mp4"},
+            "segments": segs, "seams": res["seams"], "defects": res["defects"], "timing_s": res["timing"],
+            "plateau_motion": round(res["plateau"], 2)}
+
+
+def _upload_turntable_sidecars(jid, res, log):
+    """Best effort, matte-proof-sheet style: every native-rate segment, the native join, the manifest,
+    and (two-anchor only) the legacy piece1..N names."""
+    db.set_phase(jid, "uploading", 95)
+    files = [(f"{name}.mp4", res["segments"][name]["local"], "video/mp4") for name in res["order"]]
+    files.append(("joined24.mp4", res["joined"], "video/mp4"))
+    if res["variant"] == "two":
+        files += [(f"piece{i + 1}.mp4", res["segments"][name]["local"], "video/mp4") for i, name in enumerate(res["order"])]
+    for name, pth, ctype in files:
+        try:
+            db.upload_file(f"outputs/{jid}-{name}", pth, ctype)
+        except Exception as exc:  # noqa: BLE001
+            log(f"sidecar {name} upload failed: {exc}")
+    man = os.path.join(os.path.dirname(res["joined"]), "manifest.json")
+    with open(man, "w", encoding="utf-8") as f:
+        json.dump(turntable_manifest(jid, res), f, indent=1)
+    try:
+        db.upload_file(f"outputs/{jid}-manifest.json", man, "application/json")
+    except Exception as exc:  # noqa: BLE001
+        log(f"manifest upload failed: {exc}")
+
+
 class _TurntableApi:
     """studio/turntable.py's api, backed directly by ComfyUI (no nested farm jobs:
     the worker is single-instance, so a job that queued sub-jobs would wait forever)."""
@@ -185,22 +245,22 @@ class _TurntableApi:
     def upload(self, local):
         return {"name": comfy_client.upload_input(local)}
 
-    def submit(self, vg, label):
+    def submit(self, vg, label, prange=None, after_seconds=0.0, after_text=""):
+        """Run one anchored i2v generation synchronously. prange is the job-progress span the
+        flow planned for this segment; retries and repairs re-enter the same span, so the
+        low end is clamped to the current progress to keep the bar monotonic."""
         self._n += 1
         key = f"{self._n:02d}"
         names = {"first_frame": vg["first_frame"]["name"], "last_frame": vg["last_frame"]["name"]}
         graph, meta = graphs.build("i2v", vg, names, f"video_gen/{self.jid}-tt{key}")
-        self.log(f"turntable {label}: {meta['width']}x{meta['height']} {meta['length']}f seed={meta['seed']}")
+        self.log(f"{label}: {meta['width']}x{meta['height']} {meta['length']}f seed={meta['seed']}")
         dest = os.path.join(self.work_dir, f"tt{key}.mp4")
-        # Progress: the two planned halves take 5-45 and 45-85; retries and repairs squeeze into 85-88.
-        n = self._n
-        prange = (5, 45) if n == 1 else (45, 85) if n == 2 else (85, 88)
-        halves_left = max(0, 2 - n)
-        after = halves_left * estimate.generation_seconds(vg, "i2v") + estimate.TURNTABLE_POST_S
-        after_text = (" - then half 2 + join" if halves_left == 1 else " - then join + 60 fps")
-        self._results[key] = _run_prompt(self.jid, graph, f"turntable {label}"[:48], self.heartbeat, self.cancel_check,
-                                         self.deadline, dest, self.log, prange=prange,
-                                         hint=estimate.sampling_hint(vg, "i2v"), after_seconds=after,
+        lo, hi = prange or (5, 85)
+        lo = max(lo, int(self.heartbeat.progress))
+        hi = max(hi, lo + 1)
+        self._results[key] = _run_prompt(self.jid, graph, label[:60], self.heartbeat, self.cancel_check,
+                                         self.deadline, dest, self.log, prange=(lo, hi),
+                                         hint=estimate.sampling_hint(vg, "i2v"), after_seconds=after_seconds,
                                          after_text=after_text)
         return key
 
@@ -231,10 +291,14 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         raise RuntimeError("video_gen needs params.video_gen.prompt")
     upscale = p.get("upscale")
     tt = p.get("turntable") or {}
+    tt_plan = None
     if mode == "turntable":
-        for k in ("front", "rear", "car"):
-            if not tt.get(k):
-                raise RuntimeError(f"turntable mode needs params.video_gen.turntable.{k}")
+        try:
+            tt_plan = turntable_flow.plan(tt)
+        except ValueError as exc:
+            raise RuntimeError(f"turntable: {exc}")
+        log(f"turntable {tt_plan['variant']}-anchor: generate {tt_plan['generate']}, reuse {tt_plan['reuse']}, "
+            f"{'complete loop' if tt_plan['complete'] else 'partial: ' + ', '.join(tt_plan['requested'])}")
     if mode == "upscale":
         upscale = upscale or {}
         if not p.get("source"):
@@ -246,20 +310,21 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     if mode == "i2v":
         for key in ("first_frame", "last_frame"):
             if p.get(key):
-                inputs[key] = _fetch(p[key], work_dir, key, log, _IMAGE_EXT)
+                inputs[key] = _fetch(p[key], work_dir, key, log, _IMAGE)
     elif mode == "r2v":
-        for key, allowed, cap in (("ref_images", _IMAGE_EXT, graphs.MAX_REF_IMAGES),
-                                  ("ref_videos", _VIDEO_EXT, graphs.MAX_REF_VIDEOS),
-                                  ("ref_audios", _AUDIO_EXT, graphs.MAX_REF_AUDIOS)):
+        for key, allowed, cap in (("ref_images", _IMAGE, graphs.MAX_REF_IMAGES),
+                                  ("ref_videos", _VIDEO, graphs.MAX_REF_VIDEOS),
+                                  ("ref_audios", _AUDIO, graphs.MAX_REF_AUDIOS)):
             refs = list(p.get(key) or [])
             if len(refs) > cap:
                 raise RuntimeError(f"video_gen: at most {cap} {key} (got {len(refs)})")
             inputs[key] = [_fetch(r, work_dir, f"{key}_{i}", log, allowed) for i, r in enumerate(refs)]
     elif mode == "upscale":
-        inputs["source"] = _fetch(p["source"], work_dir, "source", log, _VIDEO_EXT)
+        inputs["source"] = _fetch(p["source"], work_dir, "source", log, _VIDEO)
     elif mode == "turntable":
-        for key in ("front", "rear"):
-            inputs[key] = _fetch(tt[key], work_dir, key, log, _IMAGE_EXT)
+        inputs["anchors"] = {a: _fetch(tt[a], work_dir, a, log, _IMAGE) for a in tt_plan["anchors"]}
+        inputs["ready"] = {n: _fetch(tt["ready_segments"][n], work_dir, f"ready_{n}", log, _VIDEO)
+                           for n in tt_plan["reuse"]}
     heartbeat.progress = 3
 
     if mode == "upscale" and (upscale.get("method") or "lanczos").lower() == "lanczos":
@@ -268,6 +333,16 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
                                   deadline, os.path.join(work_dir, "video_gen-upscaled.mp4"), log)
         heartbeat.progress = 95
         return out_local, "mp4", "video/mp4"
+    if mode == "turntable" and not tt_plan["generate"]:
+        # Assembly of approved segments: join, remap, RIFE, encode. No ComfyUI, no TTS pause.
+        opts = dict(tt, anchor_local={}, ready_local=inputs["ready"])
+        api = _TurntableApi(jid, work_dir, heartbeat, cancel_check, deadline, log)
+        heartbeat.progress = 5
+        res = turntable_flow.run(opts, api, log)
+        _upload_turntable_sidecars(jid, res, log)
+        log(f"turntable assembled: {res['frames']} frames at {res['fps']} fps from {res['order']}; defects: {res['defects'] or 'none'}")
+        heartbeat.progress = 95
+        return res["video"], "mp4", "video/mp4"
 
     # 2. Server up (lazy start), TTS workers out of the way
     db.set_phase(jid, "starting comfyui", 3)
@@ -284,8 +359,8 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         db.set_phase(jid, "uploading inputs", 5)
         names = {}
         for key, val in inputs.items():
-            if key in ("source", "front", "rear"):
-                continue  # source: uploaded per segment by _upscale_clip; front/rear: padded first by the turntable flow
+            if key in ("source", "anchors", "ready"):
+                continue  # source: uploaded per segment by _upscale_clip; anchors: padded first by the turntable flow
             if isinstance(val, list):
                 names[key] = [comfy_client.upload_input(v) for v in val]
             else:
@@ -320,23 +395,14 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
                     out_local = _upscale_clip(jid, base_local, upscale, work_dir, heartbeat, cancel_check,
                                               deadline, os.path.join(work_dir, "video_gen-upscaled.mp4"), log)
             elif mode == "turntable":
-                opts = {"front_local": inputs["front"], "rear_local": inputs["rear"], "car": tt["car"],
-                        "details": tt.get("details", "")}
-                for k in ("resolution", "ratio", "seconds_per_half", "seed", "fps", "shorter_size", "density"):
-                    if tt.get(k) not in (None, ""):
-                        opts[k] = tt[k]
+                opts = dict(tt, anchor_local=inputs["anchors"], ready_local=inputs["ready"])
                 api = _TurntableApi(jid, work_dir, heartbeat, cancel_check, deadline, log)
                 heartbeat.progress = 5
                 res = turntable_flow.run(opts, api, log)
-                # Sidecars, matte-proof-sheet style: the 24 fps pieces and the join, best effort.
-                sidecars = [(f"piece{i + 1}", pth) for i, pth in enumerate(res["pieces"])] + [("joined24", res["joined"])]
-                for name, pth in sidecars:
-                    try:
-                        db.upload_file(f"outputs/{jid}-{name}.mp4", pth, "video/mp4")
-                    except Exception as exc:  # noqa: BLE001
-                        log(f"sidecar {name} upload failed: {exc}")
-                log(f"turntable done: {res['frames']} frames at {res['fps']} fps, {len(res['pieces'])} pieces")
                 out_local = res["video"]
+                _upload_turntable_sidecars(jid, res, log)
+                log(f"turntable done: {res['frames']} frames at {res['fps']} fps, segments {res['order']}, "
+                    f"{'loops' if res['loops'] else 'partial'}; defects: {res['defects'] or 'none'}")
             else:
                 heartbeat.progress = 8
                 out_local = _upscale_clip(jid, inputs["source"], upscale, work_dir, heartbeat, cancel_check,

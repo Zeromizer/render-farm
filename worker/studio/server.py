@@ -8,7 +8,9 @@
   and actions: upscale (lanczos / SeedVR2 + blend), 60 fps (RIFE), reuse,
   download, delete, cancel.
 - Turntable: the anchored 2 x 180-degree car flow, filed as a single farm job
-  (video_gen mode "turntable", run by the worker; studio/turntable.py).
+  (video_gen mode "turntable", run by the worker; studio/turntable.py): two-anchor
+  front/rear halves or four-anchor front/left/rear/right quarters, single segments for
+  review, and assembly of approved segments without regenerating them.
 
 Jobs go through the normal farm queue (farm_render_jobs, engine video_gen),
 so the worker, TTS pause and ComfyUI lifecycle are untouched; the studio
@@ -151,17 +153,43 @@ def upload_input(local):
 
 
 def _fetch_sidecars(it, jid):
-    """The turntable runner leaves its 24 fps pieces next to the result; pull the ones that exist."""
-    pieces = []
-    for name in [f"piece{i}" for i in range(1, 9)] + ["joined24"]:
-        rel = f"videos/{it['id']}_{name}.mp4"
+    """The turntable runner leaves its native 24 fps segments, the join and a manifest next to the
+    result; pull them into the library so segments can be reviewed and reused (ready_segments)."""
+    segs, pieces, manifest = [], [], None
+    try:
+        raw = db.sb.storage.from_(config.BUCKET).download(f"outputs/{jid}-manifest.json")
+        manifest = json.loads(raw.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - jobs from before the manifest existed
+        manifest = None
+    if manifest:
+        for name in manifest.get("segments_in_order") or []:
+            seg = manifest["segments"][name]
+            rel = f"videos/{it['id']}_{name}.mp4"
+            try:
+                download_output(seg["path"], os.path.join(ROOT, rel))
+                segs.append({"name": name, "rel": rel, "bucket": seg["bucket"], "path": seg["path"],
+                             "frames": seg.get("frames"), "reused": seg.get("reused"), "repairs": seg.get("repairs")})
+            except Exception as e:  # noqa: BLE001
+                _note(it, f"segment {name} not fetched: {e}")
+        rel = f"videos/{it['id']}_joined24.mp4"
         try:
-            download_output(f"outputs/{jid}-{name}.mp4", os.path.join(ROOT, rel))
-            pieces.append(rel)
-        except Exception:  # noqa: BLE001 - not there
-            if name != "joined24":
-                break
-    _set(it, pieces=pieces)
+            download_output(manifest["joined_native"]["path"], os.path.join(ROOT, rel))
+            pieces = [x["rel"] for x in segs] + [rel]
+        except Exception as e:  # noqa: BLE001
+            _note(it, f"joined24 not fetched: {e}")
+            pieces = [x["rel"] for x in segs]
+    else:
+        for name in [f"piece{i}" for i in range(1, 9)] + ["joined24"]:
+            rel = f"videos/{it['id']}_{name}.mp4"
+            try:
+                download_output(f"outputs/{jid}-{name}.mp4", os.path.join(ROOT, rel))
+                pieces.append(rel)
+            except Exception:  # noqa: BLE001 - not there
+                if name != "joined24":
+                    break
+    _set(it, pieces=pieces, segments=segs, manifest={k: manifest.get(k) for k in
+                                                     ("variant", "segments_in_order", "complete", "loops", "seams",
+                                                      "defects", "timing_s", "canvas")} if manifest else None)
 
 
 def _poll_farm():
@@ -329,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
                 "resolutions": sorted(graphs.SHORT_EDGE), "ratios": sorted(graphs.RATIOS),
                 "colors": list(graphs.UPSCALE_COLOR_METHODS), "studio_dir": ROOT,
                 "rife": os.path.exists(os.path.join(config.RIFE_DIR, "rife-ncnn-vulkan.exe")),
-                "turntable_defaults": turntable.DEFAULTS}})
+                "turntable_defaults": turntable.DEFAULTS, "turntable_sequences": turntable.SEQUENCES}})
         if u.path.startswith("/media/"):
             rel = unquote(u.path[len("/media/"):]).replace("\\", "/")
             full = os.path.normpath(os.path.join(ROOT, rel))
@@ -407,20 +435,27 @@ class Handler(BaseHTTPRequestHandler):
         return {"item": it}
 
     def _turntable(self, p):
-        for k in ("front", "rear"):
-            if not (p.get(k) or {}).get("path"):
-                raise ValueError(f"upload the {k} photo first")
-        if not (p.get("car") or "").strip():
-            raise ValueError("describe the car in a few words")
-        tt = {"front": _ref(p["front"]), "rear": _ref(p["rear"]), "car": p["car"].strip(),
-              "details": (p.get("details") or "").strip()}
-        for k in ("resolution", "ratio", "seconds_per_half", "seed", "fps", "shorter_size", "density"):
+        tt = {"car": (p.get("car") or "").strip(), "details": (p.get("details") or "").strip()}
+        for k in turntable.ANCHORS:
+            if _ref(p.get(k)):
+                tt[k] = _ref(p[k])
+        for k in ("resolution", "ratio", "seconds_per_half", "seconds_per_quarter", "seed", "fps", "shorter_size", "density"):
             if p.get(k) not in (None, ""):
                 tt[k] = p[k]
+        if p.get("segments"):
+            tt["segments"] = list(p["segments"])
+        ready = {name: _ref(r) for name, r in (p.get("ready_segments") or {}).items() if _ref(r)}
+        if ready:
+            tt["ready_segments"] = ready
+        pl = turntable.plan(tt)   # ValueError -> shown in the UI verbatim
         vg = {"mode": "turntable", "turntable": tt}
-        it = _new_item("turntable", label=p.get("label") or f"turntable: {tt['car'][:40]}", prompt=tt["car"],
-                       params=vg, priority=int(p.get("priority") or 50))
-        jid = submit_job(vg, priority=it["priority"], timeout_minutes=p.get("timeout_minutes") or 150)
+        what = "turntable" if pl["complete"] else "segments " + ", ".join(pl["requested"])
+        label = p.get("label") or f"{what}: {tt['car'][:40] or 'assembly'}"
+        it = _new_item("turntable", label=label, prompt=tt["car"], params=vg, priority=int(p.get("priority") or 50),
+                       plan={"variant": pl["variant"], "requested": pl["requested"], "generate": pl["generate"],
+                             "reuse": pl["reuse"], "complete": pl["complete"]})
+        timeout = p.get("timeout_minutes") or (180 if pl["variant"] == "four" else 150)
+        jid = submit_job(vg, priority=it["priority"], timeout_minutes=timeout)
         _set(it, job_id=jid, jobs=[{"id": jid, "label": "turntable", "status": "pending"}])
         return {"item": it}
 

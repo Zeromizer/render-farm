@@ -10,6 +10,13 @@ import { syncAssets } from "./lib/assets.js";
 
 const server = new McpServer({ name: "render-farm", version: "1.0.0" });
 
+const FOUR_ANCHOR_SEGMENTS = ["front_to_left", "left_to_rear", "rear_to_right", "right_to_front"];
+function turntableIsFourAnchor(t) {
+  if (!t) return false;
+  if (t.left || t.right) return true;
+  return [...(t.segments || []), ...Object.keys(t.ready_segments || {})].some(s => FOUR_ANCHOR_SEGMENTS.includes(s));
+}
+
 const json = (obj) => ({ content: [{ type: "text", text: JSON.stringify(obj, null, 2) }] });
 const fail = (e) => ({ content: [{ type: "text", text: `Error: ${e.message}` }], isError: true });
 
@@ -64,16 +71,23 @@ server.tool(
       prompt: z.string().optional().describe("Required for t2v/i2v/r2v. Describe the shot, motion and the sound you want (H3 generates synced audio)."),
       mode: z.enum(["t2v", "i2v", "r2v", "upscale", "turntable"]).optional().describe("Default: turntable if turntable given, upscale if source given, i2v if first/last_frame given, r2v if any ref_* given, else t2v"),
       turntable: z.object({
-        front: z.object({ bucket: z.string(), path: z.string() }).describe("Straight-on front photo of the car, plain background"),
-        rear: z.object({ bucket: z.string(), path: z.string() }).describe("Straight-on rear photo, same scale/framing/background"),
-        car: z.string().describe("One line: colour, make, model, body style (e.g. 'A light teal-green metallic Proton e.MAS 7 SUV')"),
-        details: z.string().optional().describe("Things to hold, e.g. 'Front badge is the Proton tiger emblem; plates read exactly e.MAS 7.'"),
-        seconds_per_half: z.number().min(4).max(10).optional().describe("Seconds per 180-degree half (default 10; 768p cannot exceed 10)"),
+        front: z.object({ bucket: z.string(), path: z.string() }).optional().describe("Straight-on front photo of the car, plain background. Extensionless content-addressed assets (assets/sha256/<hex>) are fine: the type is read from the bytes"),
+        rear: z.object({ bucket: z.string(), path: z.string() }).optional().describe("Straight-on rear photo, same distance/scale/background"),
+        left: z.object({ bucket: z.string(), path: z.string() }).optional().describe("Straight-on photo of the VEHICLE's left side (driver-seat left, not the viewer's). Giving left AND right switches to four-anchor mode (4 x 90 degrees); one alone is rejected"),
+        right: z.object({ bucket: z.string(), path: z.string() }).optional().describe("Straight-on photo of the vehicle's right side"),
+        car: z.string().optional().describe("One line: colour, make, model, body style (required when any segment is generated)"),
+        details: z.string().optional().describe("Things to hold, e.g. 'The number plates read exactly 007 in the slanted angular Dongfeng wordmark.'"),
+        seconds_per_half: z.number().min(4).max(10).optional().describe("Two-anchor: seconds per 180-degree half (default 10; 768p cannot exceed 10)"),
+        seconds_per_quarter: z.number().min(3).max(10).optional().describe("Four-anchor: seconds per 90-degree quarter (default 5)"),
+        segments: z.array(z.enum(["front_to_left", "left_to_rear", "rear_to_right", "right_to_front", "front_to_rear", "rear_to_front"])).optional()
+          .describe("Consecutive subset of the rotation to make, e.g. ['front_to_left'] for a reviewable quarter-turn test. Omit for the complete rotation. Only a complete rotation loops"),
+        ready_segments: z.record(z.object({ bucket: z.string(), path: z.string() })).optional()
+          .describe("Approved native 24 fps segment clips to reuse instead of regenerating, keyed by segment name: a previous job's outputs/<id>-<segment>.mp4 in 'renders' or the same clip filed into the org's assets. Mix with generated segments; give all of them (and no photos) to assemble without any GPU work"),
         resolution: z.enum(["480p", "768p"]).optional().describe("Default 768p"),
         seed: z.number().int().optional(),
         fps: z.number().int().optional().describe("Output fps after RIFE interpolation (default 60)"),
-        shorter_size: z.number().int().optional().describe("Output short edge in px (default 1080)"),
-      }).optional().describe("Car/product 360 for background removal (mode turntable): two anchored 180-degree image-to-video halves between the two photos, automatic reseed/repair when a half drifts or teleports, seam-exact join, constant-speed remap, RIFE to fps. Loops. ~25-45 GPU minutes at 768p; use timeout_minutes 120+. Result outputs/<id>.mp4 plus sidecars outputs/<id>-piece1..N.mp4 (24 fps halves) and outputs/<id>-joined24.mp4."),
+        shorter_size: z.number().int().optional().describe("Output short edge in px after a lanczos resize (default 1080; the detail is that of the 768p canvas)"),
+      }).optional().describe("Car/product 360 for background removal (mode turntable). Two-anchor (front+rear): 2 anchored 180-degree image-to-video halves. Four-anchor (front+left+rear+right): 4 anchored 90-degree quarters front_to_left -> left_to_rear -> rear_to_right -> right_to_front, clockwise seen from above, so the wheels/doors/side profile come from real photos instead of a guess. Each segment is drift/cut checked with automatic reseed/repair inside its own quarter; segments are joined on shared frames, seams checked, remapped to constant speed, RIFE'd to fps. ~9 min per 10 s half, ~5 min per 5 s quarter at 768p plus retries: timeout_minutes 150 (two) / 180 (four). Result outputs/<id>.mp4 plus outputs/<id>-<segment>.mp4 (native 24 fps per segment), outputs/<id>-joined24.mp4 and outputs/<id>-manifest.json (segments, seams, defects); two-anchor jobs also keep -piece1..2.mp4."),
       source: z.object({ bucket: z.string(), path: z.string() }).optional().describe("upscale mode: existing clip to resize (no generation)"),
       upscale: z.object({
         method: z.enum(["lanczos", "seedvr2"]).optional().describe("Default lanczos: plain ffmpeg resize, instant and faithful. seedvr2 = restoration model, ~55 s per second of video, use for hero shots"),
@@ -104,7 +118,21 @@ server.tool(
   async (args) => {
     try {
       if (args.engine === "video_gen" && !args.video_gen?.prompt && !args.video_gen?.source && !args.video_gen?.turntable)
-        throw new Error("video_gen jobs require 'video_gen.prompt' (generation) or 'video_gen.source' (upscale)");
+        throw new Error("video_gen jobs require 'video_gen.prompt' (generation), 'video_gen.source' (upscale) or 'video_gen.turntable'");
+      if (args.video_gen?.turntable) {
+        const t = args.video_gen.turntable;
+        if (!!t.left !== !!t.right)
+          throw new Error("turntable: four-anchor mode needs BOTH left and right side photos (the vehicle's own sides); give neither for the two-anchor front/rear flow");
+        const four = turntableIsFourAnchor(t);
+        const seq = four ? FOUR_ANCHOR_SEGMENTS : ["front_to_rear", "rear_to_front"];
+        for (const s of t.segments || []) if (!seq.includes(s)) throw new Error(`turntable.segments: ${s} is not part of the ${four ? "four" : "two"}-anchor sequence ${seq.join(" -> ")}`);
+        for (const s of Object.keys(t.ready_segments || {})) if (!seq.includes(s)) throw new Error(`turntable.ready_segments: unknown segment ${s}; valid: ${seq.join(", ")}`);
+        const need = new Set();
+        for (const s of t.segments || seq) if (!t.ready_segments?.[s]) for (const a of s.split("_to_")) need.add(a);
+        const missing = [...need].filter(a => !t[a]);
+        if (missing.length) throw new Error(`turntable: generating ${(t.segments || seq).join(", ")} needs the ${missing.join(", ")} photo(s)`);
+        if (need.size && !t.car) throw new Error("turntable.car (one line describing the car) is required when segments are generated");
+      }
       if (args.engine !== "video_gen" && !args.repo_url)
         throw new Error("repo_url is required for this engine");
       if (args.engine === "remotion" && !args.composition)
@@ -126,7 +154,8 @@ server.tool(
       const job = await insertJob({
         engine: args.engine, repo_url: args.repo_url || "-", git_ref: args.ref,
         params, priority: args.priority,
-        timeout_minutes: args.timeout_minutes ?? (args.engine === "video_gen" ? (args.video_gen?.turntable ? 150 : 60) : undefined),
+        timeout_minutes: args.timeout_minutes ?? (args.engine === "video_gen"
+          ? (args.video_gen?.turntable ? (turntableIsFourAnchor(args.video_gen.turntable) ? 180 : 150) : 60) : undefined),
       });
       return json({ job_id: job.id, status: job.status });
     } catch (e) { return fail(e); }

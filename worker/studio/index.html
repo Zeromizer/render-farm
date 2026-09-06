@@ -123,16 +123,23 @@
 <section id="turntable">
   <div class="grid2">
     <div class="card">
-      <h2>Car turntable · anchored 2 × 180°</h2>
-      <div class="row c2">
-        <div><label>Front photo (straight on)</label><div class="drop" id="d_front" data-kind="image" data-multi="0">drop or click</div></div>
-        <div><label>Rear photo (straight on)</label><div class="drop" id="d_rear" data-kind="image" data-multi="0">drop or click</div></div>
-      </div>
-      <div class="hint">Same scale and framing, plain background. The photos become the anchor frames, so the 360 passes through exactly these two images and loops.</div>
-      <label>Car (one line)</label><input type="text" id="t_car" placeholder="A light teal-green metallic Proton e.MAS 7 SUV">
-      <label>Details to hold (badge, plate text…)</label><input type="text" id="t_details" placeholder="Front badge is the Proton tiger emblem; the number plates read exactly e.MAS 7.">
+      <h2>Car turntable · anchored 2 × 180° or 4 × 90°</h2>
       <div class="row c4">
-        <div><label>Seconds per half</label><input type="number" id="t_spf" value="10" min="4" max="10"></div>
+        <div><label>Front photo</label><div class="drop" id="d_front" data-kind="image" data-multi="0">drop or click</div></div>
+        <div><label>Left side (vehicle's left)</label><div class="drop" id="d_left" data-kind="image" data-multi="0">drop or click</div></div>
+        <div><label>Rear photo</label><div class="drop" id="d_rear" data-kind="image" data-multi="0">drop or click</div></div>
+        <div><label>Right side (vehicle's right)</label><div class="drop" id="d_right" data-kind="image" data-multi="0">drop or click</div></div>
+      </div>
+      <div class="hint">Straight-on, same distance and scale, plain background. Front + rear only = two 180° halves. Add BOTH side photos (the car's own left/right, not the viewer's) for four 90° quarters: front→left→rear→right→front, clockwise from above. The photos become the anchor frames, so the turn passes through exactly these images.</div>
+      <label>Segments to make <span class="hint" id="t_mode"></span></label>
+      <div id="t_segments" style="display:flex; gap:12px; flex-wrap:wrap; margin:4px 0 2px"></div>
+      <div class="hint">Untick to make one quarter for review first; ticked segments must be consecutive. Only a complete rotation loops.</div>
+      <label>Reuse approved segments (no regeneration)</label>
+      <div id="t_ready" class="hint" style="margin-top:2px">none · pick “reuse” on a finished turntable's segment in the library</div>
+      <label>Car (one line)</label><input type="text" id="t_car" placeholder="A light teal-green metallic Proton e.MAS 7 SUV">
+      <label>Details to hold (badge, exact plate text…)</label><input type="text" id="t_details" placeholder="The number plates read exactly 007 in the slanted angular Dongfeng wordmark.">
+      <div class="row c4">
+        <div><label>Seconds per half / quarter</label><div class="inline"><input type="number" id="t_spf" value="10" min="4" max="10" title="per 180° half"><input type="number" id="t_spq" value="5" min="3" max="10" title="per 90° quarter"></div></div>
         <div><label>Resolution</label><select id="t_res"><option>768p</option><option>480p</option></select></div>
         <div><label>Seed</label><div class="inline"><input type="number" id="t_seed" value="21"><button class="small" onclick="$('t_seed').value=Math.floor(Math.random()*1e6)">🎲</button></div></div>
         <div><label>Priority</label><input type="number" id="t_priority" value="50"></div>
@@ -150,11 +157,11 @@
     <div class="card">
       <h2>What happens</h2>
       <div class="steps">
-        1. Both photos are padded to the generation canvas (no crop) in their own background colour.<br>
-        2. Half 1: image-to-video from the front photo to the rear photo. Half 2: rear photo back to the front photo. Seams are pixel-exact.<br>
-        3. Each half is checked for a mid-turn “teleport”. If found, the clean part is kept and the rest is regenerated from its last clean frame.<br>
-        4. Pieces are joined on their shared frames, time-remapped to constant speed (the model eases at anchors), and interpolated with RIFE to the output fps.<br><br>
-        Cost at 768p on the 4080: about 9 min per half plus 5 min per repair, then under a minute of post. The 24 fps pieces are kept next to the result.<br><br>
+        1. The photos are padded to the generation canvas at ONE common scale (no crop, no stretch) in their own background colour. Photos at different scales or with the car touching an edge are rejected with the numbers.<br>
+        2. Each segment is one image-to-video generation from its start photo to its end photo (H3's node takes exactly a first and a last frame; a side photo steers the model only as the end of one quarter and the start of the next). Shared anchors are pixel-exact.<br>
+        3. Each segment is checked for backdrop drift (reseeded) and a mid-turn “teleport” (the clean part is kept, the rest regenerated from its last clean frame to the same end photo, same direction).<br>
+        4. The requested segments are joined on their shared frames, every seam and the loop seam are measured, then time-remapped to constant speed and interpolated with RIFE to the output fps; the short edge is a lanczos resize of the 768p canvas.<br><br>
+        Cost at 768p on the 4080: about 9 min per 10 s half, 5 min per 5 s quarter, plus a segment per retry or repair, then about a minute of post. The native 24 fps segments stay in the library: review a quarter, then reuse the approved ones and generate only the rest.<br><br>
         Then key the background out downstream: the backdrop is flat, there is no floor contact shadow.
       </div>
     </div>
@@ -279,6 +286,7 @@ function renderDrop(d) {
     d.appendChild(c);
   });
   d.appendChild(inp);
+  if (typeof renderSegments === 'function' && (d.id === 'd_left' || d.id === 'd_right')) renderSegments();
 }
 const refs = id => state.uploads[id].map(u => ({ bucket: u.bucket, path: u.path, local: u.local, url: u.url, name: u.name }));
 
@@ -302,17 +310,59 @@ $('g_submit').onclick = async () => {
   finally { $('g_submit').disabled = false; $('g_msg').textContent = ''; }
 };
 
+// ------------------------------------------------------------ turntable
+const SEQ = { two: ['front_to_rear', 'rear_to_front'], four: ['front_to_left', 'left_to_rear', 'rear_to_right', 'right_to_front'] };
+state.ready = {};           // segment name -> {bucket, path, label}
+function ttVariant() {
+  const sides = refs('d_left').length + refs('d_right').length;
+  const readyFour = Object.keys(state.ready).some(n => SEQ.four.includes(n));
+  return (sides > 0 || readyFour) ? 'four' : 'two';
+}
+function renderSegments() {
+  const v = ttVariant(); const box = $('t_segments');
+  const prev = new Set([...box.querySelectorAll('input:checked')].map(i => i.value));
+  const fresh = box.dataset.variant !== v;
+  box.dataset.variant = v; box.innerHTML = '';
+  SEQ[v].forEach(n => {
+    const l = document.createElement('label'); l.style.cssText = 'display:inline-flex; gap:6px; align-items:center; margin:0; font-weight:normal';
+    const c = document.createElement('input'); c.type = 'checkbox'; c.value = n; c.checked = fresh || prev.has(n) || !!state.ready[n];
+    l.appendChild(c); l.appendChild(document.createTextNode(n.replace(/_/g, ' ') + (state.ready[n] ? ' (reuse)' : '')));
+    box.appendChild(l);
+  });
+  const sides = refs('d_left').length + refs('d_right').length;
+  $('t_mode').textContent = v === 'four' ? (sides === 2 || !sides ? '· four-anchor, 4 × 90°' : '· four-anchor needs BOTH side photos') : '· two-anchor, 2 × 180°';
+  $('t_spf').style.display = v === 'two' ? '' : 'none'; $('t_spq').style.display = v === 'four' ? '' : 'none';
+  const r = $('t_ready');
+  const names = Object.keys(state.ready);
+  r.innerHTML = names.length ? '' : 'none · pick “reuse” on a finished turntable\'s segment in the library';
+  names.forEach(n => {
+    const c = document.createElement('span'); c.className = 'chip'; c.style.marginRight = '6px';
+    c.innerHTML = `${n} ← ${esc(state.ready[n].label)} <span class="x" title="remove">✕</span>`;
+    c.querySelector('.x').onclick = () => { delete state.ready[n]; renderSegments(); };
+    r.appendChild(c);
+  });
+}
+function useSegment(it, seg) {
+  state.ready[seg.name] = { bucket: seg.bucket, path: seg.path, label: it.label || it.id };
+  renderSegments(); showTab('turntable'); toast(`${seg.name} will be reused from ${it.label || it.id}`);
+}
 $('t_submit').onclick = async () => {
+  const segments = [...$('t_segments').querySelectorAll('input:checked')].map(i => i.value);
   const p = {
-    front: refs('d_front')[0], rear: refs('d_rear')[0], car: $('t_car').value, details: $('t_details').value,
-    seconds_per_half: +$('t_spf').value, resolution: $('t_res').value, seed: +$('t_seed').value, priority: +$('t_priority').value,
+    front: refs('d_front')[0], rear: refs('d_rear')[0], left: refs('d_left')[0], right: refs('d_right')[0],
+    car: $('t_car').value, details: $('t_details').value, segments,
+    seconds_per_half: +$('t_spf').value, seconds_per_quarter: +$('t_spq').value,
+    resolution: $('t_res').value, seed: +$('t_seed').value, priority: +$('t_priority').value,
     fps: +$('t_fps').value, shorter_size: +$('t_short').value, label: $('t_label').value,
   };
-  $('t_submit').disabled = true;
+  const ready = {}; for (const n of segments) if (state.ready[n]) ready[n] = { bucket: state.ready[n].bucket, path: state.ready[n].path };
+  if (Object.keys(ready).length) p.ready_segments = ready;
+  $('t_submit').disabled = true; $('t_msg').textContent = '';
   try { await api('/api/turntable', p); toast('turntable started'); showTab('library'); refresh(); }
   catch (e) { $('t_msg').textContent = e.message; }
   finally { $('t_submit').disabled = false; }
 };
+renderSegments();
 
 // ------------------------------------------------------------- library
 let current = null;
@@ -321,6 +371,7 @@ function fmt(it) {
   if (i) parts.push(`${i.width}×${i.height}`, `${i.fps} fps`, `${i.duration} s`);
   const p = it.params || {};
   if (it.kind === 'generate') parts.push(p.resolution || '', p.mode || 'auto', p.upscale ? `→ ${p.upscale.method}` : '');
+  if (it.kind === 'turntable' && it.plan) parts.push(`${it.plan.variant}-anchor`, it.plan.complete ? 'full 360' : it.plan.requested.join('+'), it.plan.reuse && it.plan.reuse.length ? `reuse ${it.plan.reuse.length}` : '');
   if (it.kind === 'upscale' && p.upscale) parts.push(p.upscale.method, p.upscale.shorter_size ? p.upscale.shorter_size + 'p' : '×' + p.upscale.factor, p.upscale.blend != null ? 'blend ' + p.upscale.blend : '');
   parts.push(new Date(it.created * 1000).toLocaleString());
   return parts.filter(Boolean).join(' · ');
@@ -337,6 +388,8 @@ function card(it) {
     <div class="inline"><span class="pill ${it.status}">${it.status}</span><span class="meta">${running ? esc(it.phase || '') : ''}</span></div>
     ${running ? `<div class="bar"><i style="width:${it.progress || 0}%"></i></div>` : ''}
     ${it.error ? `<div class="err">${esc(it.error)}</div>` : ''}
+    ${it.manifest && it.manifest.defects && it.manifest.defects.length ? `<div class="err">defects: ${esc(it.manifest.defects.join('; '))}</div>` : ''}
+    ${it.manifest && !it.manifest.complete ? `<div class="meta">partial: ${esc((it.manifest.segments_in_order || []).join(' → '))} (does not loop)</div>` : ''}
     ${it.prompt && it.kind !== 'turntable' ? `<div class="prompt">${esc(it.prompt)}</div>` : ''}
     <div class="actions"></div></div>`;
   const a = el.querySelector('.actions');
@@ -350,13 +403,23 @@ function card(it) {
   btn('Details', () => { $('dlg_info_body').textContent = JSON.stringify({ ...it, log: undefined }, null, 1) + '\n\n' + (it.log || []).join('\n'); $('dlg_info').showModal(); });
   if (running) btn('Cancel', async () => { await api('/api/cancel', { item_id: it.id }); toast('cancel requested'); }, 'danger');
   else btn('Delete', async () => { if (confirm('Delete this item and its files?')) { await api('/api/delete', { item_id: it.id }); refresh(); } }, 'danger');
-  (it.pieces || []).forEach((p, i) => { const b = document.createElement('a'); b.href = `/media/${p}`; b.target = '_blank'; b.className = 'meta'; b.textContent = i < it.pieces.length - 1 ? `piece ${i + 1}` : '24 fps join'; b.style.alignSelf = 'center'; a.appendChild(b); });
+  if (it.segments && it.segments.length) {
+    it.segments.forEach(seg => {
+      const l = document.createElement('a'); l.href = `/media/${seg.rel}`; l.target = '_blank'; l.className = 'meta'; l.style.alignSelf = 'center';
+      l.textContent = seg.name.replace(/_/g, ' ') + (seg.repairs ? ` (${seg.repairs} repair)` : '') + (seg.reused ? ' (reused)' : ''); a.appendChild(l);
+      btn('reuse', () => useSegment(it, seg));
+    });
+    const j = (it.pieces || []).find(p => p.endsWith('_joined24.mp4'));
+    if (j) { const l = document.createElement('a'); l.href = `/media/${j}`; l.target = '_blank'; l.className = 'meta'; l.style.alignSelf = 'center'; l.textContent = '24 fps join'; a.appendChild(l); }
+  } else {
+    (it.pieces || []).forEach((p, i) => { const b = document.createElement('a'); b.href = `/media/${p}`; b.target = '_blank'; b.className = 'meta'; b.textContent = i < it.pieces.length - 1 ? `piece ${i + 1}` : '24 fps join'; b.style.alignSelf = 'center'; a.appendChild(b); });
+  }
   const play = el.querySelector('.play');
   if (play) play.onclick = () => { const m = el.querySelector('.media'); m.innerHTML = `<video src="/media/${it.video}" controls autoplay loop playsinline></video>`; };
   return el;
 }
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const sig = it => JSON.stringify([it.status, it.phase, it.progress, it.error, it.video, it.finished, it.label, (it.pieces || []).length]);
+const sig = it => JSON.stringify([it.status, it.phase, it.progress, it.error, it.video, it.finished, it.label, (it.pieces || []).length, (it.segments || []).length]);
 function renderLib() {
   const q = $('l_search').value.toLowerCase(), k = $('l_kind').value, s = $('l_status').value;
   const lib = $('lib');

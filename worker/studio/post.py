@@ -80,7 +80,7 @@ def motion_profile(path):
     832x480-1344x768; a hard cut is 20+."""
     with tempfile.TemporaryDirectory() as td:
         # Relative output path: ffmpeg's filter parser chokes on the drive colon in C:/...
-        run([ffmpeg(), "-v", "error", "-i", path, "-vf",
+        run([ffmpeg(), "-v", "error", "-i", os.path.abspath(path), "-vf",
              "tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=m.txt",
              "-f", "null", "-"], cwd=td)
         vals = [float(x) for x in re.findall(r"YAVG=([\d.]+)", open(os.path.join(td, "m.txt")).read())]
@@ -117,7 +117,7 @@ def corner_luma_profile(path):
     On a plain-backdrop product shot this should stay at the backdrop's brightness;
     the i2v model sometimes drifts the scene into a grey floor / overhead view."""
     with tempfile.TemporaryDirectory() as td:
-        run([ffmpeg(), "-v", "error", "-i", path, "-filter_complex",
+        run([ffmpeg(), "-v", "error", "-i", os.path.abspath(path), "-filter_complex",
              "[0:v]split=2[a][b];[a]crop=64:64:0:0[a1];[b]crop=64:64:iw-64:ih-64[b1];[a1][b1]hstack,"
              "signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=c.txt", "-f", "null", "-"], cwd=td)
         return [float(x) for x in re.findall(r"YAVG=([\d.]+)", open(os.path.join(td, "c.txt")).read())]
@@ -162,6 +162,114 @@ def pad_photo(src, dest, w, h):
          f"scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,"
          f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color={color}", dest])
     return dest
+
+
+def subject_bbox(src, tolerance=40, sample_width=192):
+    """Bounding box of the subject on a plain backdrop, as fractions of the
+    image (x0, y0, x1, y1), plus the pixel size: {box, width, height}. The
+    subject is every pixel whose colour differs from the corner colour by
+    more than `tolerance` in any channel, found on a downscaled copy. Good
+    enough to compare the framing of studio car photos; not a matte."""
+    w, h = image_size(src)
+    sw = min(sample_width, w)
+    sh = max(1, int(round(h * sw / w)))
+    r = run([ffmpeg(), "-v", "error", "-i", src, "-vf", f"scale={sw}:{sh}", "-frames:v", "1",
+             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], binary=True)
+    px = r.stdout
+    if len(px) < sw * sh * 3:
+        raise RuntimeError(f"could not read {os.path.basename(src)} for framing analysis")
+    corners = [px[0:3], px[(sw - 1) * 3:(sw - 1) * 3 + 3], px[(sh - 1) * sw * 3:(sh - 1) * sw * 3 + 3],
+               px[(sh * sw - 1) * 3:(sh * sw - 1) * 3 + 3]]
+    bg = [sorted(c[i] for c in corners)[1] for i in range(3)]   # a robust corner colour
+    x0, y0, x1, y1 = sw, sh, -1, -1
+    for y in range(sh):
+        row = px[y * sw * 3:(y + 1) * sw * 3]
+        for x in range(sw):
+            o = x * 3
+            if (abs(row[o] - bg[0]) > tolerance or abs(row[o + 1] - bg[1]) > tolerance
+                    or abs(row[o + 2] - bg[2]) > tolerance):
+                if x < x0:
+                    x0 = x
+                if x > x1:
+                    x1 = x
+                if y < y0:
+                    y0 = y
+                if y > y1:
+                    y1 = y
+    if x1 < 0:
+        return {"box": None, "width": w, "height": h}
+    return {"box": (x0 / sw, y0 / sh, (x1 + 1) / sw, (y1 + 1) / sh), "width": w, "height": h}
+
+
+def pad_photos_common(photos, w, h, dest_dir, min_fill=0.35):
+    """Pad several same-scale photos of one subject onto the w x h canvas with ONE
+    common scale factor, so the subject keeps its relative size between views
+    (a side view is wider than a front view at the same distance; scaling each
+    to fit would enlarge the narrower ones). photos: {name: src}. Returns
+    {name: {"local": dest, "box": (x0,y0,x1,y1) on the canvas, "scale": f}}.
+    Raises RuntimeError with the numbers when the photos are not compatible:
+    a subject cropped by the photo edge, subject heights that disagree by more
+    than 25 % (different distance / focal length), or a subject that would fill
+    less than `min_fill` of the canvas height."""
+    meas = {}
+    for name, src in photos.items():
+        m = subject_bbox(src)
+        if m["box"] is None:
+            raise RuntimeError(f"{name} photo: no subject found on a plain backdrop")
+        x0, y0, x1, y1 = m["box"]
+        touching = [side for side, v in (("left", x0 <= 0.005), ("top", y0 <= 0.005),
+                                          ("right", x1 >= 0.995), ("bottom", y1 >= 0.995)) if v]
+        if touching:
+            raise RuntimeError(f"{name} photo: the subject touches the {'/'.join(touching)} edge; "
+                               f"anchors must show the whole car with empty space around it")
+        meas[name] = m
+    heights = {n: (m["box"][3] - m["box"][1]) * m["height"] for n, m in meas.items()}
+    ref = sorted(heights.values())[len(heights) // 2]
+    off = {n: abs(v - ref) / ref for n, v in heights.items()}
+    worst = max(off, key=off.get)
+    if off[worst] > 0.25:
+        raise RuntimeError("anchor photos are not at the same scale: subject height "
+                           + ", ".join(f"{n} {int(v)} px" for n, v in heights.items())
+                           + f" ({worst} is {off[worst]:.0%} off). Shoot all views from the same "
+                           "distance and focal length, or crop them to a common scale first")
+    # One factor for all: the largest that fits every photo on the canvas.
+    scale = min(min(w / m["width"], h / m["height"]) for m in meas.values())
+    fill = ref * scale / h
+    if fill < min_fill:
+        raise RuntimeError(f"the car would fill only {fill:.0%} of the canvas height at a common scale "
+                           f"(smallest photo drives the fit); crop the photos closer to the car")
+    out = {}
+    for name, src in photos.items():
+        m = meas[name]
+        sw, sh = max(2, int(round(m["width"] * scale)) // 2 * 2), max(2, int(round(m["height"] * scale)) // 2 * 2)
+        dest = os.path.join(dest_dir, f"{name}_{w}x{h}.png")
+        color = corner_color(src)
+        run([ffmpeg(), "-v", "error", "-y", "-i", src, "-vf",
+             f"scale={sw}:{sh}:flags=lanczos,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color={color}", dest])
+        ox, oy = (w - sw) / 2, (h - sh) / 2
+        x0, y0, x1, y1 = m["box"]
+        out[name] = {"local": dest, "scale": scale,
+                     "box": ((ox + x0 * sw) / w, (oy + y0 * sh) / h, (ox + x1 * sw) / w, (oy + y1 * sh) / h)}
+    return out
+
+
+def frame_diff(a_path, b_path):
+    """Mean absolute luma difference (0-255) between two images/first frames
+    of two videos, both scaled to 256 px wide. Identical anchors -> ~0."""
+    with tempfile.TemporaryDirectory() as td:
+        a_path, b_path = os.path.abspath(a_path), os.path.abspath(b_path)   # cwd is the temp dir below
+        run([ffmpeg(), "-v", "error", "-i", a_path, "-i", b_path, "-filter_complex",
+             "[0:v]trim=end_frame=1,scale=256:-2,format=gray[a];[1:v]trim=end_frame=1,scale=256:-2,format=gray[b];"
+             "[a][b]blend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=d.txt",
+             "-frames:v", "1", "-f", "null", "-"], cwd=td)
+        vals = re.findall(r"YAVG=([\d.]+)", open(os.path.join(td, "d.txt")).read())
+    return float(vals[0]) if vals else 255.0
+
+
+def last_frame_png(path, dest):
+    """The final frame of a video as a PNG."""
+    n = info(path)["frames"]
+    return extract_frame(path, max(0, n - 1), dest)
 
 
 def trim_copy(src, dest, start_frame, end_frame):

@@ -246,11 +246,23 @@ binds 127.0.0.1 only; `studio\import_clip.py` adds existing mp4s.
 
 `mode: "turntable"` (added 2026-09-06): the car 360 as one farm job, same
 flow the studio uses (`worker/studio/turntable.py`, run in-process against
-ComfyUI). `params.video_gen.turntable = {front, rear, car, details,
-seconds_per_half, resolution, seed, fps, shorter_size}`; result is the 60 fps
-loop plus `outputs/<id>-piece1..N.mp4` and `-joined24.mp4` sidecars. 25-45
-GPU minutes; file with `timeout_minutes` 150. Exposed in the MCP
-`submit_render_job` as `video_gen.turntable`.
+ComfyUI). Two-anchor: `turntable = {front, rear, car, details,
+seconds_per_half, ...}` -> `front_to_rear`, `rear_to_front`. Four-anchor
+(same day, later): add `left` and `right` (the vehicle's own sides, both
+required) -> `front_to_left`, `left_to_rear`, `rear_to_right`,
+`right_to_front`, clockwise from above, `seconds_per_quarter` (5). `segments`
+picks a consecutive subset (one quarter to review), `ready_segments`
+`{name: {bucket, path}}` reuses approved native 24 fps segment clips instead of
+regenerating them (all four ready = assembly only, no GPU). Photos are padded
+at one common scale and rejected with numbers when they do not match; every
+seam and the loop seam are measured. Sidecars: `outputs/<id>-<segment>.mp4`
+(native 24 fps), `-joined24.mp4`, `-manifest.json` (segments, seams, defects,
+timing); two-anchor jobs also keep `-piece1..2.mp4`. Inputs may be
+extensionless (`assets/sha256/<hex>`): `videogen/media_type.py` sniffs and
+verifies them. ~5 min per 5 s quarter, ~9 min per 10 s half at 768p; MCP
+default `timeout_minutes` 150 (two) / 180 (four). Tests:
+`cd worker && ..\.venv\Scripts\python.exe -m unittest discover -s tests -t .`.
+Contract for the platform: `docs/video_gen-platform-brief.md`.
 
 PC-side checks without Supabase: `worker\videogen\smoke.py` (t2v/i2v/r2v
 flags, prints VRAM before/after and wall time). Queue path:
