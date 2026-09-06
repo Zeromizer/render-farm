@@ -51,13 +51,15 @@ def ensure_server(log, wait_seconds=240):
     if not os.path.exists(bat):
         raise ComfyError(f"ComfyUI launcher missing: {bat}")
     log(f"comfyui not running; launching {bat}")
-    # Detached: the server must outlive this job (and this worker process).
-    # The bat redirects its own output to comfyui-headless.log; handing it a
-    # file handle from here did not survive the detached launch.
+    # CREATE_NO_WINDOW only: cmd gets a hidden console that python.exe inherits.
+    # Adding DETACHED_PROCESS (as this once did) gave cmd no console at all, so
+    # python allocated its own, and Windows 11 hands a fresh console to Windows
+    # Terminal: a visible tab titled ".venv\Scripts\python.exe" on every launch.
+    # The server outlives the worker regardless (no job object ties them). ComfyUI
+    # writes its own log to comfyui-headless.log (see the bat).
     subprocess.Popen(["cmd", "/c", bat], cwd=config.COMFYUI_DIR,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-                     | getattr(subprocess, "DETACHED_PROCESS", 0))
+                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         if is_up():
