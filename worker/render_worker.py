@@ -5,6 +5,7 @@ pythonw-safe (tees output to worker.log). Crash-only: uncaught errors exit the
 process and the supervisor restarts it; stale jobs are reclaimed via RPC.
 """
 import os
+import json
 import shutil
 import sys
 import traceback
@@ -36,7 +37,7 @@ class _Tee:
         return False
 
 
-_logf = open(os.path.join(_HERE, "worker.log"), "a", buffering=1, encoding="utf-8")
+_logf = open(os.path.join(_HERE, "preview-worker.log" if os.environ.get("RENDER_WORKER_LANE") == "preview" else "worker.log"), "a", buffering=1, encoding="utf-8")
 sys.stdout = _Tee(sys.__stdout__, _logf)
 sys.stderr = _Tee(sys.__stderr__, _logf)
 
@@ -87,6 +88,8 @@ def log(msg):
 def run_job(job):
     jid = job["id"]
     engine = job["engine"]
+    if config.WORKER_LANE == "preview" and (engine != "hyperframes" or (job.get("params") or {}).get("output_kind") != "still"):
+        raise RuntimeError("Preview worker accepts only HyperFrames still jobs")
     runner = RUNNERS.get(engine)
     if runner is None:
         raise RuntimeError(f"unknown engine: {engine}")
@@ -117,6 +120,18 @@ def run_job(job):
         )
 
         db.set_phase(jid, "uploading", 99)
+        if engine == "hyperframes" and (job.get("params") or {}).get("snapshot_times"):
+            with open(out_local, encoding="utf-8") as handle:
+                batch = json.load(handle)
+            snapshots = batch["snapshots"]
+            if len(snapshots) != len(job["params"]["snapshot_times"]):
+                raise RuntimeError("Incomplete snapshot batch")
+            for index, snapshot in enumerate(snapshots):
+                if cancel_check():
+                    raise proc.Canceled()
+                snapshot["path"] = db.upload_file(f"outputs/{jid}-slide-{index}.png", snapshot.pop("file"), "image/png")
+            with open(out_local, "w", encoding="utf-8") as handle:
+                json.dump(batch, handle)
         remote = db.upload_output(jid, out_local, ext, content_type)
         signed = db.create_signed_url(remote)
 
@@ -136,7 +151,7 @@ def run_job(job):
 
 def main():
     from singleton import ensure_single_instance
-    ensure_single_instance("worker")
+    ensure_single_instance("preview-worker" if config.WORKER_LANE == "preview" else "worker")
     log(f"render worker starting (cache={config.CACHE_DIR})")
     git_cache.cleanup_old(log)
     assets.cleanup_old(log)
@@ -157,12 +172,17 @@ def main():
                 db.reclaim_stale()
             except Exception:
                 pass
-        if polls % 10 == 1:
+        if polls % 10 == 1 and config.WORKER_LANE != "preview":
             try:
                 queue_status.annotate(log)   # "queued: N ahead, starts in ~M min" on waiting rows
             except Exception as e:
                 log(f"queue annotate error (ignored): {str(e)[:120]}")
         try:
+            if config.WORKER_LANE == "preview":
+                from preview_resources import can_start
+                if not can_start():
+                    time.sleep(max(5, config.POLL_SECONDS))
+                    continue
             job = db.claim_job()
             claim_err_logged = False
         except Exception as e:

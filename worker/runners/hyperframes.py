@@ -42,6 +42,7 @@ Every runner here returns exactly one (path, ext, content_type); a png-sequence
 is zipped, the way blender.py does.
 """
 import json
+import math
 import os
 import re
 import shutil
@@ -228,6 +229,10 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
 
 def _snapshot(cli, project_dir, entry, params, work_dir, heartbeat, log, run_kw):
     """One PNG at params.at seconds. The still counterpart of `remotion still`."""
+    times = params.get("snapshot_times")
+    if times is not None:
+        if not isinstance(times, list) or not 2 <= len(times) <= 24 or any(isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) or t < 0 for t in times) or times != sorted(set(times)):
+            raise ValueError("snapshot_times must be 2-24 distinct ascending nonnegative seconds")
     at = float(params.get("at") or 0)
     out_dir = os.path.join(work_dir, "snap")
     # `snapshot` has no --composition flag (0.8.26): it takes the project DIR
@@ -237,8 +242,10 @@ def _snapshot(cli, project_dir, entry, params, work_dir, heartbeat, log, run_kw)
     # copy renders identically. The checkout is the worker's own cache and is
     # reset on the next checkout, but restore anyway so a cancelled job leaves
     # the tree as it found it.
-    cmd = cli + ["snapshot", project_dir, "--at", f"{at:g}", "--frames", "1",
-                 "--no-end", "--output", out_dir, "--json"]
+    cmd = cli + ["snapshot", project_dir, "--at", ",".join(f"{t:g}" for t in times) if times else f"{at:g}",
+                 "--frames", str(len(times) if times else 1), "--no-end", "--describe", "false", "--output", out_dir, "--json"]
+    if os.environ.get("RENDER_WORKER_LANE") == "preview":
+        cmd += ["--no-browser-gpu"]
     index = os.path.join(project_dir, "index.html")
     backup = None
     swap = os.path.normcase(os.path.abspath(os.path.join(project_dir, entry))) != os.path.normcase(os.path.abspath(index))
@@ -253,8 +260,17 @@ def _snapshot(cli, project_dir, entry, params, work_dir, heartbeat, log, run_kw)
     finally:
         if backup:
             shutil.copy2(backup, index)
-    pngs = sorted(f for f in os.listdir(out_dir) if f.lower().endswith(".png")) if os.path.isdir(out_dir) else []
+    pngs = sorted((f for f in os.listdir(out_dir) if f.lower().endswith(".png")),
+                  key=lambda f: [int(n) if n.isdigit() else n for n in re.split(r"(\d+)", f)]) if os.path.isdir(out_dir) else []
     if not pngs:
         raise RuntimeError("hyperframes snapshot produced no PNG")
     heartbeat.progress = 95
+    if times:
+        if len(pngs) != len(times):
+            raise RuntimeError(f"Expected {len(times)} snapshot images, got {len(pngs)}")
+        # Worker uploads these sidecars before marking the batch done.
+        manifest = os.path.join(work_dir, "snapshot-batch.json")
+        with open(manifest, "w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "snapshots": [{"at": t, "file": os.path.join(out_dir, name)} for t, name in zip(times, pngs)]}, handle)
+        return manifest, "json", "application/json"
     return os.path.join(out_dir, pngs[0]), "png", "image/png"

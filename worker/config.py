@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+WORKER_LANE = os.environ.get("RENDER_WORKER_LANE", "main")
 load_dotenv(os.path.join(ROOT, ".env"))
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
