@@ -85,11 +85,55 @@ def log(msg):
     print(f"[{db.now_iso()}] {msg}", flush=True)
 
 
+class PreviewRefused(Exception):
+    """The preview lane claimed something it must not run; the row was re-queued."""
+
+
+def preview_can_run(job):
+    return job.get("engine") == "hyperframes" and (job.get("params") or {}).get("output_kind") == "still"
+
+
+def upload_snapshot_batch(jid, manifest_local, times, cancel_check):
+    """Upload every slide of a storyboard batch, then rewrite the local manifest with
+    bucket paths (no local paths) for the caller to upload as outputs/<jid>.json.
+
+    Raises before anything is marked done when the runner produced fewer or more
+    frames than requested, when a slide upload fails, or when the job is canceled
+    between slides. The row therefore ends failed / canceled, never done with a
+    slide missing. Slides already uploaded are left in place; the retry rewrites
+    them (upsert)."""
+    with open(manifest_local, encoding="utf-8") as handle:
+        batch = json.load(handle)
+    snapshots = batch.get("snapshots") or []
+    if len(snapshots) != len(times):
+        raise RuntimeError(f"Incomplete snapshot batch: {len(snapshots)} images for {len(times)} timestamps")
+    for index, (snapshot, at) in enumerate(zip(snapshots, times)):
+        if float(snapshot.get("at", at)) != float(at):
+            raise RuntimeError(f"snapshot batch order mismatch at slide {index}: {snapshot.get('at')} vs {at}")
+        if cancel_check():
+            raise proc.Canceled()
+        local = snapshot.pop("file")
+        if not os.path.exists(local) or os.path.getsize(local) == 0:
+            raise RuntimeError(f"snapshot slide {index} is missing or empty: {local}")
+        snapshot["index"] = index
+        snapshot["at"] = at
+        snapshot["bucket"] = config.BUCKET
+        snapshot["path"] = db.upload_file(f"outputs/{jid}-slide-{index}.png", local, "image/png")
+    batch.update({"version": 1, "job_id": jid, "count": len(times), "bucket": config.BUCKET, "snapshots": snapshots})
+    with open(manifest_local, "w", encoding="utf-8") as handle:
+        json.dump(batch, handle)
+    return batch
+
+
 def run_job(job):
     jid = job["id"]
     engine = job["engine"]
-    if config.WORKER_LANE == "preview" and (engine != "hyperframes" or (job.get("params") or {}).get("output_kind") != "still"):
-        raise RuntimeError("Preview worker accepts only HyperFrames still jobs")
+    if config.WORKER_LANE == "preview" and not preview_can_run(job):
+        # Defence in depth behind the claim RPC's filter: hand the job back untouched
+        # for the main worker instead of failing it.
+        db.update_job(jid, {"status": "pending", "phase": "queued", "claimed_at": None,
+                            "heartbeat_at": None, "error": None})
+        raise PreviewRefused(f"preview lane refused {engine} job {jid}; returned to the queue")
     runner = RUNNERS.get(engine)
     if runner is None:
         raise RuntimeError(f"unknown engine: {engine}")
@@ -121,17 +165,7 @@ def run_job(job):
 
         db.set_phase(jid, "uploading", 99)
         if engine == "hyperframes" and (job.get("params") or {}).get("snapshot_times"):
-            with open(out_local, encoding="utf-8") as handle:
-                batch = json.load(handle)
-            snapshots = batch["snapshots"]
-            if len(snapshots) != len(job["params"]["snapshot_times"]):
-                raise RuntimeError("Incomplete snapshot batch")
-            for index, snapshot in enumerate(snapshots):
-                if cancel_check():
-                    raise proc.Canceled()
-                snapshot["path"] = db.upload_file(f"outputs/{jid}-slide-{index}.png", snapshot.pop("file"), "image/png")
-            with open(out_local, "w", encoding="utf-8") as handle:
-                json.dump(batch, handle)
+            upload_snapshot_batch(jid, out_local, job["params"]["snapshot_times"], cancel_check)
         remote = db.upload_output(jid, out_local, ext, content_type)
         signed = db.create_signed_url(remote)
 
@@ -200,6 +234,8 @@ def main():
         try:
             remote = run_job(job)
             log(f"done {jid} -> {remote}")
+        except PreviewRefused as e:
+            log(str(e))
         except proc.Canceled:
             db.update_job(jid, {"status": "canceled", "phase": "canceled",
                                 "completed_at": db.now_iso()})

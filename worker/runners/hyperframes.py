@@ -320,11 +320,39 @@ def _snapshot(cli, project_dir, entry, params, work_dir, heartbeat, log, run_kw)
         raise RuntimeError("hyperframes snapshot produced no PNG")
     heartbeat.progress = 95
     if times:
-        if len(pngs) != len(times):
-            raise RuntimeError(f"Expected {len(times)} snapshot images, got {len(pngs)}")
+        ordered = order_snapshots(pngs, times)
         # Worker uploads these sidecars before marking the batch done.
         manifest = os.path.join(work_dir, "snapshot-batch.json")
         with open(manifest, "w", encoding="utf-8") as handle:
-            json.dump({"version": 1, "snapshots": [{"at": t, "file": os.path.join(out_dir, name)} for t, name in zip(times, pngs)]}, handle)
+            json.dump({"version": 1, "count": len(times),
+                       "snapshots": [{"index": i, "at": t, "file": os.path.join(out_dir, name)}
+                                     for i, (t, name) in enumerate(zip(times, ordered))]}, handle)
         return manifest, "json", "application/json"
     return os.path.join(out_dir, pngs[0]), "png", "image/png"
+
+
+_SNAP_NAME_RE = re.compile(r"^frame-(\d+)-at-([0-9.]+)s\.png$", re.IGNORECASE)
+
+
+def order_snapshots(pngs, times):
+    """Return the PNG names in the order of `times`, verified against the CLI's own
+    naming (`frame-NN-at-<t>s.png`, 0.8.26). Position alone is not trusted: a
+    natural sort of `frame-01-at-1.25s.png` vs `frame-01-at-1.5s.png` style names
+    would compare 25 against 5, and a missing or extra frame must not silently
+    shift every later slide onto the wrong timestamp. Names that do not follow
+    the pattern fall back to sorted order, still checked for count."""
+    if len(pngs) != len(times):
+        raise RuntimeError(f"Expected {len(times)} snapshot images, got {len(pngs)}: {pngs}")
+    parsed = [_SNAP_NAME_RE.match(n) for n in pngs]
+    if not all(parsed):
+        return list(pngs)
+    by_index = {int(m.group(1)): (n, float(m.group(2))) for n, m in zip(pngs, parsed)}
+    if sorted(by_index) != list(range(len(times))):
+        raise RuntimeError(f"snapshot frame indexes are not 0..{len(times) - 1}: {pngs}")
+    ordered = []
+    for i, t in enumerate(times):
+        name, at = by_index[i]
+        if abs(at - float(t)) > 0.0505:      # the CLI prints %g of the requested time
+            raise RuntimeError(f"snapshot {name} is at {at:g}s but slide {i} was requested at {float(t):g}s")
+        ordered.append(name)
+    return ordered
