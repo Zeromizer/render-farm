@@ -138,7 +138,13 @@ shell is downloaded once into `~/.cache\hyperframes\chrome` by `hyperframes
 browser ensure`, which the runner calls the first time each worker process
 renders; fonts pulled from Google Fonts are cached under
 `~/.cache\hyperframes\fonts`, so warm them once online. Telemetry and update
-checks are disabled through the environment. Measured on the laptop iGPU: a
+checks are disabled through the environment. On Windows the runner also patches
+`@puppeteer/browsers/lib/launch.js` inside the npx cache right after `browser
+ensure` (`detached` off for win32): Puppeteer's detached launch makes
+CreateProcess ignore CREATE_NO_WINDOW, so chrome-headless-shell and each child
+process it forks otherwise open a visible Windows Terminal window on the render
+PC (eight per snapshot, measured 2026-09-07). Idempotent, re-applied per
+version. Measured on the laptop iGPU: a
 645-frame 1080x1920 footage reel with music in 69 s, A/V offset 0 ms (no AAC
 priming compensation needed, unlike Remotion's ~+40 ms).
 

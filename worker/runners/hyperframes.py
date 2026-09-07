@@ -131,12 +131,66 @@ def _env():
     return env
 
 
+_DETACHED_ORIG = "opts.detached ??= true;"
+_DETACHED_PATCHED = 'opts.detached ??= process.platform !== "win32";'
+
+
+def _npx_cache_dirs(ver):
+    """Every <npm cache>/_npx/<hash>/node_modules that holds hyperframes@ver.
+
+    `npx --yes hyperframes@X` unpacks the CLI and its dependency tree there
+    and reuses it on every later call, so a file patched in place stays
+    patched until the version (and with it the hash directory) changes.
+    """
+    import glob
+    root = os.environ.get("npm_config_cache") or os.path.join(os.environ.get("LOCALAPPDATA", ""), "npm-cache")
+    for pkg in glob.glob(os.path.join(root, "_npx", "*", "node_modules", "hyperframes", "package.json")):
+        try:
+            with open(pkg, encoding="utf-8") as f:
+                if json.load(f).get("version") == ver:
+                    yield os.path.dirname(os.path.dirname(pkg))
+        except (OSError, ValueError):
+            continue
+
+
+def _hide_chrome_consoles(ver, log):
+    """Stop chrome-headless-shell from popping console windows on the render PC.
+
+    @puppeteer/browsers spawns the browser with `detached: true` by default.
+    On Windows that is DETACHED_PROCESS, and CreateProcess ignores
+    CREATE_NO_WINDOW (Node's windowsHide) when it is set — so the headless
+    shell, a console-subsystem exe, starts with no console at all, and every
+    child it forks (gpu, renderer, utility ...) allocates a fresh visible one.
+    Measured: 8 Windows Terminal windows per `hyperframes snapshot`, 0 after
+    this one-line change; render output is identical. Idempotent, Windows-only,
+    re-applied whenever the npx cache is rebuilt for a new pinned version.
+    """
+    if os.name != "nt":
+        return
+    for nm in _npx_cache_dirs(ver):
+        launch = os.path.join(nm, "@puppeteer", "browsers", "lib", "launch.js")
+        try:
+            with open(launch, encoding="utf-8") as f:
+                src = f.read()
+        except OSError:
+            continue
+        if _DETACHED_PATCHED in src:
+            continue
+        if _DETACHED_ORIG not in src:
+            log(f"hyperframes: {launch} has an unexpected layout; Chrome console windows may pop up during renders")
+            continue
+        with open(launch, "w", encoding="utf-8") as f:
+            f.write(src.replace(_DETACHED_ORIG, _DETACHED_PATCHED, 1))
+        log(f"hyperframes: patched {launch} so chrome-headless-shell stays windowless")
+
+
 def _ensure_browser(cli, project_dir, log, run_kw):
-    ver = cli[-1]
+    ver = cli[-1].split("@", 1)[1]
     if ver in _BROWSER_READY:
         return
     log("hyperframes: browser ensure (cached after the first run)")
     proc.run_streaming(cli + ["browser", "ensure"], cwd=project_dir, env=_env(), **run_kw)
+    _hide_chrome_consoles(ver, log)
     _BROWSER_READY.add(ver)
 
 
