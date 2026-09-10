@@ -13,7 +13,7 @@ def now_iso():
 
 
 def claim_job():
-    rows = sb.rpc("claim_farm_job").execute().data or []
+    rows = sb.rpc("claim_farm_preview_job" if config.WORKER_LANE == "preview" else "claim_farm_job").execute().data or []
     return rows[0] if rows else None
 
 

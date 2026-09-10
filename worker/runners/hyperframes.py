@@ -42,6 +42,7 @@ Every runner here returns exactly one (path, ext, content_type); a png-sequence
 is zipped, the way blender.py does.
 """
 import json
+import math
 import os
 import re
 import shutil
@@ -130,12 +131,66 @@ def _env():
     return env
 
 
+_DETACHED_ORIG = "opts.detached ??= true;"
+_DETACHED_PATCHED = 'opts.detached ??= process.platform !== "win32";'
+
+
+def _npx_cache_dirs(ver):
+    """Every <npm cache>/_npx/<hash>/node_modules that holds hyperframes@ver.
+
+    `npx --yes hyperframes@X` unpacks the CLI and its dependency tree there
+    and reuses it on every later call, so a file patched in place stays
+    patched until the version (and with it the hash directory) changes.
+    """
+    import glob
+    root = os.environ.get("npm_config_cache") or os.path.join(os.environ.get("LOCALAPPDATA", ""), "npm-cache")
+    for pkg in glob.glob(os.path.join(root, "_npx", "*", "node_modules", "hyperframes", "package.json")):
+        try:
+            with open(pkg, encoding="utf-8") as f:
+                if json.load(f).get("version") == ver:
+                    yield os.path.dirname(os.path.dirname(pkg))
+        except (OSError, ValueError):
+            continue
+
+
+def _hide_chrome_consoles(ver, log):
+    """Stop chrome-headless-shell from popping console windows on the render PC.
+
+    @puppeteer/browsers spawns the browser with `detached: true` by default.
+    On Windows that is DETACHED_PROCESS, and CreateProcess ignores
+    CREATE_NO_WINDOW (Node's windowsHide) when it is set — so the headless
+    shell, a console-subsystem exe, starts with no console at all, and every
+    child it forks (gpu, renderer, utility ...) allocates a fresh visible one.
+    Measured: 8 Windows Terminal windows per `hyperframes snapshot`, 0 after
+    this one-line change; render output is identical. Idempotent, Windows-only,
+    re-applied whenever the npx cache is rebuilt for a new pinned version.
+    """
+    if os.name != "nt":
+        return
+    for nm in _npx_cache_dirs(ver):
+        launch = os.path.join(nm, "@puppeteer", "browsers", "lib", "launch.js")
+        try:
+            with open(launch, encoding="utf-8") as f:
+                src = f.read()
+        except OSError:
+            continue
+        if _DETACHED_PATCHED in src:
+            continue
+        if _DETACHED_ORIG not in src:
+            log(f"hyperframes: {launch} has an unexpected layout; Chrome console windows may pop up during renders")
+            continue
+        with open(launch, "w", encoding="utf-8") as f:
+            f.write(src.replace(_DETACHED_ORIG, _DETACHED_PATCHED, 1))
+        log(f"hyperframes: patched {launch} so chrome-headless-shell stays windowless")
+
+
 def _ensure_browser(cli, project_dir, log, run_kw):
-    ver = cli[-1]
+    ver = cli[-1].split("@", 1)[1]
     if ver in _BROWSER_READY:
         return
     log("hyperframes: browser ensure (cached after the first run)")
     proc.run_streaming(cli + ["browser", "ensure"], cwd=project_dir, env=_env(), **run_kw)
+    _hide_chrome_consoles(ver, log)
     _BROWSER_READY.add(ver)
 
 
@@ -228,6 +283,10 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
 
 def _snapshot(cli, project_dir, entry, params, work_dir, heartbeat, log, run_kw):
     """One PNG at params.at seconds. The still counterpart of `remotion still`."""
+    times = params.get("snapshot_times")
+    if times is not None:
+        if not isinstance(times, list) or not 2 <= len(times) <= 24 or any(isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) or t < 0 for t in times) or times != sorted(set(times)):
+            raise ValueError("snapshot_times must be 2-24 distinct ascending nonnegative seconds")
     at = float(params.get("at") or 0)
     out_dir = os.path.join(work_dir, "snap")
     # `snapshot` has no --composition flag (0.8.26): it takes the project DIR
@@ -237,8 +296,10 @@ def _snapshot(cli, project_dir, entry, params, work_dir, heartbeat, log, run_kw)
     # copy renders identically. The checkout is the worker's own cache and is
     # reset on the next checkout, but restore anyway so a cancelled job leaves
     # the tree as it found it.
-    cmd = cli + ["snapshot", project_dir, "--at", f"{at:g}", "--frames", "1",
-                 "--no-end", "--output", out_dir, "--json"]
+    cmd = cli + ["snapshot", project_dir, "--at", ",".join(f"{t:g}" for t in times) if times else f"{at:g}",
+                 "--frames", str(len(times) if times else 1), "--no-end", "--describe", "false", "--output", out_dir, "--json"]
+    if os.environ.get("RENDER_WORKER_LANE") == "preview":
+        cmd += ["--no-browser-gpu"]
     index = os.path.join(project_dir, "index.html")
     backup = None
     swap = os.path.normcase(os.path.abspath(os.path.join(project_dir, entry))) != os.path.normcase(os.path.abspath(index))
@@ -253,8 +314,45 @@ def _snapshot(cli, project_dir, entry, params, work_dir, heartbeat, log, run_kw)
     finally:
         if backup:
             shutil.copy2(backup, index)
-    pngs = sorted(f for f in os.listdir(out_dir) if f.lower().endswith(".png")) if os.path.isdir(out_dir) else []
+    pngs = sorted((f for f in os.listdir(out_dir) if f.lower().endswith(".png")),
+                  key=lambda f: [int(n) if n.isdigit() else n for n in re.split(r"(\d+)", f)]) if os.path.isdir(out_dir) else []
     if not pngs:
         raise RuntimeError("hyperframes snapshot produced no PNG")
     heartbeat.progress = 95
+    if times:
+        ordered = order_snapshots(pngs, times)
+        # Worker uploads these sidecars before marking the batch done.
+        manifest = os.path.join(work_dir, "snapshot-batch.json")
+        with open(manifest, "w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "count": len(times),
+                       "snapshots": [{"index": i, "at": t, "file": os.path.join(out_dir, name)}
+                                     for i, (t, name) in enumerate(zip(times, ordered))]}, handle)
+        return manifest, "json", "application/json"
     return os.path.join(out_dir, pngs[0]), "png", "image/png"
+
+
+_SNAP_NAME_RE = re.compile(r"^frame-(\d+)-at-([0-9.]+)s\.png$", re.IGNORECASE)
+
+
+def order_snapshots(pngs, times):
+    """Return the PNG names in the order of `times`, verified against the CLI's own
+    naming (`frame-NN-at-<t>s.png`, 0.8.26). Position alone is not trusted: a
+    natural sort of `frame-01-at-1.25s.png` vs `frame-01-at-1.5s.png` style names
+    would compare 25 against 5, and a missing or extra frame must not silently
+    shift every later slide onto the wrong timestamp. Names that do not follow
+    the pattern fall back to sorted order, still checked for count."""
+    if len(pngs) != len(times):
+        raise RuntimeError(f"Expected {len(times)} snapshot images, got {len(pngs)}: {pngs}")
+    parsed = [_SNAP_NAME_RE.match(n) for n in pngs]
+    if not all(parsed):
+        return list(pngs)
+    by_index = {int(m.group(1)): (n, float(m.group(2))) for n, m in zip(pngs, parsed)}
+    if sorted(by_index) != list(range(len(times))):
+        raise RuntimeError(f"snapshot frame indexes are not 0..{len(times) - 1}: {pngs}")
+    ordered = []
+    for i, t in enumerate(times):
+        name, at = by_index[i]
+        if abs(at - float(t)) > 0.0505:      # the CLI prints %g of the requested time
+            raise RuntimeError(f"snapshot {name} is at {at:g}s but slide {i} was requested at {float(t):g}s")
+        ordered.append(name)
+    return ordered
