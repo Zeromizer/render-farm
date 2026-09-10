@@ -159,8 +159,9 @@ class UpscaleGraphs(unittest.TestCase):
                      "blend_mode", "context_source"):
             self.assertIn(name, t, name)
         self.assertEqual((t["tile_width"], t["tile_height"], t["overlap"], t["context_padding"]), (640, 384, 64, 64))
+        # PC 2026-09-10 default: reprocess + half_cosine (context_only + hard showed seams)
         self.assertEqual((t["traversal"], t["overlap_mode"], t["blend_mode"], t["context_source"]),
-                         ("snake", "context_only", "hard", "composited"))
+                         ("snake", "reprocess", "half_cosine", "composited"))
         self.assertEqual(g["dec_up"]["inputs"]["samples"], ["up", 0])
         self.assertEqual(g["dec"]["inputs"]["samples"], ["tile", 0])
         self.assertEqual(g["adec"]["inputs"]["samples"], ["tile", 0])
@@ -177,15 +178,15 @@ class UpscaleGraphs(unittest.TestCase):
 
     def test_tile_blend_modes(self):
         # PC 2026-09-10: context_only/hard leaves visible seams; the node's own rules for the alternatives.
-        u = graphs_h3.validate_upscale_params(dict(self.u, overlap_mode="reprocess", blend_mode="half_cosine"), "upscale")
+        u = graphs_h3.validate_upscale_params(dict(self.u, overlap_mode="context_only", blend_mode="hard"), "upscale")
         g, meta = graphs_h3.build_latent_upscale(u, ABS, (480, 832), "video_gen/j-h3up")
         self.assertEqual((g["tile"]["inputs"]["overlap_mode"], g["tile"]["inputs"]["blend_mode"]),
-                         ("reprocess", "half_cosine"))
-        self.assertEqual((meta["tiles"]["overlap_mode"], meta["tiles"]["blend_mode"]), ("reprocess", "half_cosine"))
+                         ("context_only", "hard"))
+        self.assertEqual((meta["tiles"]["overlap_mode"], meta["tiles"]["blend_mode"]), ("context_only", "hard"))
         with self.assertRaisesRegex(ValueError, "needs overlap_mode 'reprocess'"):
-            graphs_h3.validate_upscale_params(dict(self.u, blend_mode="linear"), "upscale")
+            graphs_h3.validate_upscale_params(dict(self.u, overlap_mode="context_only", blend_mode="linear"), "upscale")
         with self.assertRaisesRegex(ValueError, "needs blend_mode 'linear' or 'half_cosine'"):
-            graphs_h3.validate_upscale_params(dict(self.u, overlap_mode="reprocess"), "upscale")
+            graphs_h3.validate_upscale_params(dict(self.u, overlap_mode="reprocess", blend_mode="hard"), "upscale")
         with self.assertRaisesRegex(ValueError, "tile_overlap > 0"):
             graphs_h3.validate_upscale_params(dict(self.u, overlap_mode="reprocess", blend_mode="linear",
                                                    tile_overlap=0), "upscale")

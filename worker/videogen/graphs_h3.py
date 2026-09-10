@@ -56,13 +56,17 @@ METHOD = "h3_latent_upscale"
 # Provisional pixel-frame guard for the full-frame refine on a 16 GB card:
 # 1088x1920 x 73 frames (3 s). The PC measurement replaces this.
 FULL_MAX_PXF = 1088 * 1920 * 73
+# PC 2026-09-10: the F07 reference default (overlap_mode context_only + blend hard) left visible
+# hard seams on the 480p -> 1080p car clip (a vertical cut through the hood at the column boundary,
+# horizontal bands at the fenders); reprocess + half_cosine re-samples the 64 px overlaps and blends
+# them, the seams vanish, and the cost and VRAM are the same. That is the worker default now; the
+# F07 pair is still selectable (upscale.overlap_mode / blend_mode).
 TILE_DEFAULTS = {"tile_width": 640, "tile_height": 384, "tile_overlap": 64, "context_padding": 64,
-                 "traversal": "snake", "overlap_mode": "context_only", "blend_mode": "hard",
+                 "traversal": "snake", "overlap_mode": "reprocess", "blend_mode": "half_cosine",
                  "context_source": "composited"}
 # MMH3H3NativeTileRefine combos (bca81b8c spatial_tiles.py). Its own rules: context_only overlap
 # requires blend hard (exclusive ownership); reprocess overlap requires linear or half_cosine and
-# an overlap > 0. PC 2026-09-10: the F07 default (context_only/hard) leaves visible hard seams on
-# car footage, see docs/h3-latent-upscale-pc-handoff.md.
+# an overlap > 0.
 TILE_MODE_OPTIONS = {"traversal": ("row_major", "snake"), "overlap_mode": ("context_only", "reprocess"),
                      "blend_mode": ("hard", "linear", "half_cosine"), "context_source": ("original", "composited")}
 # Anchored on the RTX 4080 SUPER 2026-09-10 (lanczos-resized source as the reference): lanczos
