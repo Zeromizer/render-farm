@@ -136,3 +136,61 @@ paths are untouched by this branch except the added kwargs, and must behave as b
 - `README.md` video_gen section and `docs/video_gen-platform-brief.md`: replace "provisional" numbers.
 - Commit the fixture and constants on `feat/h3-latent-upscale`, merge to `main`, and tell the laptop
   session (intercom) so the platform side can be deployed and `H3_SAVE_LATENT_DEFAULT` flipped.
+
+## 9. PC results (RTX 4080 SUPER 16 GB, 31 GB RAM, ComfyUI 0.34.0, 2026-09-10)
+
+Install: mmh3_media `bca81b8c` and the upscaler `d7c01b90` import cleanly on 0.34.0 (100 MMH3/upscaler
+classes); weight 690,592,992 bytes. All five guessed option strings were right. Fixture:
+`worker/tests/fixtures/object_info_pc.json` (live dump), checked by `tests/test_h3_preflight.py`.
+
+What had to change before anything ran (all on this branch):
+
+| # | symptom | fix |
+|---|---|---|
+| 1 | preflight: `MMH3Put` requires `resource_id/name/tags/descriptor_json/extensions_json` (strings, default ""); `LoadVideo.file` combo is the input-folder listing | graphs set the strings; preflight skips `*_upload` combos (d7c1931) |
+| 2 | ComfyUI's cp1252 console: the upscaler node prints a check-mark emoji, `UnicodeEncodeError` inside ComfyUI's stdout interceptor wedged the prompt as "running" forever | `PYTHONUTF8=1` in `run-headless.bat` did not help; the emoji in `Comfyui_Minimax_h3_latent_Upscaler/nodes/minimax_h3_latent_upscaler_3d.py:603` is replaced by `OK` (local patch, re-apply after a node update) |
+| 3 | tile: "Packet has no F16 control configuration" (`nodes_upscale.py:590`) | the tile node must not receive `packet` (the reference F07 tile workflow leaves it unlinked too) |
+| 4 | tile: `shape mismatch [2006, 96] vs [308, 96]` in `comfy/ldm/minimax/model.py:700` | per-tile sampling cannot take the i2v first/last-frame conditioning rows; the tile guider is text-only at the refine size (`MMH3Inspect` prompt -> `MiniMaxH3ImageToVideo` without frames), cab2da8 |
+| 5 | decoded: `H3 AV duration mismatch: video T=22 implies 73 frames / audio T40=122, but audio latent has T40=121` (also 124 f: 206 vs 207) | mmh3_media slices audio to `frames*32000//24` samples (VAE floors to 800-sample latent frames) while its validator rounds; only lengths divisible by 3 (39, 90, 141, 192, 243) pass. The worker trims a decoded source to the largest AV-exact length first (`segments.trim_frames`, per-stream filters so the audio runs past the video) and says so in `warnings` |
+| 6 | tile: hard seams (vertical cut through the hood at the column boundary, horizontal bands at the fenders) with the F07 pair `context_only` + `hard` | `overlap_mode`/`blend_mode`/`traversal`/`context_source` are validated knobs now; default `reprocess` + `half_cosine` is seam-free at the same cost |
+
+### Measurements (all 480p 9:16 packets from `car_2.jpg` i2v, seed 42, turbo-8, refine 1088x1888 -> crop 1080x1872)
+
+| run | wall | ComfyUI prompt | per step | nvidia-smi peak | /system_stats min free | fidelity (vs lanczos) |
+|---|---|---|---|---|---|---|
+| tile 5 s (124 f), 12 tiles 640x384, context_only/hard | 1599 s | 1589 s | ~10 s x 8 steps + ~50 s per tile | 14916 MiB | 49 MB | 0.922 / 25.2 dB |
+| tile 3 s (73 f), 12 tiles, reprocess/half_cosine | 1071 s | 1066 s | ~89 s per tile | 15157 MiB | 37 MB | 0.908 / 24.2 dB |
+| full 3 s (73 f = 150 M pxf) | 328 s | 319 s | ~34 s x 8 | 13483 MiB | 628 MB | 0.919 / 24.9 dB |
+| full 5 s (124 f = 255 M pxf, `--allow-large-full`) | ComfyUI process died after ~3 min at 15.4 GB (`HostBuffer.read_file_slice failed`, `aimdo memory compile error`) | | | | | |
+| seedvr2 lighthouse 3 s (blend 1.0) | 167 s | 163 s | | 9335 MiB | | 0.956 / 35.7 dB |
+| lanczos lighthouse 3 s | 5 s | | | | | 0.996 / 52.8 dB |
+| generation i2v 480p 9:16 5 s (+packet) | 143 s (137 s without; packet 7.6 MB) | | | | | |
+
+ComfyUI process (pid) peak working set 21.1 GB, peak paged 51 GB over the 5 s tile run: the 31 GB box
+ran it on the pagefile. The refine runs all 8 profile steps per tile (BasicScheduler keeps the
+profile's step count at denoise 0.375), not 3: `estimate.py` is calibrated to that (`H3UP_REFINE_STEPS`
+8, `H3UP_TILE_FIXED_S` 50, `H3UP_LOAD_S` 90) and now over-estimates the 5 s tile by ~10 %.
+`FULL_MAX_PXF` stays at 73 frames of 1080p (the 3 s run fits with 628 MB to spare, 5 s does not).
+
+Parity (section 4): NOT frame-identical, and it cannot be on this box. The plain graph rerun against
+itself (same seed) gives PSNR 25.7 dB / SSIM 0.930; plain vs packet 25.8 / 0.934; plain vs packet
+without `MMH3H3ModelOptimizations` 28.9 / 0.960. The packet graph is inside the model's own
+run-to-run noise (sage attention + dynamic VRAM loading), so `H3_SAVE_LATENT_DEFAULT` can be flipped
+on that basis, not on frame equality.
+
+Visual (compare videos in the smoke output): the refine is far sharper than lanczos (headlight
+internals, grille mesh, spokes, legible plate) and has no SeedVR2-style speckle. Two real defects:
+(a) the **front badge is re-imagined** by the tile variant (a different emblem each run) even at
+denoise 0 / source-aware, because the tile guider is text-only (finding 4); the full variant, which
+keeps the packet's image conditioning, kept a Proton-like emblem. (b) invented lower-bumper detail
+(skid plate, fog light) on frame 0. Badge/plate/logo shots therefore want `full` when the clip fits
+73 frames, or the `-compare.mp4` review. Fidelity thresholds were anchored on these pairs (see
+`graphs_h3.FIDELITY_DEFAULTS`): the frame floors sit under a healthy refine; the per-cell drift flag
+fires on the car's centre cells against a 0.9997 background, so it is a "look here" marker, not a gate.
+
+Drills (section 6): 1/6 queue tile without latent -> `h3_latent_upscale needs upscale.latent ...` before
+any download; 4 (60 fps master as decoded source) -> `variant 'decoded' needs a 24 fps source (got 60
+fps) ...`; 5 (768p 10 s full) -> `variant 'full' refines the whole 1920x1088 clip in one pass: 243
+frames = 508 M pixel-frames, above the 152 M guard ...`; 2/3 (weight / node dir renamed): PENDING.
+Regression (section 7): lanczos queue job done in 3 s; seedvr2 and single-quarter turntable: PENDING.
+Decoded runs, 768p 16:9 5 s tile, 480p 9:16 10 s tile: PENDING.
