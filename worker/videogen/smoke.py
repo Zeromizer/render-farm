@@ -95,6 +95,8 @@ def main():
     ap.add_argument("--fp16-accumulation", choices=graphs_h3.FP16_ACCUMULATION_OPTIONS, default="Default")
     ap.add_argument("--allow-large-full", action="store_true", help="h3 full: bypass the pixel-frame guard")
     ap.add_argument("--no-fidelity", action="store_true", help="h3: skip the ssim/psnr check and compare video")
+    ap.add_argument("--critical-cells", default="", help="h3 fidelity: 'r,c;r,c' cells (4x4 grid) that fail the run "
+                    "when they drop > 0.10 below the frame mean (badge/grille/wheel/plate)")
     ap.add_argument("--preflight-only", action="store_true",
                     help="h3: fetch /object_info, check the graphs, print the verdict and exit")
     ap.add_argument("--object-info-dump", help="write /object_info (trimmed to the classes the graphs use) to this json")
@@ -112,7 +114,8 @@ def main():
              "seed": a.seed, "force_unload": not a.no_force_unload, "fp16_accumulation": a.fp16_accumulation,
              "tile_width": a.tile_w, "tile_height": a.tile_h, "tile_overlap": a.tile_overlap,
              "context_padding": a.context_padding, "allow_large_full": a.allow_large_full,
-             "fidelity": {"enabled": not a.no_fidelity},
+             "fidelity": {"enabled": not a.no_fidelity,
+                          "critical_cells": [[int(x) for x in cell.split(",")] for cell in a.critical_cells.split(";") if cell.strip()]},
              "overlap_mode": a.tile_overlap_mode, "blend_mode": a.tile_blend_mode, "traversal": a.tile_traversal,
              "context_source": a.tile_context_source}
         if a.shorter_size:
@@ -126,10 +129,11 @@ def main():
     if a.preflight_only or a.object_info_dump:
         info = comfy_client.object_info()
         gen_graph, _ = graphs_h3.build_generation_with_packet("t2v", {"prompt": "x"}, {}, "video_gen/smoke", "mmh3/smoke")
-        u = graphs_h3.validate_upscale_params(dict(h3_params(), variant="tile", latent={"bucket": "b", "path": "p"}), "upscale")
+        u = graphs_h3.validate_upscale_params(dict(h3_params(), variant="tile", latent={"bucket": "b", "path": "p"}), "upscale",
+                                              dev=True)
         tile_graph, _ = graphs_h3.build_latent_upscale(u, os.path.abspath("x.mmh3"), (480, 832), "video_gen/smoke")
         full_graph, _ = graphs_h3.build_latent_upscale(dict(u, variant="full"), os.path.abspath("x.mmh3"), (480, 832), "video_gen/smoke")
-        dec_graph, _ = graphs_h3.build_decoded_upscale(graphs_h3.validate_upscale_params(dict(h3_params(), variant="decoded"), "upscale"),
+        dec_graph, _ = graphs_h3.build_decoded_upscale(graphs_h3.validate_upscale_params(dict(h3_params(), variant="decoded"), "upscale", dev=True),
                                                        "x.mp4", (480, 832), "video_gen/smoke")
         classes = set()
         ok = True
@@ -195,7 +199,9 @@ def main():
     def h3_upscale(src, out, latent_local):
         from studio import post
         src_info = post.info(src)
-        uu = graphs_h3.validate_upscale_params(h3_params(), "upscale", (src_info["width"], src_info["height"]), src_info["frames"])
+        # smoke is the dev tool: tile/decoded allowed here (the production worker needs H3_TILE_DEV=1)
+        uu = graphs_h3.validate_upscale_params(h3_params(), "upscale", (src_info["width"], src_info["height"]), src_info["frames"],
+                                               dev=True)
         dims = uu["_dims"]
         packet_prefix = f"mmh3/smoke_{stamp}-upscaled" if a.save_latent else None
         if uu["variant"] == "decoded":
@@ -253,7 +259,11 @@ def main():
             fidelity.compare_video(src, out, os.path.splitext(out)[0] + "-compare.mp4", log=log)
             record["timing_s"]["fidelity"] = round(time.monotonic() - t1, 1)
             record["fidelity"] = {"verdict": fid["verdict"], "frames": fid["frames"], "ssim": fid["ssim"]["mean"],
-                                  "psnr": fid["psnr"]["mean"], "cells_drift": len(fid["flags"]["cells_drift"])}
+                                  "psnr": fid["psnr"]["mean"], "cells_drift": len(fid["flags"]["cells_drift"]),
+                                  "cells_critical": len(fid["flags"].get("cells_critical") or [])}
+            if fid["verdict"] == "fail":
+                log(f"fidelity FAIL: {len(fid['flags']['cells_critical'])} critical cell-frames drifted > "
+                    f"{uu['fidelity']['cell_drop_critical']} (a production job would fail here)")
         with open(os.path.splitext(out)[0] + "-upscale.json", "w", encoding="utf-8") as f:
             json.dump(record, f, indent=1)
         log(f"h3 upscale TOTAL {time.monotonic() - t0:.0f}s -> {out}; record {os.path.splitext(out)[0]}-upscale.json")

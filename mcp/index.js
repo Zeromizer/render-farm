@@ -93,7 +93,7 @@ server.tool(
         .describe("Generation modes (t2v/i2v/turntable): also save the joint AV latent as an .mmh3 packet at outputs/<id>-latent.mmh3 (turntable: outputs/<id>-<segment>-latent.mmh3). Needs the mmh3_media node pack on the PC; the job fails loudly without it. Prerequisite for upscale.method h3_latent_upscale (tile/full)"),
       upscale: z.object({
         method: z.enum(["lanczos", "seedvr2", "h3_latent_upscale"]).optional().describe("Default lanczos: plain ffmpeg resize, instant and faithful. seedvr2 = restoration model, ~55 s per second of video, use for hero shots. h3_latent_upscale = refine in H3's own latent space (no sharpening halos; needs the clip's .mmh3 packet from save_latent, or variant 'decoded' for older clips; ~9 min per 5 s clip to 1080p, provisional)"),
-        variant: z.enum(["tile", "full", "decoded"]).optional().describe("h3_latent_upscale: tile (default, fits 16 GB), full (whole frame, short clips only), decoded (no saved latent: the mp4 is VAE-encoded back into latent space, lower fidelity, experimental; source must be a native 24 fps clip)"),
+        variant: z.enum(["tile", "full", "decoded"]).optional().describe("h3_latent_upscale: full (default and the only production variant: whole frame in one pass, at most 73 frames = 3 s of 1080p on the 16 GB card), tile (dev-only, worker started with H3_TILE_DEV=1, capped at 5 s; re-imagines badges), decoded (dev-only, frozen: the mp4 is VAE-encoded back into latent space and re-rendered, source must be a native 24 fps clip)"),
         latent: z.object({ bucket: z.string(), path: z.string() }).optional().describe("h3_latent_upscale tile/full in upscale mode: the source clip's .mmh3 packet (outputs/<id>-latent.mmh3 in 'renders', or the same file filed as an asset)"),
         denoise: z.number().min(0).max(0.5).optional().describe("h3_latent_upscale: 0 = source-aware (0.375 for turbo-8 packets), else 0.05-0.5; lower = less drift"),
         steps_override: z.number().int().min(0).max(20).optional().describe("h3_latent_upscale: 0 = the packet's own profile, else 1-20"),
@@ -106,8 +106,10 @@ server.tool(
         traversal: z.enum(["row_major", "snake"]).optional(), context_source: z.enum(["original", "composited"]).optional(),
         missing_audio_policy: z.enum(["error", "silence"]).optional().describe("h3_latent_upscale decoded: what to do when the source has no audio"),
         prompt: z.string().optional().describe("h3_latent_upscale decoded: conditioning text for the refine (default: a neutral 'same footage, finer detail')"),
-        fidelity: z.object({ enabled: z.boolean().optional(), compare: z.boolean().optional(), ssim_min: z.number().optional(), psnr_min: z.number().optional(), cell_ssim_min: z.number().optional(), cell_drop_max: z.number().optional() }).optional()
-          .describe("h3_latent_upscale: ssim/psnr check against a lanczos resize of the source (outputs/<id>-fidelity.json) and a side-by-side outputs/<id>-compare.mp4; warns, never fails the job"),
+        fidelity: z.object({ enabled: z.boolean().optional(), compare: z.boolean().optional(), ssim_min: z.number().optional(), psnr_min: z.number().optional(), cell_ssim_min: z.number().optional(), cell_drop_max: z.number().optional(),
+                             critical_cells: z.array(z.tuple([z.number().int().min(0).max(3), z.number().int().min(0).max(3)])).optional().describe("[row, col] cells of the 4x4 grid holding the badge, grille, wheels and plate; a drop > cell_drop_critical (0.10) below the frame mean in one of them FAILS the job (sidecars are still uploaded)"),
+                             cell_drop_critical: z.number().optional() }).optional()
+          .describe("h3_latent_upscale: ssim/psnr check against a lanczos resize of the source (outputs/<id>-fidelity.json) and a side-by-side outputs/<id>-compare.mp4; warns (verdict review) except for critical_cells, which fail the job"),
         factor: z.number().min(1.01).max(4).optional().describe("Scale multiplier (default 2). 832x480 -> 1664x960"),
         shorter_size: z.number().int().optional().describe("Target short edge in px, e.g. 1080; overrides factor"),
         color_correction: z.enum(["wavelet", "lab", "adain", "none"]).optional().describe("Default wavelet (fast). lab is slower by ~3 s/frame"),

@@ -280,7 +280,8 @@ def _h3_latent_upscale(jid, src_local, u, work_dir, heartbeat, cancel_check, dea
     src = post.info(src_local)
     frames = src["frames"]
     try:
-        u = graphs_h3.validate_upscale_params(u, h3.get("mode") or "upscale", (src["width"], src["height"]), frames)
+        u = graphs_h3.validate_upscale_params(u, h3.get("mode") or "upscale", (src["width"], src["height"]), frames,
+                                              dev=config.H3_TILE_DEV)
     except ValueError as exc:
         raise RuntimeError(str(exc))
     variant = u["variant"]
@@ -425,6 +426,16 @@ def _h3_latent_upscale(jid, src_local, u, work_dir, heartbeat, cancel_check, dea
         log(f"upscale.json upload failed: {exc}")
     log(f"h3 upscale done in {timing['total']} s (prompt {timing.get('prompt')} s), peak VRAM ~"
         f"{vram.get('peak_used_estimate_mb')} MiB" + (f", fidelity {fid_result['verdict']}" if fid_result else ""))
+    if fid_result and fid_result["verdict"] == "fail":
+        hits = fid_result["flags"]["cells_critical"]
+        cells = sorted({(h["row"], h["col"]) for h in hits})
+        worst = min(hits, key=lambda h: h["ssim"] - h["frame_mean"])
+        raise RuntimeError(f"h3_latent_upscale fidelity FAIL: critical cell(s) {cells} drifted more than "
+                           f"{u['fidelity']['cell_drop_critical']} below the frame mean on {len(hits)} cell-frames "
+                           f"(worst: frame {worst['frame']} cell ({worst['row']},{worst['col']}) ssim {worst['ssim']} vs "
+                           f"mean {worst['frame_mean']}); the badge/grille/wheel/plate content was re-imagined. "
+                           f"Review outputs/{jid}-compare.mp4 and outputs/{jid}-fidelity.json (uploaded); the result "
+                           f"video was not filed")
     return dest
 
 
@@ -586,7 +597,9 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
             raise RuntimeError("h3_latent_upscale is not available inside a turntable job; upscale the native "
                                "segment clips as standalone upscale jobs with their -latent.mmh3 sidecars")
         try:
-            h3_variant = graphs_h3.validate_upscale_params(upscale, mode)["variant"]
+            gen_frames = graphs.frames_for(p.get("duration_s", 5)) if mode in graphs.GEN_MODES else None
+            h3_variant = graphs_h3.validate_upscale_params(upscale, mode, frames=gen_frames,
+                                                           dev=config.H3_TILE_DEV)["variant"]
         except ValueError as exc:
             raise RuntimeError(str(exc))
         if mode in graphs.GEN_MODES and h3_variant in ("tile", "full"):

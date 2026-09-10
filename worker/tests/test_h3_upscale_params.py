@@ -8,8 +8,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from videogen import estimate, graphs_h3  # noqa: E402
 
+graphs_h3.TILE_DEV_DEFAULT = True   # these suites exercise tile/decoded (dev-only in production)
+
 LAT = {"bucket": "renders", "path": "outputs/j-latent.mmh3"}
-BASE = {"method": "h3_latent_upscale", "shorter_size": 1080, "latent": LAT}
+BASE = {"method": "h3_latent_upscale", "shorter_size": 1080, "latent": LAT, "variant": "tile"}   # dev suites: tile
+FULL = {"method": "h3_latent_upscale", "shorter_size": 1080, "latent": LAT, "variant": "full"}
 
 
 def err(u, mode="upscale", dims=None, frames=None):
@@ -23,13 +26,39 @@ def err(u, mode="upscale", dims=None, frames=None):
 class Validation(unittest.TestCase):
     def test_defaults(self):
         u = graphs_h3.validate_upscale_params({"method": "h3_latent_upscale", "latent": LAT}, "upscale")
-        self.assertEqual(u["variant"], "tile")
+        self.assertEqual(u["variant"], "full")
         self.assertEqual(u["shorter_size"], 1080)
         self.assertEqual((u["denoise"], u["steps_override"], u["seed"]), (0.0, 0, 0))
         self.assertTrue(u["force_unload"])
         self.assertEqual((u["attention"], u["fp16_accumulation"]), ("Default", "Default"))
         self.assertEqual(u["tile_width"], 640)
         self.assertEqual(u["fidelity"]["ssim_min"], 0.85)
+
+    def test_production_policy(self):
+        # 2026-09-11: production (dev=False) runs full only, within the guard; tile/decoded/allow_large_full are dev-only
+        ok = graphs_h3.validate_upscale_params(FULL, "upscale", (480, 832), 73, dev=False)
+        self.assertEqual(ok["variant"], "full")
+        self.assertEqual(graphs_h3.validate_upscale_params({"method": "h3_latent_upscale", "latent": LAT}, "upscale",
+                                                           dev=False)["variant"], "full")
+        for variant in ("tile", "decoded"):
+            with self.assertRaisesRegex(ValueError, "dev-only"):
+                graphs_h3.validate_upscale_params(dict(BASE, variant=variant), "upscale", dev=False)
+        with self.assertRaisesRegex(ValueError, "allow_large_full is dev-only"):
+            graphs_h3.validate_upscale_params(dict(FULL, allow_large_full=True), "upscale", dev=False)
+        with self.assertRaisesRegex(ValueError, "above the .* guard"):
+            graphs_h3.validate_upscale_params(FULL, "upscale", (480, 832), 124, dev=False)
+        # dev: tile allowed up to 5 s, never beyond
+        self.assertEqual(graphs_h3.validate_upscale_params(dict(BASE, variant="tile"), "upscale", (480, 832), 124, dev=True)["variant"], "tile")
+        with self.assertRaisesRegex(ValueError, "capped at 124 frames"):
+            graphs_h3.validate_upscale_params(dict(BASE, variant="tile"), "upscale", (480, 832), 243, dev=True)
+
+    def test_critical_cells(self):
+        u = graphs_h3.validate_upscale_params(dict(BASE, fidelity={"critical_cells": [[1, 1], [2, 2]]}), "upscale")
+        self.assertEqual(u["fidelity"]["critical_cells"], [[1, 1], [2, 2]])
+        self.assertEqual(u["fidelity"]["cell_drop_critical"], 0.10)
+        self.assertEqual(u["fidelity"]["cell_drop_max"], 0.25)
+        with self.assertRaisesRegex(ValueError, "outside the 4x4 grid"):
+            graphs_h3.validate_upscale_params(dict(BASE, fidelity={"critical_cells": [[4, 0]]}), "upscale")
 
     def test_latent_required_for_tile_and_full(self):
         for variant in ("tile", "full"):
@@ -92,7 +121,7 @@ class Estimates(unittest.TestCase):
         secs = estimate.job_seconds({"video_gen": {"source": {"bucket": "b", "path": "p"}, "upscale": BASE}})
         self.assertGreater(secs, 120)
         gen = estimate.job_seconds({"video_gen": {"prompt": "x", "duration_s": 5, "resolution": "480p", "ratio": "9:16",
-                                                  "save_latent": True, "upscale": {"method": "h3_latent_upscale", "shorter_size": 1080}}})
+                                                  "save_latent": True, "upscale": {"method": "h3_latent_upscale", "shorter_size": 1080, "variant": "tile"}}})
         self.assertGreater(gen, secs)
         self.assertEqual(estimate.upscale_seconds({"method": "lanczos"}, 5), estimate.LANCZOS_S)
         self.assertGreater(estimate.upscale_seconds({"method": "seedvr2"}, 5), 100)

@@ -52,6 +52,12 @@ UPSCALER_CLASS = "MinimaxH3LatentUpscaler3D"
 
 ALIGN = 32
 VARIANTS = ("tile", "full", "decoded")
+# Policy 2026-09-11 (after the PC measurements): production runs "full" only; "tile" and "decoded"
+# and allow_large_full need the worker's dev flag (config.H3_TILE_DEV -> dev=True), tile capped at 5 s.
+PRODUCTION_VARIANTS = ("full",)
+DEFAULT_VARIANT = "full"
+TILE_MAX_FRAMES = 124
+TILE_DEV_DEFAULT = False   # what validate_upscale_params(dev=None) assumes; the runner passes config.H3_TILE_DEV
 METHOD = "h3_latent_upscale"
 # Provisional pixel-frame guard for the full-frame refine on a 16 GB card:
 # 1088x1920 x 73 frames (3 s). The PC measurement replaces this.
@@ -77,8 +83,11 @@ TILE_MODE_OPTIONS = {"traversal": ("row_major", "snake"), "overlap_mode": ("cont
 # car tile's four centre cells ran 0.78-0.83 against 0.9997 background cells (drop 0.17-0.22) with a
 # visibly re-imagined badge, so cell_drop_max 0.25 flags only a worse case; the -compare.mp4 is the
 # real badge/plate review. Warns, never gates.
+# critical_cells: [row, col] cells of the 4x4 grid that hold the badge, grille, wheels and plate;
+# a drop of more than cell_drop_critical (0.10) below the frame mean in one of them FAILS the job
+# (policy 2026-09-11); the other cells keep the 0.25 review threshold.
 FIDELITY_DEFAULTS = {"enabled": True, "compare": True, "ssim_min": 0.85, "psnr_min": 22.0,
-                     "cell_ssim_min": 0.70, "cell_drop_max": 0.25}
+                     "cell_ssim_min": 0.70, "cell_drop_max": 0.25, "critical_cells": [], "cell_drop_critical": 0.10}
 ATTENTION_DEFAULT = "Default"
 FP16_ACCUMULATION_DEFAULT = "Default"
 FP16_ACCUMULATION_OPTIONS = ("Default", "Enabled", "Disabled")
@@ -210,17 +219,31 @@ def av_boundary_frames(frames):
 
 # --------------------------------------------------------------------------- params
 
-def validate_upscale_params(u, mode, src_dims=None, frames=None):
+def validate_upscale_params(u, mode, src_dims=None, frames=None, dev=None):
     """Normalise params.video_gen.upscale for method h3_latent_upscale.
 
     Raises ValueError with an operator-readable message. Returns a new dict
-    with every knob filled in. mode is the job mode (upscale | t2v | i2v | r2v)."""
+    with every knob filled in. mode is the job mode (upscale | t2v | i2v | r2v).
+    dev: the worker's H3_TILE_DEV flag (None = TILE_DEV_DEFAULT); without it only
+    variant "full" within the pixel-frame guard is accepted."""
+    if dev is None:
+        dev = TILE_DEV_DEFAULT
     u = dict(u or {})
     if (u.get("method") or "").lower() != METHOD:
         raise ValueError(f"validate_upscale_params: method must be {METHOD}, got {u.get('method')!r}")
-    variant = (u.get("variant") or "tile").lower()
+    variant = (u.get("variant") or DEFAULT_VARIANT).lower()
     if variant not in VARIANTS:
         raise ValueError(f"upscale.variant must be one of {VARIANTS}, got {variant!r}")
+    if variant not in PRODUCTION_VARIANTS and not dev:
+        raise ValueError(f"upscale.variant {variant!r} is dev-only (policy 2026-09-11: production runs the full-frame "
+                         f"refine, at most {FULL_MAX_PXF // (1088 * 1920)} frames of 1080p); start the worker with "
+                         f"H3_TILE_DEV=1 for tile/decoded experiments, or use variant 'full' on a clip that fits")
+    if u.get("allow_large_full") and not dev:
+        raise ValueError("upscale.allow_large_full is dev-only (H3_TILE_DEV=1): the full-frame guard is the "
+                         "production limit (5 s of 1080p killed ComfyUI on the 16 GB card)")
+    if variant == "tile" and frames is not None and int(frames) > TILE_MAX_FRAMES:
+        raise ValueError(f"variant 'tile' is capped at {TILE_MAX_FRAMES} frames (5 s) even in dev mode; the source has "
+                         f"{int(frames)} frames (a 10 s tile refine took 59 min and paged ComfyUI to 85 GB)")
     if mode == "r2v" and variant != "decoded":
         raise ValueError("h3_latent_upscale after r2v generation is not supported yet (save_latent for r2v is "
                          "unverified); run it as a standalone upscale with variant 'decoded'")
@@ -279,6 +302,17 @@ def validate_upscale_params(u, mode, src_dims=None, frames=None):
         raise ValueError("upscale.attention: only 'Default' is allowed (no SLA/VDN experimental backends)")
     fid = dict(FIDELITY_DEFAULTS)
     fid.update({k: v for k, v in (u.get("fidelity") or {}).items() if k in FIDELITY_DEFAULTS})
+    cells = []
+    for cell in fid.get("critical_cells") or []:
+        try:
+            r, c = int(cell[0]), int(cell[1])
+        except (TypeError, ValueError, IndexError):
+            raise ValueError(f"upscale.fidelity.critical_cells must be [[row, col], ...] on the 4x4 grid, got {cell!r}")
+        if not (0 <= r < 4 and 0 <= c < 4):
+            raise ValueError(f"upscale.fidelity.critical_cells entry {cell!r} is outside the 4x4 grid")
+        cells.append([r, c])
+    fid["critical_cells"] = cells
+    fid["cell_drop_critical"] = float(fid.get("cell_drop_critical") or 0.10)
     out = dict(u)
     out.update({"method": METHOD, "variant": variant, "denoise": denoise, "steps_override": steps,
                 "seed": int(u.get("seed") if u.get("seed") is not None else 0),
@@ -294,9 +328,10 @@ def validate_upscale_params(u, mode, src_dims=None, frames=None):
             if pxf > FULL_MAX_PXF and not out["allow_large_full"]:
                 raise ValueError(f"variant 'full' refines the whole {dims['refine'][0]}x{dims['refine'][1]} clip "
                                  f"in one pass: {int(frames)} frames = {pxf / 1e6:.0f} M pixel-frames, above the "
-                                 f"{FULL_MAX_PXF / 1e6:.0f} M guard for a 16 GB card. Use variant 'tile' (default) "
-                                 f"or a clip of at most {FULL_MAX_PXF // (dims['refine'][0] * dims['refine'][1])} "
-                                 f"frames, or set allow_large_full after measuring")
+                                 f"{FULL_MAX_PXF / 1e6:.0f} M guard for a 16 GB card (measured: 3 s of 1080p fits, "
+                                 f"5 s kills ComfyUI). Use a clip of at most "
+                                 f"{FULL_MAX_PXF // (dims['refine'][0] * dims['refine'][1])} frames at this size; "
+                                 f"tile and allow_large_full are dev-only (H3_TILE_DEV=1)")
     if variant != "decoded" and frames is not None and not on_frame_grid(frames):
         raise ValueError(f"source clip has {int(frames)} frames, which is not on H3's 17k+5 grid; the packet and "
                          f"the clip must come from the same generation")

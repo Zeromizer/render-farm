@@ -9,7 +9,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from videogen import graphs_h3, h3_preflight  # noqa: E402
 
-U = graphs_h3.validate_upscale_params({"method": "h3_latent_upscale", "shorter_size": 1080,
+graphs_h3.TILE_DEV_DEFAULT = True   # these suites exercise tile/decoded (dev-only in production)
+
+U = graphs_h3.validate_upscale_params({"method": "h3_latent_upscale", "shorter_size": 1080, "variant": "tile",
                                        "latent": {"bucket": "b", "path": "p"}}, "upscale", (480, 832), 124)
 ABS = os.path.abspath(os.path.join(os.sep, "tmp", "x.mmh3"))
 

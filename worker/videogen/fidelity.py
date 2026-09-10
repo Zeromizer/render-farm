@@ -151,7 +151,9 @@ def summarise(ssim_frames, psnr_frames, cells, grid=GRID, thresholds=None):
     frames = min(len(all_ssim), len(all_psnr)) if all_psnr else len(all_ssim)
     flags = {"frames_below_ssim": [i for i, v in enumerate(all_ssim) if v < t["ssim_min"]],
              "frames_below_psnr": [i for i, v in enumerate(all_psnr) if v < t["psnr_min"]],
-             "cells_low": [], "cells_drift": []}
+             "cells_low": [], "cells_drift": [], "cells_critical": []}
+    critical = {(int(rc[0]), int(rc[1])) for rc in (t.get("critical_cells") or [])}
+    drop_critical = float(t.get("cell_drop_critical") or 0.10)
     cell_mean = [[None] * grid for _ in range(grid)]
     cell_min = [[None] * grid for _ in range(grid)]
     per_frame_cells = {}
@@ -170,9 +172,14 @@ def summarise(ssim_frames, psnr_frames, cells, grid=GRID, thresholds=None):
             if mean - v > t["cell_drop_max"]:
                 flags["cells_drift"].append({"frame": i, "row": r, "col": c, "ssim": round(v, 4),
                                              "frame_mean": round(mean, 4)})
+            if (r, c) in critical and mean - v > drop_critical:
+                flags["cells_critical"].append({"frame": i, "row": r, "col": c, "ssim": round(v, 4),
+                                                "frame_mean": round(mean, 4)})
     verdict = "ok"
     if flags["frames_below_ssim"] or flags["frames_below_psnr"] or flags["cells_drift"] or flags["cells_low"]:
         verdict = "review"
+    if flags["cells_critical"]:
+        verdict = "fail"   # policy 2026-09-11: a critical (badge/grille/wheel/plate) cell drifted; the job fails
     return {"frames": frames,
             "ssim": {"mean": round(sum(all_ssim) / len(all_ssim), 4) if all_ssim else None,
                      "min": round(min(all_ssim), 4) if all_ssim else None,
@@ -186,8 +193,9 @@ def summarise(ssim_frames, psnr_frames, cells, grid=GRID, thresholds=None):
             "flags": flags, "thresholds": t, "verdict": verdict, "warnings": [],
             "note": ("SSIM/PSNR of the upscaled clip against a lanczos resize of the source; a latent refine "
                      "legitimately adds detail, so absolute values run below a resize-vs-resize baseline. "
-                     "cells_drift (a cell far below its frame's mean) is the badge/plate/wheel signal. "
-                     "Provisional thresholds; calibrate on the PC. Warns, never gates.")}
+                     "cells_drift (a cell far below its frame's mean) is the badge/plate/wheel signal and only "
+                     "warns; cells_critical (the caller's critical_cells dropping more than cell_drop_critical) "
+                     "fails the job.")}
 
 
 def compare_video(src, up, dest, log=print):

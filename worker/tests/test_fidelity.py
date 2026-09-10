@@ -52,6 +52,18 @@ class Summary(unittest.TestCase):
         self.assertAlmostEqual(res["ssim"]["min"], 0.72)
         self.assertEqual(res["thresholds"]["ssim_min"], 0.85)
 
+    def test_critical_cell_fails(self):
+        # policy 2026-09-11: a badge/grille/wheel/plate cell dropping > 0.10 fails; other cells keep 0.25 (review)
+        ssim = [{"n": i, "Y": 0.95, "U": 0.95, "V": 0.95, "All": 0.95} for i in range(3)]
+        psnr = [{"n": i, "mse_avg": 1, "psnr_avg": 40.0, "psnr_y": 40.0} for i in range(3)]
+        cells = {(r, c): [0.95] * 3 for r in range(4) for c in range(4)}
+        cells[(1, 1)] = [0.95, 0.80, 0.95]      # drop 0.14 on frame 1
+        res = fidelity.summarise(ssim, psnr, cells, 4, {"critical_cells": [[2, 2]]})
+        self.assertEqual(res["verdict"], "ok")   # (1,1) is not critical and 0.14 < 0.25
+        res = fidelity.summarise(ssim, psnr, cells, 4, {"critical_cells": [[1, 1]]})
+        self.assertEqual(res["verdict"], "fail")
+        self.assertEqual([(h["frame"], h["row"], h["col"]) for h in res["flags"]["cells_critical"]], [(1, 1, 1)])
+
     def test_clean_is_ok(self):
         ssim = [{"n": i, "Y": 0.95, "U": 0.95, "V": 0.95, "All": 0.95} for i in range(5)]
         psnr = [{"n": i, "mse_avg": 1, "psnr_avg": 40.0, "psnr_y": 40.0} for i in range(5)]

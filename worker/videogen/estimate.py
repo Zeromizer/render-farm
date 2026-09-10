@@ -84,7 +84,8 @@ def latent_upscale_plan(u, src_w, src_h, frames):
         # estimate only: a generation+upscale job has no latent yet, so validate with a placeholder
         # (otherwise the fallback below plans a 2x refine instead of the requested size)
         v = graphs_h3.validate_upscale_params(dict(u, method=graphs_h3.METHOD,
-                                                   latent=u.get("latent") or {"bucket": "-", "path": "-"}), "upscale")
+                                                   latent=u.get("latent") or {"bucket": "-", "path": "-"}), "upscale",
+                                              dev=True)
         dims = graphs_h3.target_dims(src_w, src_h, v)
     except ValueError:
         v = dict(u, tile_width=640, tile_height=384, tile_overlap=64, variant=u.get("variant") or "tile",

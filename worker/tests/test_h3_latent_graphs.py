@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from videogen import graphs, graphs_h3  # noqa: E402
 
+graphs_h3.TILE_DEV_DEFAULT = True   # these suites exercise tile/decoded (dev-only in production)
+
 P_T2V = {"prompt": "A red car turns slowly on a grey floor, tyre noise", "duration_s": 5, "resolution": "480p",
          "ratio": "9:16", "seed": 7, "turbo": True}
 U_TILE = {"method": "h3_latent_upscale", "variant": "tile", "shorter_size": 1080,
