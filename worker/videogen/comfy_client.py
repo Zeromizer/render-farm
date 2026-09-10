@@ -9,8 +9,10 @@ ComfyUI is started lazily by ensure_server() from run-headless.bat and left
 resident, so the second job of the day skips the ~minute of model paging.
 free() after each job hands VRAM back to the TTS workers.
 """
+import glob
 import json
 import re
+import shutil
 from datetime import datetime
 import os
 import subprocess
@@ -41,6 +43,16 @@ def is_up():
 
 def system_stats():
     return httpx.get(_url("/system_stats"), timeout=10).json()
+
+
+def object_info():
+    """Every registered node class with its input schema (several MB). Used by
+    videogen/h3_preflight to fail loudly before /prompt when a node pack or a
+    model file is missing."""
+    r = httpx.get(_url("/object_info"), timeout=60)
+    if r.status_code != 200:
+        raise ComfyError(f"/object_info failed HTTP {r.status_code}")
+    return r.json()
 
 
 def ensure_server(log, wait_seconds=240):
@@ -253,3 +265,54 @@ def fetch_output(outputs, dest_path):
                             out.write(chunk)
                 return dest_path
     raise ComfyError(f"no video in comfyui outputs: {json.dumps(outputs)[:800]}")
+
+
+def fetch_file_output(outputs, dest, key="mmh3_saved", ext=".mmh3", prefix_glob=None):
+    """Retrieve a non-video file a custom save node reported in /history.
+
+    MMH3Save puts {"file": "output::sub/name.mmh3", "path": "<absolute>", ...}
+    under ui.mmh3_saved; the worker shares the machine with ComfyUI, so the
+    absolute path is copied directly. Fallbacks: /view from the output::
+    selector, then the newest <COMFYUI_DIR>/output/<prefix_glob>*.mmh3.
+    """
+    entries = []
+    for node_out in outputs.values():
+        for e in node_out.get(key, []) or []:
+            if isinstance(e, dict):
+                entries.append(e)
+    for e in entries:
+        p = e.get("path")
+        if p and os.path.exists(p):
+            shutil.copyfile(p, dest)
+            return dest
+    for e in entries:
+        sel = e.get("file") or ""
+        if "::" in sel:
+            kind, rel = sel.split("::", 1)
+            rel = rel.replace("\\", "/")
+            sub, name = (rel.rsplit("/", 1) + [""])[:2] if "/" in rel else ("", rel)
+            params = {"filename": name, "subfolder": sub, "type": kind}
+            with httpx.stream("GET", _url("/view"), params=params, timeout=_TIMEOUT) as r:
+                if r.status_code == 200:
+                    with open(dest, "wb") as out:
+                        for chunk in r.iter_bytes(1 << 20):
+                            out.write(chunk)
+                    return dest
+    if prefix_glob:
+        cands = glob.glob(os.path.join(config.COMFYUI_DIR, "output", prefix_glob + "*" + ext))
+        if cands:
+            newest = max(cands, key=os.path.getmtime)
+            shutil.copyfile(newest, dest)
+            return dest
+    raise ComfyError(f"no {ext} file in comfyui outputs (key {key}): {json.dumps(outputs)[:800]}")
+
+
+def fetch_texts(outputs):
+    """{node_id: [text...]} for output nodes that report ui.text (PreviewAny,
+    MMH3Save's saved path, ...)."""
+    texts = {}
+    for node_id, node_out in outputs.items():
+        t = node_out.get("text")
+        if isinstance(t, list) and t:
+            texts[node_id] = [str(x) for x in t]
+    return texts

@@ -89,8 +89,22 @@ server.tool(
         shorter_size: z.number().int().optional().describe("Output short edge in px after a lanczos resize (default 1080; the detail is that of the 768p canvas)"),
       }).optional().describe("Car/product 360 for background removal (mode turntable). Two-anchor (front+rear): 2 anchored 180-degree image-to-video halves. Four-anchor (front+left+rear+right): 4 anchored 90-degree quarters front_to_left -> left_to_rear -> rear_to_right -> right_to_front, clockwise seen from above, so the wheels/doors/side profile come from real photos instead of a guess. Each segment is drift/cut checked with automatic reseed/repair inside its own quarter; segments are joined on shared frames, seams checked, remapped to constant speed, RIFE'd to fps. ~9 min per 10 s half, ~5 min per 5 s quarter at 768p plus retries: timeout_minutes 150 (two) / 180 (four). Result outputs/<id>.mp4 plus outputs/<id>-<segment>.mp4 (native 24 fps per segment), outputs/<id>-joined24.mp4 and outputs/<id>-manifest.json (segments, seams, defects); two-anchor jobs also keep -piece1..2.mp4."),
       source: z.object({ bucket: z.string(), path: z.string() }).optional().describe("upscale mode: existing clip to resize (no generation)"),
+      save_latent: z.boolean().optional()
+        .describe("Generation modes (t2v/i2v/turntable): also save the joint AV latent as an .mmh3 packet at outputs/<id>-latent.mmh3 (turntable: outputs/<id>-<segment>-latent.mmh3). Needs the mmh3_media node pack on the PC; the job fails loudly without it. Prerequisite for upscale.method h3_latent_upscale (tile/full)"),
       upscale: z.object({
-        method: z.enum(["lanczos", "seedvr2"]).optional().describe("Default lanczos: plain ffmpeg resize, instant and faithful. seedvr2 = restoration model, ~55 s per second of video, use for hero shots"),
+        method: z.enum(["lanczos", "seedvr2", "h3_latent_upscale"]).optional().describe("Default lanczos: plain ffmpeg resize, instant and faithful. seedvr2 = restoration model, ~55 s per second of video, use for hero shots. h3_latent_upscale = refine in H3's own latent space (no sharpening halos; needs the clip's .mmh3 packet from save_latent, or variant 'decoded' for older clips; ~9 min per 5 s clip to 1080p, provisional)"),
+        variant: z.enum(["tile", "full", "decoded"]).optional().describe("h3_latent_upscale: tile (default, fits 16 GB), full (whole frame, short clips only), decoded (no saved latent: the mp4 is VAE-encoded back into latent space, lower fidelity, experimental; source must be a native 24 fps clip)"),
+        latent: z.object({ bucket: z.string(), path: z.string() }).optional().describe("h3_latent_upscale tile/full in upscale mode: the source clip's .mmh3 packet (outputs/<id>-latent.mmh3 in 'renders', or the same file filed as an asset)"),
+        denoise: z.number().min(0).max(0.5).optional().describe("h3_latent_upscale: 0 = source-aware (0.375 for turbo-8 packets), else 0.05-0.5; lower = less drift"),
+        steps_override: z.number().int().min(0).max(20).optional().describe("h3_latent_upscale: 0 = the packet's own profile, else 1-20"),
+        force_unload: z.boolean().optional().describe("h3_latent_upscale: unload the upscaler after use (default true)"),
+        fp16_accumulation: z.enum(["Default", "Enabled", "Disabled"]).optional(),
+        tile_width: z.number().int().multipleOf(32).optional(), tile_height: z.number().int().multipleOf(32).optional(),
+        tile_overlap: z.number().int().multipleOf(32).optional(), context_padding: z.number().int().multipleOf(32).optional(),
+        missing_audio_policy: z.enum(["error", "silence"]).optional().describe("h3_latent_upscale decoded: what to do when the source has no audio"),
+        prompt: z.string().optional().describe("h3_latent_upscale decoded: conditioning text for the refine (default: a neutral 'same footage, finer detail')"),
+        fidelity: z.object({ enabled: z.boolean().optional(), compare: z.boolean().optional(), ssim_min: z.number().optional(), psnr_min: z.number().optional(), cell_ssim_min: z.number().optional(), cell_drop_max: z.number().optional() }).optional()
+          .describe("h3_latent_upscale: ssim/psnr check against a lanczos resize of the source (outputs/<id>-fidelity.json) and a side-by-side outputs/<id>-compare.mp4; warns, never fails the job"),
         factor: z.number().min(1.01).max(4).optional().describe("Scale multiplier (default 2). 832x480 -> 1664x960"),
         shorter_size: z.number().int().optional().describe("Target short edge in px, e.g. 1080; overrides factor"),
         color_correction: z.enum(["wavelet", "lab", "adain", "none"]).optional().describe("Default wavelet (fast). lab is slower by ~3 s/frame"),
@@ -98,7 +112,7 @@ server.tool(
         frames_per_chunk: z.number().int().optional().describe("4n+1 frames per chunk; default auto from free VRAM"),
         seed: z.number().int().optional(),
         blend: z.number().min(0).max(1).optional().describe("seedvr2 only: share of SeedVR2 in the output vs the lanczos resize (default 0.5; 1 = raw SeedVR2, which over-etches clean 768p sources)"),
-      }).optional().describe("Resize pass (lanczos by default, seedvr2 opt-in). On generation modes it runs after the clip is made (base clip kept at outputs/<id>-base.mp4); required intent for mode=upscale (may be {})."),
+      }).optional().describe("Resize pass (lanczos by default, seedvr2 or h3_latent_upscale opt-in). On generation modes it runs after the clip is made (base clip kept at outputs/<id>-base.mp4); required intent for mode=upscale (may be {}). h3_latent_upscale also writes outputs/<id>-upscale.json (provenance), -fidelity.json, -compare.mp4 and, with save_latent, -upscaled-latent.mmh3."),
       duration_s: z.number().min(1).max(15).optional().describe("Seconds, snapped up to H3's frame grid (default 5)"),
       resolution: z.enum(["480p", "768p"]).optional().describe("Short edge; default 480p (16 GB card). 768p is native but much slower"),
       ratio: z.enum(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]).optional().describe("Default 16:9; 9:16 for vertical ads"),
@@ -113,12 +127,22 @@ server.tool(
       ref_image_size: z.enum(["match", "max"]).optional(),
     }).optional().describe("video_gen engine parameters (required for video_gen)"),
     priority: z.number().int().optional().describe("Lower runs first; a video_gen job blocks the farm for minutes"),
-    timeout_minutes: z.number().int().optional().describe("Kill the job after this long (default 120; video_gen default 60, turntable 150)"),
+    timeout_minutes: z.number().int().optional().describe("Kill the job after this long (default 120; video_gen default 60, turntable 150/180, h3_latent_upscale 90 standalone / 120 with generation)"),
   },
   async (args) => {
     try {
       if (args.engine === "video_gen" && !args.video_gen?.prompt && !args.video_gen?.source && !args.video_gen?.turntable)
         throw new Error("video_gen jobs require 'video_gen.prompt' (generation), 'video_gen.source' (upscale) or 'video_gen.turntable'");
+      if (args.video_gen?.upscale?.method === "h3_latent_upscale") {
+        const u = args.video_gen.upscale;
+        const variant = u.variant || "tile";
+        if (args.video_gen.turntable) throw new Error("h3_latent_upscale is not available inside a turntable job; upscale the native segment clips as standalone upscale jobs with their -latent.mmh3 sidecars");
+        if (args.video_gen.source && variant !== "decoded" && !u.latent)
+          throw new Error("h3_latent_upscale (tile/full) on an existing clip needs upscale.latent {bucket, path}: the outputs/<id>-latent.mmh3 packet of the job that generated it. Use variant 'decoded' for clips generated without save_latent");
+        if (!args.video_gen.source && (args.video_gen.ref_images?.length || args.video_gen.ref_videos?.length || args.video_gen.ref_audios?.length) && variant !== "decoded")
+          throw new Error("h3_latent_upscale after r2v generation is not supported yet; use variant 'decoded'");
+        for (const k of ["blend", "color_correction", "temporal_overlap", "frames_per_chunk"]) if (u[k] !== undefined) throw new Error(`upscale.${k} is a seedvr2 setting; not valid with h3_latent_upscale`);
+      }
       if (args.video_gen?.turntable) {
         const t = args.video_gen.turntable;
         if (!!t.left !== !!t.right)
@@ -155,7 +179,8 @@ server.tool(
         engine: args.engine, repo_url: args.repo_url || "-", git_ref: args.ref,
         params, priority: args.priority,
         timeout_minutes: args.timeout_minutes ?? (args.engine === "video_gen"
-          ? (args.video_gen?.turntable ? (turntableIsFourAnchor(args.video_gen.turntable) ? 180 : 150) : 60) : undefined),
+          ? (args.video_gen?.turntable ? (turntableIsFourAnchor(args.video_gen.turntable) ? 180 : 150)
+            : args.video_gen?.upscale?.method === "h3_latent_upscale" ? (args.video_gen?.source ? 90 : 120) : 60) : undefined),
       });
       return json({ job_id: job.id, status: job.status });
     } catch (e) { return fail(e); }

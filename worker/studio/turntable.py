@@ -253,7 +253,7 @@ def run(opts, api, log):
     ranges = dict(zip(pl["generate"], progress_ranges(len(pl["generate"]))))
     gen_left = {"n": len(pl["generate"])}
 
-    def gen(first, last, text, seconds, label, seed_offset, seg_range):
+    def gen(first, last, text, seconds, label, seed_offset, seg_range, segment=None, piece=0):
         api.check_cancel()
         vg = {"mode": "i2v", "prompt": text, "duration_s": seconds, "resolution": o["resolution"], "ratio": o["ratio"],
               "seed": int(o["seed"]) + seed_offset, "first_frame": first, "last_frame": last}
@@ -262,7 +262,8 @@ def run(opts, api, log):
         after_text = (f" - then {after_gens} {unit}{'s' if after_gens > 1 else ''} + join" if after_gens
                       else f" - then join + {int(o['fps'])} fps")
         t0 = time.monotonic()      # the worker's api runs the generation inside submit(); time both calls
-        handle = api.submit(vg, label, prange=seg_range, after_seconds=after, after_text=after_text)
+        handle = api.submit(vg, label, prange=seg_range, after_seconds=after, after_text=after_text,
+                            segment=segment, piece=piece)
         log(f"{label}: job {handle}")
         path = api.wait(handle, label)
         timing[label] = round(time.monotonic() - t0, 1)
@@ -276,7 +277,8 @@ def run(opts, api, log):
         for attempt in range(3):
             label = base + (f" try {attempt + 1}" if attempt else "")
             path = gen(anchors[a], anchors[b], prompt(f"{SWEEP[name]}, from the {VIEW[a]} to the {VIEW[b]}"),
-                       seg["seconds"], label, seed_offset=seg["position"] - 1 + 100 * attempt, seg_range=seg_range)
+                       seg["seconds"], label, seed_offset=seg["position"] - 1 + 100 * attempt, seg_range=seg_range,
+                       segment=name, piece=0)
             drifted, share, worst = post.background_drift(path)
             log(f"{label}: backdrop drift {share:.0%} of frames (worst {worst:.0f})" + (" -> regenerating" if drifted else ""))
             if not drifted:
@@ -300,7 +302,8 @@ def run(opts, api, log):
         # Seconds left is roughly the unfinished share of the segment, never under 3 s.
         remaining = max(3.0, round(seg["seconds"] * (1 - keep_end / len(m)) + 1.0))
         piece = gen(anchor, anchors[seg["end"]], prompt(REPAIR_MOTION.format(target=VIEW[seg["end"]])), remaining,
-                    f"{labels[seg['name']]} repair ({remaining:.0f}s)", seed_offset=10 + depth, seg_range=seg_range)
+                    f"{labels[seg['name']]} repair ({remaining:.0f}s)", seed_offset=10 + depth, seg_range=seg_range,
+                    segment=seg["name"], piece=depth + 1)
         return [kept] + repair(piece, seg, seg_range, depth + 1)
 
     # ---- per segment: generate (or reuse), check, repair, concat to one native-rate clip

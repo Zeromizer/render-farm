@@ -45,7 +45,8 @@ values ('video_gen', '-', 'main', 100, 60, '{"video_gen": { ... }}');
 | `ref_audios[]` | `[{bucket, path}]` max 3 | r2v: reference audio (wav/mp3/flac). |
 | `ref_image_size` | `match` \| `max` | r2v only. `max` is several times slower. |
 | `source` | `{bucket, path}` | `mode: "upscale"` only: an existing clip to upscale with SeedVR2 (no generation). |
-| `upscale` | object | Optional resize pass. `method`: `lanczos` (**default**: plain ffmpeg resize, instant, no GPU, faithful to the generated frames) or `seedvr2` (3B restoration model, ~55 s per second of video, hero shots only). `factor` (default 2) or `shorter_size` (px) for both. SeedVR2 extras: `blend` (share of SeedVR2 vs lanczos, default 0.5: the 2026-09-06 chihuahua A/B showed raw SeedVR2 etches fur and invents speckle on clean 768p footage), `color_correction` (wavelet default), `temporal_overlap`, `frames_per_chunk`, `seed`, `segment_frames`. On generation modes the base clip is kept at `outputs/<id>-base.mp4`. SeedVR2 ceiling ~2 MP/frame, so 768p sources use `shorter_size: 1080`. |
+| `upscale` | object | Optional resize pass. `method`: `lanczos` (**default**: plain ffmpeg resize, instant, no GPU, faithful to the generated frames) or `seedvr2` (3B restoration model, ~55 s per second of video, hero shots only). `factor` (default 2) or `shorter_size` (px) for both. SeedVR2 extras: `blend` (share of SeedVR2 vs lanczos, default 0.5: the 2026-09-06 chihuahua A/B showed raw SeedVR2 etches fur and invents speckle on clean 768p footage), `color_correction` (wavelet default), `temporal_overlap`, `frames_per_chunk`, `seed`, `segment_frames`. On generation modes the base clip is kept at `outputs/<id>-base.mp4`. SeedVR2 ceiling ~2 MP/frame, so 768p sources use `shorter_size: 1080`. Third method `h3_latent_upscale` (2026-09-10): refine in H3's own latent space, see **Latent upscale** below. |
+| `save_latent` | bool | Default false. Generation modes (t2v/i2v/turntable): also save the joint AV latent as an `.mmh3` packet, `outputs/<id>-latent.mmh3` (turntable: `outputs/<id>-<segment>-latent.mmh3`, repaired segments `-<segment>-piece<k>-latent.mmh3`, listed in the manifest). Prerequisite for `upscale.method: h3_latent_upscale` (tile/full). Fails loudly when the mmh3_media node pack is not installed on the PC. Not for r2v yet. Added 2026-09-10; see **Latent upscale** below. |
 | `turntable` | object | **Car/product 360 for background removal** (`mode: "turntable"`, inferred when present). Two-anchor: `front` + `rear` photos -> 2 x 180 degrees. Four-anchor: `front` + `left` + `rear` + `right` -> 4 x 90 degrees (`left`/`right` are the VEHICLE's sides; one without the other is rejected). Plus `car`, `details`, `seconds_per_half` (10) / `seconds_per_quarter` (5), `segments`, `ready_segments`, `resolution` (768p), `seed`, `fps` (60), `shorter_size` (1080). Full contract, examples, staged workflow and timeouts in **Car 360** below. |
 
 Inputs are storage objects the worker downloads with the service key. Use the content-addressed
@@ -215,6 +216,76 @@ Front + rear photos, `mode: "turntable"`, `timeout_minutes` 150. Result loops at
 `outputs/<id>-front_to_rear.mp4`, `-rear_to_front.mp4` (also as `-piece1/2.mp4`), `-joined24.mp4`, `-manifest.json`.
 Plain generation defaults for everything else: `upscale: {method: "lanczos"}` when a 1080p master is needed
 (instant, faithful); `method: "seedvr2"` with the default `blend` 0.5 only for hero shots.
+
+## Latent upscale (H3 native), added 2026-09-10 -- GPU validation pending
+
+`upscale.method: "h3_latent_upscale"` upsamples a clip by re-running a short refine tail of the
+original sampling on its saved latent (einhorn13/mmh3_media F07 + `MinimaxH3LatentUpscaler3D`),
+so the output looks natively generated at the higher size: no sharpening halos, minimal drift. It is
+opt-in per job, never the default, and never falls back to seedvr2/lanczos: a missing latent, node
+pack, weight, wrong frame grid or OOM fails the row with a clear `error`.
+
+Request shapes:
+
+```json
+{"video_gen": {"org_id": "...", "job_id": "...", "prompt": "...", "ratio": "9:16", "save_latent": true}}
+```
+```json
+{"video_gen": {"org_id": "...", "job_id": "...", "mode": "upscale",
+  "source": {"bucket": "assets", "path": "sha256/<clip>"},
+  "upscale": {"method": "h3_latent_upscale", "variant": "tile", "shorter_size": 1080,
+              "latent": {"bucket": "renders", "path": "outputs/<gen-id>-latent.mmh3"}}}}
+```
+```json
+{"video_gen": {"mode": "upscale", "source": {...older clip, native 24 fps...},
+  "upscale": {"method": "h3_latent_upscale", "variant": "decoded", "shorter_size": 1080}}}
+```
+
+| `upscale.*` key | notes |
+|---|---|
+| `variant` | `tile` (default; `MMH3H3NativeTileRefine`, 640x384 tiles, fits 16 GB), `full` (whole frame in one pass; guarded to ~73 frames at 1080p until measured, `allow_large_full` bypasses), `decoded` (no packet: the mp4 is VAE-encoded back into latent space; lower fidelity, experimental; 24 fps native clips only, frames trimmed to the 17k+5 grid) |
+| `latent` | `{bucket, path}` of the clip's `.mmh3` packet: the `outputs/<id>-latent.mmh3` sidecar or the same file filed as an asset. Required for tile/full in upscale mode; on a generation job the packet just made is used and `save_latent` is forced on. Scope it like `ready_segments` (org ownership of the asset / of the job that produced the sidecar). The worker checks the packet's canvas and frame count against the source clip. |
+| `shorter_size` / `factor` | as for the other methods (default `shorter_size: 1080`). Per-axis scale must stay within 1x-4x. The refine runs on the 32-aligned cover of the request (1088x1888 for 480x832 -> 1080) and the result is centre-cropped to the exact size. |
+| `denoise` | 0 = source-aware (0.375 for the worker's turbo-8 packets, 0.5 for turbo-4, 0.25 otherwise); else 0.05-0.50. Lower = less drift. |
+| `steps_override` | 0 = the packet's own profile (8 steps res_multistep/simple, shift 12/3); else 1-20. `decoded` defaults to 8 steps at denoise 0.375. |
+| `seed`, `force_unload` (true), `attention` (Default only), `fp16_accumulation` (Default/Enabled/Disabled), `tile_width` 640, `tile_height` 384, `tile_overlap` 64, `context_padding` 64 (multiples of 32), `missing_audio_policy` (decoded), `prompt` (decoded) | |
+| `fidelity` | `{enabled: true, compare: true, ssim_min: 0.80, psnr_min: 28, cell_ssim_min: 0.70, cell_drop_max: 0.10}` (provisional). ffmpeg ssim/psnr of the result against a lanczos resize of the source, globally and on a 4x4 grid; a cell far below its frame's mean is the badge/plate/wheel drift signal. Warns, never gates. |
+
+Outputs in `renders` (besides `outputs/<id>.mp4`):
+
+| object | what |
+|---|---|
+| `outputs/<id>-latent.mmh3` | the generation packet (`save_latent`); ZIP with `packet.json` (schema v2) + safetensors latent + media |
+| `outputs/<id>-<segment>-latent.mmh3` | per turntable quarter; repaired quarters: `-<segment>-piece<k>-latent.mmh3`, see manifest `segments.<name>.latent` / `latent_pieces` / `latent_note` |
+| `outputs/<id>-upscale.json` | provenance: source (path, sha256, size), latent (path, sha256, packet summary), recipe/variant, upscaler weight (+sha256), target/refine/crop, refine settings actually used, tiles, seed, ComfyUI/python/torch versions, node repo git heads, timing per phase, VRAM (min free / peak used estimate), fidelity summary, warnings |
+| `outputs/<id>-fidelity.json` | `frames, ssim{mean,min,p05,per_frame}, psnr{...}, grid{cell_mean,cell_min}, flags{frames_below_ssim, frames_below_psnr, cells_low, cells_drift}, thresholds, verdict ok|review` |
+| `outputs/<id>-compare.mp4` | side by side, lanczos-resized source (left) and the upscaled clip (right), source audio |
+| `outputs/<id>-upscaled-latent.mmh3` | the refined packet when `save_latent` is on for the upscale job |
+
+Phase text: `generate: preflight`, `uploading latent packet`, `h3 upscale: preflight`,
+`h3 upscale: loading model - ~N min left`, `h3 upscale: sampling i/n ...` (the step counter restarts
+per tile), `h3 upscale: decoding`, `upscale: cropping to the requested size`, `upscale: fidelity
+check`, `uploading sidecars`. Progress budget as for seedvr2 (56-90).
+
+Errors you will see verbatim on `error` (never a silent fallback):
+`h3_latent_upscale needs upscale.latent {bucket, path}: the outputs/<id>-latent.mmh3 sidecar ...`,
+`h3_latent_upscale preflight failed: missing node classes MMH3Load, ...: install https://github.com/einhorn13/mmh3_media ...`,
+`... MinimaxH3LatentUpscaler3D.model_name has no 'minimax_h3_latent_upscaler_3d_bf16.safetensors' ...: download ... into ComfyUI/models/latent_upscale_models/`,
+`latent packet is WxHxNf but the source clip is ...: pass the latent of the same generation`,
+`source clip has N frames, which is not on H3's 17k+5 grid`, `variant 'decoded' needs a 24 fps source`,
+`variant 'full' refines the whole ... clip in one pass: ... above the ... guard`,
+`h3_latent_upscale ran out of VRAM: ... try variant 'tile' ...`.
+
+Cost (provisional, unmeasured): ~9 min per 5 s 480p -> 1080p clip in tiles, ~17 min for 10 s;
+`timeout_minutes` 90 standalone / 120 with generation. Not available inside turntable jobs (upscale
+the native segment clips as standalone jobs). Not for r2v generations yet (use `decoded`).
+
+Platform notes: file `-latent.mmh3` as an asset (`kind: other`, `source_url: minimax:h3:<task>:latent`)
+so it outlives render retention; resolve `upscale.latent` from that or from the producing task's
+sidecar after the same org/job scoping as `ready_segments`; show `-compare.mp4` and the fidelity
+verdict to the operator, whose rejection is simply the existing lanczos path. Finishing does not
+touch storyboard/creative approval (it is a farm task, not a build order). The PC-side checklist
+is `docs/h3-latent-upscale-pc-handoff.md`.
 
 ## Suggested platform work
 

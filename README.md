@@ -267,3 +267,38 @@ Contract for the platform: `docs/video_gen-platform-brief.md`.
 PC-side checks without Supabase: `worker\videogen\smoke.py` (t2v/i2v/r2v
 flags, prints VRAM before/after and wall time). Queue path:
 `worker\insert_test_job.py --engine video_gen --params "{\"prompt\": \"...\"}"`.
+
+### H3 latent upscale (added 2026-09-10, GPU validation pending)
+
+A third finishing method, `upscale.method: "h3_latent_upscale"`, upsamples in
+H3's own latent space instead of post-processing pixels: the F07 workflows of
+[einhorn13/mmh3_media](https://github.com/einhorn13/mmh3_media) (MIT) with the
+external `MinimaxH3LatentUpscaler3D` node
+([LBH-123-AI](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler),
+weights `minimax_h3_latent_upscaler_3d_bf16.safetensors` in
+`ComfyUI/models/latent_upscale_models/`). Graphs live in
+`worker/videogen/graphs_h3.py` (transcribed from the reference JSONs vendored
+under `worker/videogen/recipes/reference/`); a `/object_info` preflight fails
+the job with install hints when the node pack or the weight is missing. It
+never falls back to SeedVR2 or lanczos.
+
+- `save_latent: true` on a generation (t2v/i2v/turntable) also saves the joint
+  AV latent as an `.mmh3` packet: `outputs/<id>-latent.mmh3`
+  (`outputs/<id>-<segment>-latent.mmh3` per turntable quarter). Same models,
+  sampler and seed as the default graph, which stays untouched.
+- `upscale: {method: "h3_latent_upscale", variant: "tile"|"full"|"decoded",
+  latent: {bucket, path}, shorter_size|factor, denoise (0 = source-aware),
+  steps_override, seed, tile_*}`. `tile` is the 16 GB default; `full` refines
+  the whole frame (short clips only, guarded); `decoded` re-encodes an mp4
+  that has no packet (clips generated before this branch; lower fidelity,
+  experimental, 24 fps native clips only).
+- The refine runs on the 32-aligned cover of the request (1088x1888 for a
+  480x832 -> 1080 job) and the result is centre-cropped. Sidecars:
+  `outputs/<id>-upscale.json` (provenance: source, latent, recipe, weight,
+  refine settings, ComfyUI/node versions, timing, VRAM), `-fidelity.json`
+  (ffmpeg ssim/psnr against a lanczos resize, 4x4 grid, warns only),
+  `-compare.mp4` (source | upscaled), `-upscaled-latent.mmh3` with `save_latent`.
+- Provisional cost (unmeasured): ~9 min per 5 s 480p -> 1080p clip in tiles;
+  MCP default `timeout_minutes` 90 (standalone) / 120 (generation + upscale).
+- Deploy on the render PC: `docs/h3-latent-upscale-pc-handoff.md` (install,
+  the five option strings to confirm, measurements, failure drills, calibration).
