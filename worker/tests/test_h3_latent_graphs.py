@@ -118,6 +118,9 @@ class Geometry(unittest.TestCase):
         self.assertTrue(graphs_h3.on_frame_grid(124))
         self.assertFalse(graphs_h3.on_frame_grid(120))
         self.assertEqual(graphs_h3.grid_frames(120), 107)
+        # decoded import: AV-exact lengths only (PC 2026-09-10, mmh3_media audio floor vs round)
+        self.assertEqual([graphs_h3.av_boundary_frames(n) for n in (38, 39, 73, 124, 141, 243, 260)],
+                         [0, 39, 39, 90, 141, 243, 243])
 
 
 class UpscaleGraphs(unittest.TestCase):

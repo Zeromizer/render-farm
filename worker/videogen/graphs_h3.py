@@ -172,9 +172,27 @@ def on_frame_grid(frames):
 
 
 def grid_frames(frames):
-    """Largest 17k+5 count not above frames (what the decoded import keeps)."""
+    """Largest 17k+5 count not above frames."""
     n = int(frames)
     return max(5, 5 + 17 * ((n - 5) // 17)) if n >= 5 else 0
+
+
+# AV-exact H3 lengths: 17k+5 frames whose audio latent (40/s) lands on a whole frame at 24 fps,
+# i.e. frames divisible by 3: 39, 90, 141, 192, 243, ... (mmh3_media continuation.py
+# is_exact_h3_av_handover_boundary). PC 2026-09-10: MMH3H3DecodedUpscalePrepare (bca81b8c)
+# slices the audio to frames*32000//24 samples, whose VAE encode floors to 800-sample latent
+# frames, while its validator rounds (73 f -> 121 vs 122): every other grid length fails with
+# "H3 AV duration mismatch". The decoded import therefore keeps the largest AV-exact length.
+AV_BOUNDARY_MIN = 39
+AV_BOUNDARY_STEP = 51
+
+
+def av_boundary_frames(frames):
+    """Largest AV-exact length (39 + 51k) not above frames; 0 when the clip is shorter than 39."""
+    n = int(frames)
+    if n < AV_BOUNDARY_MIN:
+        return 0
+    return AV_BOUNDARY_MIN + AV_BOUNDARY_STEP * ((n - AV_BOUNDARY_MIN) // AV_BOUNDARY_STEP)
 
 
 # --------------------------------------------------------------------------- params

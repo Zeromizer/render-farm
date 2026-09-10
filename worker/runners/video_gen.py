@@ -295,10 +295,20 @@ def _h3_latent_upscale(jid, src_local, u, work_dir, heartbeat, cancel_check, dea
         if abs(src["fps"] - graphs.FPS) > 0.05:
             raise RuntimeError(f"variant 'decoded' needs a {graphs.FPS} fps source (got {src['fps']:g} fps): use the "
                                f"native segment clip (outputs/<id>-<segment>.mp4), not a RIFE'd master")
-        if not graphs_h3.on_frame_grid(frames):
-            kept = graphs_h3.grid_frames(frames)
-            warnings.append(f"source has {frames} frames, off the 17k+5 grid; the decoded import keeps the first {kept}")
+        kept = graphs_h3.av_boundary_frames(frames)
+        if not kept:
+            raise RuntimeError(f"variant 'decoded' needs a source of at least {graphs_h3.AV_BOUNDARY_MIN} frames "
+                               f"({graphs_h3.AV_BOUNDARY_MIN / graphs.FPS:.2f} s at {graphs.FPS} fps); got {frames}")
+        if kept != frames:
+            trimmed = os.path.join(work_dir, "decoded-source.mp4")
+            segments.trim_frames(src_local, trimmed, kept, fps=graphs.FPS, log=log)
+            warnings.append(f"source has {frames} frames; the decoded import keeps the first {kept} "
+                            f"({kept / graphs.FPS:.2f} s): mmh3_media's decoded entry only accepts AV-exact lengths "
+                            f"(39, 90, 141, ... frames)")
             log(f"decoded: {warnings[-1]}")
+            src_local = trimmed
+            src = post.info(src_local)
+            frames = src["frames"]
     timer.lap("prepare")
 
     packet_prefix = f"mmh3/video_gen/{jid}-upscaled" if h3.get("save_latent") else None

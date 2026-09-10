@@ -199,6 +199,15 @@ def main():
         dims = uu["_dims"]
         packet_prefix = f"mmh3/smoke_{stamp}-upscaled" if a.save_latent else None
         if uu["variant"] == "decoded":
+            kept = graphs_h3.av_boundary_frames(src_info["frames"])
+            if not kept:
+                raise SystemExit(f"decoded needs at least {graphs_h3.AV_BOUNDARY_MIN} frames, got {src_info['frames']}")
+            if kept != src_info["frames"]:
+                trimmed = os.path.splitext(out)[0] + "-source.mp4"
+                segments.trim_frames(src, trimmed, kept, log=log)
+                log(f"decoded: source has {src_info['frames']} frames; keeping the first {kept} (AV-exact H3 length)")
+                src = trimmed
+                src_info = post.info(src)
             name = comfy_client.upload_input(src)
             graph, meta = graphs_h3.build_decoded_upscale(uu, name, (src_info["width"], src_info["height"]),
                                                           f"video_gen/smoke_{stamp}-h3up", prompt=a.prompt if a.prompt else None,

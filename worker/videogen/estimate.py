@@ -27,14 +27,19 @@ LOAD_S = 25.0
 SEEDVR2_S_PER_VIDEO_S = 55.0
 LANCZOS_S = 10.0
 TURNTABLE_POST_S = 90.0
-# h3_latent_upscale (provisional; calibrate on the 4080 SUPER, see docs/h3-latent-upscale-pc-handoff.md)
-H3UP_LOAD_S = 60.0
+# h3_latent_upscale, calibrated on the RTX 4080 SUPER 2026-09-10 (docs/h3-latent-upscale-pc-handoff.md):
+# tile 480x832x124 -> 1088x1888 in 12 tiles of 640x384 took 1589 s: ~10 s per step per tile (8 steps),
+# ~50 s of VAE/model shuffle per tile, ~90 s before the first step.
+H3UP_LOAD_S = 90.0
 H3UP_UPSCALER_S_PER_MPXF = 0.02
 H3UP_STEP_S_PER_PXF = STEP_S_PER_PXF
 H3UP_TILE_OVERHEAD = 1.35
+H3UP_TILE_FIXED_S = 50.0       # per tile: decode/encode round trip and model re-staging
 H3UP_DECODE_S_PER_PXF = DECODE_S_PER_PXF * 2
-FIDELITY_S = 40.0
-H3UP_REFINE_STEPS = 3          # denoise 0.375 of an 8-step turbo profile
+FIDELITY_S = 10.0
+# BasicScheduler keeps the profile's full step count at denoise 0.375 (it takes the last 8 of a
+# 21-step schedule), so a refine runs all 8 steps per tile, not 3.
+H3UP_REFINE_STEPS = 8
 H3UP_DEFAULT_SOURCE = (480, 832, 124)   # 9:16 480p 5 s when the source is unknown
 
 
@@ -74,7 +79,10 @@ def latent_upscale_plan(u, src_w, src_h, frames):
     from videogen import graphs_h3
     u = dict(u or {})
     try:
-        v = graphs_h3.validate_upscale_params(dict(u, method=graphs_h3.METHOD), "upscale")
+        # estimate only: a generation+upscale job has no latent yet, so validate with a placeholder
+        # (otherwise the fallback below plans a 2x refine instead of the requested size)
+        v = graphs_h3.validate_upscale_params(dict(u, method=graphs_h3.METHOD,
+                                                   latent=u.get("latent") or {"bucket": "-", "path": "-"}), "upscale")
         dims = graphs_h3.target_dims(src_w, src_h, v)
     except ValueError:
         v = dict(u, tile_width=640, tile_height=384, tile_overlap=64, variant=u.get("variant") or "tile",
@@ -83,8 +91,6 @@ def latent_upscale_plan(u, src_w, src_h, frames):
     w, h = dims["refine"]
     frames = int(frames)
     steps = int(v.get("steps_override") or 0) or H3UP_REFINE_STEPS
-    if v.get("steps_override"):
-        steps = max(1, int(round(int(v["steps_override"]) * (float(v.get("denoise") or 0.375) or 0.375))))
     variant = v.get("variant") or "tile"
     if variant == "full":
         tiles = 1
@@ -96,7 +102,8 @@ def latent_upscale_plan(u, src_w, src_h, frames):
         step_s = H3UP_STEP_S_PER_PXF * pxf * H3UP_TILE_OVERHEAD
     upscaler_s = H3UP_UPSCALER_S_PER_MPXF * (w * h * frames / 1e6)
     decode_s = H3UP_DECODE_S_PER_PXF * w * h * frames
-    total = H3UP_LOAD_S + upscaler_s + tiles * steps * step_s + decode_s + FIDELITY_S
+    per_tile_fixed = H3UP_TILE_FIXED_S if variant != "full" else 0.0
+    total = H3UP_LOAD_S + upscaler_s + tiles * (steps * step_s + per_tile_fixed) + decode_s + FIDELITY_S
     return {"refine": [w, h], "tiles": tiles, "steps": steps, "step_seconds": step_s, "load_seconds": H3UP_LOAD_S,
             "upscaler_seconds": upscaler_s, "decode_seconds": decode_s, "total": total}
 
