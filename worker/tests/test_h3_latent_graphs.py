@@ -131,7 +131,16 @@ class UpscaleGraphs(unittest.TestCase):
                                       "MinimaxH3LatentUpscaler3D", "MMH3H3RefineLoRAs", "MMH3H3ModelOptimizations",
                                       "MMH3H3AutoCondition", "MMH3H3UpscaleRefineSampling", "MiniMaxH3SigmaShift",
                                       "BasicGuider", "KSamplerSelect", "BasicScheduler", "VAEDecode",
-                                      "MMH3H3NativeTileRefine", "VAEDecodeAudio", "CreateVideo", "SaveVideo", "PreviewAny"})
+                                      "MMH3H3NativeTileRefine", "VAEDecodeAudio", "CreateVideo", "SaveVideo", "PreviewAny",
+                                      "MMH3Inspect", "MiniMaxH3ImageToVideo"})
+        # PC 2026-09-10: the tile node must not receive the packet (it would demand an F16 control
+        # configuration), and per-tile sampling cannot take first/last-frame conditioning rows, so the
+        # tile guider is text-only at the refine size, from the packet's own prompt.
+        self.assertNotIn("packet", g["tile"]["inputs"])
+        self.assertEqual(g["guider"]["inputs"]["conditioning"], ["cond_text", 0])
+        self.assertEqual(g["cond_text"]["inputs"]["prompt"], ["inspect", 11])
+        self.assertEqual(g["cond_text"]["inputs"]["length"], ["prep", 5])
+        self.assertNotIn("first_frame", g["cond_text"]["inputs"])
         self.assertNotIn("lora", g)
         self.assertNotIn("noise", g)
         self.assertEqual(g["pkt_load"]["inputs"], {"file": "(none)", "verify": "on_access", "path_override": ABS})

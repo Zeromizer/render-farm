@@ -390,7 +390,20 @@ def _refine_tail(g, u, prep_key, packet_ref, refine_dims, filename_prefix, packe
                    "inputs": {"packet": packet_ref, "denoise_override": float(u["denoise"])}}
     g["shift"] = {"class_type": "MiniMaxH3SigmaShift",
                   "inputs": {"model": ["opt", 0], "shift_video": ["refine", 3], "shift_audio": ["refine", 4]}}
-    g["guider"] = {"class_type": "BasicGuider", "inputs": {"model": ["shift", 0], "conditioning": ["cond", 0]}}
+    if variant == "tile":
+        # Per-tile sampling cannot take the packet's first/last-frame conditioning: the core model
+        # asserts the frame rows against the full-frame latent (comfy/ldm/minimax/model.py:700,
+        # "shape mismatch ... [2006, 96] ... [308, 96]" on the 2026-09-10 PC run). The tile guider
+        # therefore gets text-only conditioning at the refine size, built by the core node from the
+        # packet's own prompt; AutoCondition still supplies the seed and the packet downstream.
+        g["inspect"] = {"class_type": "MMH3Inspect", "inputs": {"packet": [prep_key, 0]}}
+        g["cond_text"] = {"class_type": "MiniMaxH3ImageToVideo",
+                          "inputs": {"clip": ["loras", 1], "vae": ["vae", 0], "prompt": ["inspect", 11],
+                                     "width": [prep_key, 3], "height": [prep_key, 4], "length": [prep_key, 5]}}
+        guider_cond = ["cond_text", 0]
+    else:
+        guider_cond = ["cond", 0]
+    g["guider"] = {"class_type": "BasicGuider", "inputs": {"model": ["shift", 0], "conditioning": guider_cond}}
     g["sampler"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": ["refine", 5]}}
     g["sched"] = {"class_type": "BasicScheduler",
                   "inputs": {"model": ["shift", 0], "scheduler": ["refine", 6],
@@ -418,7 +431,11 @@ def _refine_tail(g, u, prep_key, packet_ref, refine_dims, filename_prefix, packe
                                 "overlap": u["tile_overlap"], "context_padding": u["context_padding"],
                                 "traversal": TILE_DEFAULTS["traversal"], "overlap_mode": TILE_DEFAULTS["overlap_mode"],
                                 "blend_mode": TILE_DEFAULTS["blend_mode"],
-                                "context_source": TILE_DEFAULTS["context_source"], "packet": [prep_key, 0]}}
+                                "context_source": TILE_DEFAULTS["context_source"]}}
+        # No `packet` link on purpose: with a packet attached MMH3H3NativeTileRefine (bca81b8c,
+        # nodes_upscale.py:590) demands an F16 control configuration the packet does not carry and
+        # fails "Packet has no F16 control configuration". The reference F07 tile workflow leaves it
+        # unlinked too; the result packet is built from the AutoCondition packet instead.
         out_latent = ["tile", 0]
         operation = OP_TILE
     _av_decode(g, out_latent, filename_prefix)
