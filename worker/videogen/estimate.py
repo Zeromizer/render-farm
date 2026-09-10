@@ -29,12 +29,14 @@ LANCZOS_S = 10.0
 TURNTABLE_POST_S = 90.0
 # h3_latent_upscale, calibrated on the RTX 4080 SUPER 2026-09-10 (docs/h3-latent-upscale-pc-handoff.md):
 # tile 480x832x124 -> 1088x1888 in 12 tiles of 640x384 took 1589 s: ~10 s per step per tile (8 steps),
-# ~50 s of VAE/model shuffle per tile, ~90 s before the first step.
+# ~50 s of VAE/model shuffle per tile, ~90 s before the first step. 73 f: 1066 s, 243 f: 3523 s,
+# 1344x768x124 -> 1920x1088 in 16 tiles: 2233 s. full 1088x1888x73: 319 s.
 H3UP_LOAD_S = 90.0
 H3UP_UPSCALER_S_PER_MPXF = 0.02
 H3UP_STEP_S_PER_PXF = STEP_S_PER_PXF
 H3UP_TILE_OVERHEAD = 1.35
-H3UP_TILE_FIXED_S = 50.0       # per tile: decode/encode round trip and model re-staging
+H3UP_TILE_FIXED_S_PER_FRAME = 0.42   # per tile, per timeline frame: decode/encode round trip and model re-staging
+                                     # (73 f: ~30 s, 124 f: ~50 s, 243 f: ~100 s measured)
 H3UP_DECODE_S_PER_PXF = DECODE_S_PER_PXF * 2
 FIDELITY_S = 10.0
 # BasicScheduler keeps the profile's full step count at denoise 0.375 (it takes the last 8 of a
@@ -102,7 +104,7 @@ def latent_upscale_plan(u, src_w, src_h, frames):
         step_s = H3UP_STEP_S_PER_PXF * pxf * H3UP_TILE_OVERHEAD
     upscaler_s = H3UP_UPSCALER_S_PER_MPXF * (w * h * frames / 1e6)
     decode_s = H3UP_DECODE_S_PER_PXF * w * h * frames
-    per_tile_fixed = H3UP_TILE_FIXED_S if variant != "full" else 0.0
+    per_tile_fixed = H3UP_TILE_FIXED_S_PER_FRAME * frames if variant != "full" else 0.0
     total = H3UP_LOAD_S + upscaler_s + tiles * (steps * step_s + per_tile_fixed) + decode_s + FIDELITY_S
     return {"refine": [w, h], "tiles": tiles, "steps": steps, "step_seconds": step_s, "load_seconds": H3UP_LOAD_S,
             "upscaler_seconds": upscaler_s, "decode_seconds": decode_s, "total": total}
