@@ -315,5 +315,10 @@ never falls back to SeedVR2 or lanczos.
   limitation: the tile refine re-imagines small emblems (badges) because its
   per-tile sampling cannot carry the image conditioning; `full` keeps it. MCP
   default `timeout_minutes` 90 (standalone) / 120 (generation + upscale).
+- Policy (2026-09-11): production runs `variant: full` only (the default), within
+  the 73-frame guard; `tile`, `decoded` and `allow_large_full` need the worker
+  started with `H3_TILE_DEV=1` (tile capped at 5 s). `fidelity.critical_cells`
+  (badge/grille/wheel/plate cells of the 4x4 grid) fail the job at a 0.10 drop;
+  the rest warn at 0.25.
 - Deploy on the render PC: `docs/h3-latent-upscale-pc-handoff.md` (install,
   the five option strings to confirm, measurements, failure drills, calibration).

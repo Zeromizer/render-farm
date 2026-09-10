@@ -191,6 +191,57 @@ fires on the car's centre cells against a 0.9997 background, so it is a "look he
 Drills (section 6): 1/6 queue tile without latent -> `h3_latent_upscale needs upscale.latent ...` before
 any download; 4 (60 fps master as decoded source) -> `variant 'decoded' needs a 24 fps source (got 60
 fps) ...`; 5 (768p 10 s full) -> `variant 'full' refines the whole 1920x1088 clip in one pass: 243
-frames = 508 M pixel-frames, above the 152 M guard ...`; 2/3 (weight / node dir renamed): PENDING.
-Regression (section 7): lanczos queue job done in 3 s; seedvr2 and single-quarter turntable: PENDING.
-Decoded runs, 768p 16:9 5 s tile, 480p 9:16 10 s tile: PENDING.
+frames = 508 M pixel-frames, above the 152 M guard ...`; 2 (weight renamed) -> `MinimaxH3LatentUpscaler3D.model_name
+has no 'minimax_h3_latent_upscaler_3d_bf16.safetensors' (installed: [...]): download ... into
+ComfyUI/models/latent_upscale_models/`; 3 (node dir renamed to `.disabled`; a plain rename is still
+imported by ComfyUI) -> `missing node classes MMH3Load, MMH3H3LatentUpscalePrepare, ...: install
+https://github.com/einhorn13/mmh3_media ...`. All preflights green again after restore.
+Regression (section 7): lanczos queue job 3 s, seedvr2 queue job 171 s, single-quarter turntable queue
+job 313 s, all done. Queue-path h3 jobs through the worker: tile 480p 5 s 1309 s and decoded lighthouse
+785 s, both with `-upscale.json`, `-fidelity.json`, `-compare.mp4` uploaded.
+
+More measurements: 768p 16:9 5 s tile (16 tiles, reprocess/half_cosine) 2233 s, peak 15.7 GB, no seams,
+fidelity 0.827 / 23.8 dB. 480p 9:16 10 s tile 3523 s (59 min), peak 15.6 GB, ComfyUI process 85 GB
+paged (survived), fidelity 0.912 / 24.2 dB. Tile at denoise 0.2 (3 s): 1100 s, seam-free, badge still
+re-imagined. Decoded (after the trim and LoRA-list fixes, then FROZEN by policy): lighthouse 39 f 942 s,
+fidelity 0.882 / 26.6 but the scene was re-rendered (tower thinner, a second lighthouse invented);
+car quarter 90 f 1516 s, fidelity 0.926 / 24.4, car preserved but wheels redesigned and a brake caliper
+invented. After the 10 s run every refine died in `HostBuffer.read_file_slice failed` (comfy_aimdo
+--fast-disk) until ComfyUI was restarted; the runner now restarts ComfyUI on the second such failure.
+
+### Policy (2026-09-11, after the measurements)
+
+- Production: `h3_latent_upscale` runs the **full-frame** variant only, within the pixel-frame guard
+  (73 frames of 1080p; `full` is the default variant). `tile`, `decoded` and `allow_large_full` are
+  dev-only: the worker must be started with `H3_TILE_DEV=1`, and tile stays capped at 124 frames (5 s).
+- `fidelity.critical_cells` ([row, col] of the 4x4 grid holding the badge, grille, wheels and plate)
+  fail the job when a cell drops more than `cell_drop_critical` (0.10) below the frame mean; the
+  other cells keep the 0.25 review threshold. Sidecars are uploaded before the failure.
+- Decoded path frozen as measured; no further changes without a decision.
+
+### Per-tile image conditioning: investigation only (2026-09-11)
+
+Question: can the upscaler node or `context_source` give each tile first-frame / image conditioning,
+so tiles stop re-imagining badges? Findings from mmh3_media `bca81b8c` and the upscaler `d7c01b90`:
+
+- `MinimaxH3LatentUpscaler3D` is a latent-to-latent 3D upscaler (inputs: latent, model_name, mode,
+  align, precision, device, chunking, force_unload). It has no conditioning, image or packet input.
+- `context_source` (`original` | `composited`) only chooses which *pixels* fill the context padding
+  around a tile's sample rectangle (the upscaled decode vs the canvas already refined), in
+  `spatial_tiles.run_spatial_video_tiles`. It never touches conditioning.
+- `MMH3H3NativeTileRefine` samples every tile with the one `guider` it is given; the callback
+  `process_tile` encodes the tile pixels, samples the joint latent and decodes. The only per-tile
+  conditioning mechanism is the F16 control path (`control_tiles.crop_control_inputs_for_tile` ->
+  `apply_control_to_conditioning` -> `clone_guider_with_conditioning`): `control_video`, `mask` and
+  `source_video` are full-canvas tensors cropped to each tile's `sample_rect` and attached as a
+  tile-local ControlNet hint (`set_cond_hint`, optional inpaint `set_inpaint(mask, source)`), which
+  needs a MiniMax H3 ControlNet (`control_net` + `control_vae`) or a #15975 `control_checkpoint`
+  MODEL_PATCH. `ComfyUI/models/model_patches/` is empty on the PC and no H3 ControlNet is installed.
+- The i2v first-frame conditioning rows are full-canvas latent rows; the core model asserts them
+  against the tile latent (the `[2006, 96] vs [308, 96]` failure), so they cannot be cropped per
+  tile without changes inside ComfyUI core.
+
+Conclusion: no. Per-tile image conditioning exists only as an F16 ControlNet hint (e.g. the lanczos
+upscale of the source as `control_video`, or inpaint with `source_video` + `mask`), which requires an
+H3 ControlNet / model-patch checkpoint that is not installed and was not evaluated. The `full`
+variant keeps the packet's image conditioning and is the production answer.

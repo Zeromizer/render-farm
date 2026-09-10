@@ -282,7 +282,14 @@ steps of ~10 s plus ~50 s per tile; peak VRAM 14.9-15.2 GB = the whole card), 3 
 120 with generation. Quality: far sharper than lanczos with no SeedVR2 speckle, but the tile refine
 re-imagines small emblems (the Proton badge came out as a different emblem in every tile run) since
 per-tile sampling cannot carry the image conditioning; `full` kept it. For badge/plate/logo shots use
-`full` (<= 73 frames) or review `-compare.mp4`. Not available inside turntable jobs (upscale
+`full` (<= 73 frames) or review `-compare.mp4`.
+
+Policy (2026-09-11): production runs `variant: "full"` only (now the default) within the 73-frame
+guard; `tile`, `decoded` and `allow_large_full` are dev-only (worker started with `H3_TILE_DEV=1`,
+tile capped at 5 s) and the platform should not offer them. Pass `fidelity.critical_cells` with the
+[row, col] cells (4x4 grid) that hold the badge, grille, wheels and plate: a drop of more than 0.10
+below the frame mean in one of them fails the job (`error` starts with `h3_latent_upscale fidelity
+FAIL`), with `-compare.mp4` and `-fidelity.json` still uploaded for review; the other cells warn at 0.25. Not available inside turntable jobs (upscale
 the native segment clips as standalone jobs). Not for r2v generations yet (use `decoded`).
 
 Platform notes: file `-latent.mmh3` as an asset (`kind: other`, `source_url: minimax:h3:<task>:latent`)
