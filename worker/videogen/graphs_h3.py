@@ -59,6 +59,12 @@ FULL_MAX_PXF = 1088 * 1920 * 73
 TILE_DEFAULTS = {"tile_width": 640, "tile_height": 384, "tile_overlap": 64, "context_padding": 64,
                  "traversal": "snake", "overlap_mode": "context_only", "blend_mode": "hard",
                  "context_source": "composited"}
+# MMH3H3NativeTileRefine combos (bca81b8c spatial_tiles.py). Its own rules: context_only overlap
+# requires blend hard (exclusive ownership); reprocess overlap requires linear or half_cosine and
+# an overlap > 0. PC 2026-09-10: the F07 default (context_only/hard) leaves visible hard seams on
+# car footage, see docs/h3-latent-upscale-pc-handoff.md.
+TILE_MODE_OPTIONS = {"traversal": ("row_major", "snake"), "overlap_mode": ("context_only", "reprocess"),
+                     "blend_mode": ("hard", "linear", "half_cosine"), "context_source": ("original", "composited")}
 FIDELITY_DEFAULTS = {"enabled": True, "compare": True, "ssim_min": 0.80, "psnr_min": 28.0,
                      "cell_ssim_min": 0.70, "cell_drop_max": 0.10}
 ATTENTION_DEFAULT = "Default"
@@ -223,6 +229,17 @@ def validate_upscale_params(u, mode, src_dims=None, frames=None):
         if v % ALIGN or v < 0 or (key.startswith("tile_w") or key.startswith("tile_h")) and v < ALIGN:
             raise ValueError(f"upscale.{key} must be a positive multiple of {ALIGN}, got {v}")
         u[key] = v
+    for key, options in TILE_MODE_OPTIONS.items():
+        v = u.get(key) or TILE_DEFAULTS[key]
+        if v not in options:
+            raise ValueError(f"upscale.{key} must be one of {options}, got {v!r}")
+        u[key] = v
+    if u["overlap_mode"] == "context_only" and u["blend_mode"] != "hard":
+        raise ValueError("upscale.blend_mode 'linear'/'half_cosine' needs overlap_mode 'reprocess' (context_only "
+                         "overlap gives each tile exclusive ownership, so there is nothing to blend)")
+    if u["overlap_mode"] == "reprocess" and (u["blend_mode"] == "hard" or u["tile_overlap"] <= 0):
+        raise ValueError("upscale.overlap_mode 'reprocess' needs blend_mode 'linear' or 'half_cosine' and a "
+                         "tile_overlap > 0")
     fp16 = u.get("fp16_accumulation") or FP16_ACCUMULATION_DEFAULT
     if fp16 not in FP16_ACCUMULATION_OPTIONS:
         raise ValueError(f"upscale.fp16_accumulation must be one of {FP16_ACCUMULATION_OPTIONS}, got {fp16!r}")
@@ -429,9 +446,8 @@ def _refine_tail(g, u, prep_key, packet_ref, refine_dims, filename_prefix, packe
                                 "source_audio_latent": [prep_key, 2], "frames": [prep_key, 5],
                                 "seed": ["cond", 2], "tile_width": u["tile_width"], "tile_height": u["tile_height"],
                                 "overlap": u["tile_overlap"], "context_padding": u["context_padding"],
-                                "traversal": TILE_DEFAULTS["traversal"], "overlap_mode": TILE_DEFAULTS["overlap_mode"],
-                                "blend_mode": TILE_DEFAULTS["blend_mode"],
-                                "context_source": TILE_DEFAULTS["context_source"]}}
+                                "traversal": u["traversal"], "overlap_mode": u["overlap_mode"],
+                                "blend_mode": u["blend_mode"], "context_source": u["context_source"]}}
         # No `packet` link on purpose: with a packet attached MMH3H3NativeTileRefine (bca81b8c,
         # nodes_upscale.py:590) demands an F16 control configuration the packet does not carry and
         # fails "Packet has no F16 control configuration". The reference F07 tile workflow leaves it
@@ -556,9 +572,8 @@ def tile_count(refine, u):
 
 def _tile_meta(u, refine):
     out = {k: u[k] for k in ("tile_width", "tile_height", "tile_overlap", "context_padding")}
-    out.update({"traversal": TILE_DEFAULTS["traversal"], "overlap_mode": TILE_DEFAULTS["overlap_mode"],
-                "blend_mode": TILE_DEFAULTS["blend_mode"], "context_source": TILE_DEFAULTS["context_source"],
-                "count": tile_count(refine, u)})
+    out.update({k: u.get(k, TILE_DEFAULTS[k]) for k in TILE_MODE_OPTIONS})
+    out["count"] = tile_count(refine, u)
     return out
 
 

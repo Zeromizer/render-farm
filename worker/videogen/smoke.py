@@ -86,6 +86,11 @@ def main():
     ap.add_argument("--tile-h", type=int, default=graphs_h3.TILE_DEFAULTS["tile_height"])
     ap.add_argument("--tile-overlap", type=int, default=graphs_h3.TILE_DEFAULTS["tile_overlap"])
     ap.add_argument("--context-padding", type=int, default=graphs_h3.TILE_DEFAULTS["context_padding"])
+    ap.add_argument("--tile-overlap-mode", choices=graphs_h3.TILE_MODE_OPTIONS["overlap_mode"], default=None)
+    ap.add_argument("--tile-blend-mode", choices=graphs_h3.TILE_MODE_OPTIONS["blend_mode"], default=None,
+                    help="reprocess + linear/half_cosine blends the tile overlaps (hard leaves visible seams)")
+    ap.add_argument("--tile-traversal", choices=graphs_h3.TILE_MODE_OPTIONS["traversal"], default=None)
+    ap.add_argument("--tile-context-source", choices=graphs_h3.TILE_MODE_OPTIONS["context_source"], default=None)
     ap.add_argument("--no-force-unload", action="store_true")
     ap.add_argument("--fp16-accumulation", choices=graphs_h3.FP16_ACCUMULATION_OPTIONS, default="Default")
     ap.add_argument("--allow-large-full", action="store_true", help="h3 full: bypass the pixel-frame guard")
@@ -107,7 +112,9 @@ def main():
              "seed": a.seed, "force_unload": not a.no_force_unload, "fp16_accumulation": a.fp16_accumulation,
              "tile_width": a.tile_w, "tile_height": a.tile_h, "tile_overlap": a.tile_overlap,
              "context_padding": a.context_padding, "allow_large_full": a.allow_large_full,
-             "fidelity": {"enabled": not a.no_fidelity}}
+             "fidelity": {"enabled": not a.no_fidelity},
+             "overlap_mode": a.tile_overlap_mode, "blend_mode": a.tile_blend_mode, "traversal": a.tile_traversal,
+             "context_source": a.tile_context_source}
         if a.shorter_size:
             u["shorter_size"] = a.shorter_size
         else:

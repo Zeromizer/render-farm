@@ -101,6 +101,9 @@ server.tool(
         fp16_accumulation: z.enum(["Default", "Enabled", "Disabled"]).optional(),
         tile_width: z.number().int().multipleOf(32).optional(), tile_height: z.number().int().multipleOf(32).optional(),
         tile_overlap: z.number().int().multipleOf(32).optional(), context_padding: z.number().int().multipleOf(32).optional(),
+        overlap_mode: z.enum(["context_only", "reprocess"]).optional().describe("h3_latent_upscale tile: context_only (default, hard seams) or reprocess (re-samples the overlap and blends it)"),
+        blend_mode: z.enum(["hard", "linear", "half_cosine"]).optional().describe("h3_latent_upscale tile: hard (default; the only choice with context_only) or linear/half_cosine (needs overlap_mode reprocess)"),
+        traversal: z.enum(["row_major", "snake"]).optional(), context_source: z.enum(["original", "composited"]).optional(),
         missing_audio_policy: z.enum(["error", "silence"]).optional().describe("h3_latent_upscale decoded: what to do when the source has no audio"),
         prompt: z.string().optional().describe("h3_latent_upscale decoded: conditioning text for the refine (default: a neutral 'same footage, finer detail')"),
         fidelity: z.object({ enabled: z.boolean().optional(), compare: z.boolean().optional(), ssim_min: z.number().optional(), psnr_min: z.number().optional(), cell_ssim_min: z.number().optional(), cell_drop_max: z.number().optional() }).optional()
