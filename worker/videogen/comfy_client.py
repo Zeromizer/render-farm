@@ -82,6 +82,26 @@ def ensure_server(log, wait_seconds=240):
                      f"(see {os.path.join(config.COMFYUI_DIR, 'comfyui-headless.log')})")
 
 
+def restart_server(log, wait_seconds=240):
+    """Kill the headless ComfyUI (python.exe on COMFYUI_URL's port) and relaunch it.
+
+    PC 2026-09-10: after a 10 s tile refine had pushed the ComfyUI process to 85 GB paged,
+    every following refine died in "HostBuffer.read_file_slice failed" (comfy_aimdo's
+    --fast-disk weight stream) until the process was restarted; /free did not clear it."""
+    port = config.COMFYUI_URL.rsplit(":", 1)[-1].strip("/")
+    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*port "
+          + port + "*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
+    log("comfyui: restarting the headless server (weight-stream read failures persist)")
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    deadline = time.monotonic() + 60
+    while is_up() and time.monotonic() < deadline:
+        time.sleep(1)
+    if is_up():
+        raise ComfyError("ComfyUI is still answering after the stop request; restart it by hand")
+    ensure_server(log, wait_seconds)
+
+
 def upload_input(local_path, subfolder="video_gen"):
     """Put a file in ComfyUI/input/<subfolder>/ and return the name a Load* node wants."""
     with open(local_path, "rb") as f:

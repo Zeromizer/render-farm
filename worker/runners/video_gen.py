@@ -165,7 +165,7 @@ def _run_prompt(jid, graph, label, heartbeat, cancel_check, deadline, dest, log,
         db.set_phase(jid, text[:120], heartbeat.progress)
 
     outputs = None
-    for attempt in (1, 2):
+    for attempt in (1, 2, 3):
         since = datetime.now().isoformat()
         db.set_phase(jid, f"{label}: queued" + (" (retry)" if attempt > 1 else ""), lo)
         prompt_id = comfy_client.submit(graph)
@@ -177,12 +177,18 @@ def _run_prompt(jid, graph, label, heartbeat, cancel_check, deadline, dest, log,
         except comfy_client._CanceledSignal:
             raise proc.Canceled()
         except comfy_client.ComfyError as exc:
-            # --fast-disk streams the checkpoint from disk; twice today a read failed the moment a
-            # freshly /free'd model was re-staged ("HostBuffer.read_file_slice failed",
-            # "hostbuf_file_reader_read failed"). A retry after a /free has always succeeded.
-            if attempt == 1 and "hostbuf" in str(exc).lower():
-                log(f"{label}: transient weight-stream read error, retrying once: {exc}")
-                comfy_client.free()
+            # --fast-disk streams the checkpoint from disk; a read can fail the moment a freshly
+            # /free'd model is re-staged ("HostBuffer.read_file_slice failed",
+            # "hostbuf_file_reader_read failed"). Usually a /free + retry clears it; on the
+            # 2026-09-10 PC run it persisted after a 10 s tile refine (process at 85 GB paged)
+            # until ComfyUI was restarted, so the second retry restarts the server.
+            if "hostbuf" in str(exc).lower() and attempt < 3:
+                if attempt == 1:
+                    log(f"{label}: transient weight-stream read error, retrying once: {exc}")
+                    comfy_client.free()
+                else:
+                    log(f"{label}: weight-stream read error again, restarting ComfyUI: {exc}")
+                    comfy_client.restart_server(log)
                 time.sleep(5)
                 continue
             raise
@@ -257,6 +263,10 @@ def _h3_error(exc):
     if "lora stack is not recorded" in low or "no lora provenance" in low:
         return RuntimeError(f"h3_latent_upscale: {text[:900]} -- the packet has no LoRA provenance; regenerate the clip "
                             f"with save_latent on the current worker, or use variant 'decoded'")
+    if "hostbuf" in low:
+        return RuntimeError(f"h3_latent_upscale: {text[:900]} -- ComfyUI's --fast-disk weight stream failed on three "
+                            f"attempts (after a /free and after a ComfyUI restart); check comfyui-headless.log and the "
+                            f"pagefile (the process reached 85 GB paged on a 10 s tile refine), then retry")
     if "primary h3 latent" in low or "sampler_output provenance" in low:
         return RuntimeError(f"h3_latent_upscale: {text[:900]} -- upscale.latent is not a generation packet of this clip")
     return RuntimeError(f"h3_latent_upscale failed: {text[:1200]}")
