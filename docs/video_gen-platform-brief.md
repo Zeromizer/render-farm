@@ -217,7 +217,7 @@ Front + rear photos, `mode: "turntable"`, `timeout_minutes` 150. Result loops at
 Plain generation defaults for everything else: `upscale: {method: "lanczos"}` when a 1080p master is needed
 (instant, faithful); `method: "seedvr2"` with the default `blend` 0.5 only for hero shots.
 
-## Latent upscale (H3 native), added 2026-09-10 -- GPU validation pending
+## Latent upscale (H3 native), added 2026-09-10, validated on the render PC 2026-09-10
 
 `upscale.method: "h3_latent_upscale"` upsamples a clip by re-running a short refine tail of the
 original sampling on its saved latent (einhorn13/mmh3_media F07 + `MinimaxH3LatentUpscaler3D`),
@@ -243,12 +243,12 @@ Request shapes:
 
 | `upscale.*` key | notes |
 |---|---|
-| `variant` | `tile` (default; `MMH3H3NativeTileRefine`, 640x384 tiles, fits 16 GB), `full` (whole frame in one pass; guarded to ~73 frames at 1080p until measured, `allow_large_full` bypasses), `decoded` (no packet: the mp4 is VAE-encoded back into latent space; lower fidelity, experimental; 24 fps native clips only, frames trimmed to the 17k+5 grid) |
+| `variant` | `tile` (default; `MMH3H3NativeTileRefine`, 640x384 tiles, fits 16 GB), `full` (whole frame in one pass; measured limit 73 frames at 1080p on 16 GB: 3 s fits in 5.3 min, 5 s kills ComfyUI; `allow_large_full` bypasses the guard), `decoded` (no packet: the mp4 is VAE-encoded back into latent space; lower fidelity, experimental; 24 fps native clips only, and the clip is trimmed to the largest AV-exact length 39/90/141/192/243 frames because the node pack's decoded import rejects every other 17k+5 length) |
 | `latent` | `{bucket, path}` of the clip's `.mmh3` packet: the `outputs/<id>-latent.mmh3` sidecar or the same file filed as an asset. Required for tile/full in upscale mode; on a generation job the packet just made is used and `save_latent` is forced on. Scope it like `ready_segments` (org ownership of the asset / of the job that produced the sidecar). The worker checks the packet's canvas and frame count against the source clip. |
 | `shorter_size` / `factor` | as for the other methods (default `shorter_size: 1080`). Per-axis scale must stay within 1x-4x. The refine runs on the 32-aligned cover of the request (1088x1888 for 480x832 -> 1080) and the result is centre-cropped to the exact size. |
 | `denoise` | 0 = source-aware (0.375 for the worker's turbo-8 packets, 0.5 for turbo-4, 0.25 otherwise); else 0.05-0.50. Lower = less drift. |
 | `steps_override` | 0 = the packet's own profile (8 steps res_multistep/simple, shift 12/3); else 1-20. `decoded` defaults to 8 steps at denoise 0.375. |
-| `seed`, `force_unload` (true), `attention` (Default only), `fp16_accumulation` (Default/Enabled/Disabled), `tile_width` 640, `tile_height` 384, `tile_overlap` 64, `context_padding` 64 (multiples of 32), `missing_audio_policy` (decoded), `prompt` (decoded) | |
+| `seed`, `force_unload` (true), `attention` (Default only), `fp16_accumulation` (Default/Enabled/Disabled), `tile_width` 640, `tile_height` 384, `tile_overlap` 64, `context_padding` 64 (multiples of 32), `overlap_mode` reprocess/context_only, `blend_mode` half_cosine/linear/hard (defaults reprocess + half_cosine: seam-free; the F07 pair context_only + hard shows hard seams), `traversal`, `context_source`, `missing_audio_policy` (decoded), `prompt` (decoded) | |
 | `fidelity` | `{enabled: true, compare: true, ssim_min: 0.85, psnr_min: 22, cell_ssim_min: 0.70, cell_drop_max: 0.25}` (PC-anchored 2026-09-10: lanczos 0.996/52.8 dB, raw SeedVR2 0.956/35.7, tile refine 0.922/25.2, full refine 0.919/24.9; the floors sit under a healthy refine and only a broken one trips them). ffmpeg ssim/psnr of the result against a lanczos resize of the source, globally and on a 4x4 grid; a cell far below its frame's mean is the badge/plate/wheel drift signal. Warns, never gates. |
 
 Outputs in `renders` (besides `outputs/<id>.mp4`):
@@ -276,8 +276,13 @@ Errors you will see verbatim on `error` (never a silent fallback):
 `variant 'full' refines the whole ... clip in one pass: ... above the ... guard`,
 `h3_latent_upscale ran out of VRAM: ... try variant 'tile' ...`.
 
-Cost (provisional, unmeasured): ~9 min per 5 s 480p -> 1080p clip in tiles, ~17 min for 10 s;
-`timeout_minutes` 90 standalone / 120 with generation. Not available inside turntable jobs (upscale
+Cost, measured on the RTX 4080 SUPER 2026-09-10: 480p 9:16 5 s -> 1080p tile = 27 min (12 tiles, 8
+steps of ~10 s plus ~50 s per tile; peak VRAM 14.9-15.2 GB = the whole card), 3 s = 18 min; `full`
+3 s = 5.3 min. The worker's estimate/ETA is calibrated to these. `timeout_minutes` 90 standalone /
+120 with generation. Quality: far sharper than lanczos with no SeedVR2 speckle, but the tile refine
+re-imagines small emblems (the Proton badge came out as a different emblem in every tile run) since
+per-tile sampling cannot carry the image conditioning; `full` kept it. For badge/plate/logo shots use
+`full` (<= 73 frames) or review `-compare.mp4`. Not available inside turntable jobs (upscale
 the native segment clips as standalone jobs). Not for r2v generations yet (use `decoded`).
 
 Platform notes: file `-latent.mmh3` as an asset (`kind: other`, `source_url: minimax:h3:<task>:latent`)

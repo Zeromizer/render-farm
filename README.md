@@ -274,7 +274,7 @@ PC-side checks without Supabase: `worker\videogen\smoke.py` (t2v/i2v/r2v
 flags, prints VRAM before/after and wall time). Queue path:
 `worker\insert_test_job.py --engine video_gen --params "{\"prompt\": \"...\"}"`.
 
-### H3 latent upscale (added 2026-09-10, GPU validation pending)
+### H3 latent upscale (added 2026-09-10, validated on the render PC the same day)
 
 A third finishing method, `upscale.method: "h3_latent_upscale"`, upsamples in
 H3's own latent space instead of post-processing pixels: the F07 workflows of
@@ -304,7 +304,16 @@ never falls back to SeedVR2 or lanczos.
   refine settings, ComfyUI/node versions, timing, VRAM), `-fidelity.json`
   (ffmpeg ssim/psnr against a lanczos resize, 4x4 grid, warns only),
   `-compare.mp4` (source | upscaled), `-upscaled-latent.mmh3` with `save_latent`.
-- Provisional cost (unmeasured): ~9 min per 5 s 480p -> 1080p clip in tiles;
-  MCP default `timeout_minutes` 90 (standalone) / 120 (generation + upscale).
+- Measured on the RTX 4080 SUPER (2026-09-10): 480p 9:16 5 s -> 1080p in 12 tiles
+  27 min (peak VRAM 14.9-15.2 GB, i.e. the whole card; ComfyUI process peaked at
+  21 GB working set / 51 GB paged on the 31 GB box); `full` fits 3 s (73 frames) of
+  1080p in 5.3 min and kills ComfyUI at 5 s, hence the 73-frame guard; the packet
+  save adds ~6 s to a generation. Tiles default to `overlap_mode: reprocess` +
+  `blend_mode: half_cosine` (the F07 `context_only`/`hard` pair leaves visible
+  seams). `decoded` sources are trimmed to AV-exact lengths (39/90/141/... frames)
+  because the node pack's decoded import rejects every other length. Known
+  limitation: the tile refine re-imagines small emblems (badges) because its
+  per-tile sampling cannot carry the image conditioning; `full` keeps it. MCP
+  default `timeout_minutes` 90 (standalone) / 120 (generation + upscale).
 - Deploy on the render PC: `docs/h3-latent-upscale-pc-handoff.md` (install,
   the five option strings to confirm, measurements, failure drills, calibration).
