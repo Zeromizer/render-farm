@@ -1,13 +1,22 @@
 {
  "BasicGuider": {
+  "api_node": false,
+  "category": "model/sampling/guiders",
+  "deprecated": false,
+  "description": "",
+  "dev_only": false,
+  "display_name": "Basic Guider",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
-    "model": [
-     "MODEL",
-     {}
-    ],
     "conditioning": [
      "CONDITIONING",
+     {}
+    ],
+    "model": [
+     "MODEL",
      {}
     ]
    }
@@ -19,37 +28,46 @@
    ]
   },
   "is_input_list": false,
+  "name": "BasicGuider",
   "output": [
    "GUIDER"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "GUIDER"
   ],
+  "output_node": false,
   "output_tooltips": [
    null
   ],
-  "output_matchtypes": null,
-  "name": "BasicGuider",
-  "display_name": "Basic Guider",
-  "description": "",
-  "python_module": "comfy_extras.nodes_custom_sampler",
-  "category": "model/sampling/guiders",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "comfy_extras.nodes_custom_sampler",
+  "search_aliases": null
  },
  "BasicScheduler": {
+  "api_node": false,
+  "category": "model/sampling/schedulers",
+  "deprecated": false,
+  "description": "",
+  "dev_only": false,
+  "display_name": null,
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
+    "denoise": [
+     "FLOAT",
+     {
+      "default": 1.0,
+      "max": 1.0,
+      "min": 0.0,
+      "step": 0.01
+     }
+    ],
     "model": [
      "MODEL",
      {}
@@ -75,17 +93,8 @@
      "INT",
      {
       "default": 20,
-      "min": 1,
-      "max": 10000
-     }
-    ],
-    "denoise": [
-     "FLOAT",
-     {
-      "default": 1.0,
-      "min": 0.0,
-      "max": 1.0,
-      "step": 0.01
+      "max": 10000,
+      "min": 1
      }
     ]
    }
@@ -99,36 +108,42 @@
    ]
   },
   "is_input_list": false,
+  "name": "BasicScheduler",
   "output": [
    "SIGMAS"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "SIGMAS"
   ],
+  "output_node": false,
   "output_tooltips": [
    null
   ],
-  "output_matchtypes": null,
-  "name": "BasicScheduler",
-  "display_name": null,
-  "description": "",
-  "python_module": "comfy_extras.nodes_custom_sampler",
-  "category": "model/sampling/schedulers",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "comfy_extras.nodes_custom_sampler",
+  "search_aliases": null
  },
  "CLIPLoader": {
+  "category": "model/loaders",
+  "description": "Recipes:\nsd: clip-l\nstable cascade: clip-g\nsd3: t5 xxl / clip-g / clip-l\nstable audio: t5 base\nmochi: t5 xxl\ncogvideox: t5 xxl (226-token padding)\ncosmos: old t5 xxl\nlumina2: gemma 2 2B\nwan: umt5 xxl\nhidream: llama-3.1 (Recommend) or t5\nomnigen2: qwen vl 2.5 3B\njoyimage: qwen3-vl 8B\nlens: gpt-oss-20b\npixeldit: gemma 2 2B elm\nminimax: MiniMax H3 Qwen3-VL or Music3 Qwen/RVQ",
+  "display_name": "Load CLIP",
+  "has_intermediate_output": false,
   "input": {
+   "optional": {
+    "device": [
+     [
+      "default",
+      "cpu"
+     ],
+     {
+      "advanced": true
+     }
+    ]
+   },
    "required": {
     "clip_name": [
      [
@@ -167,29 +182,19 @@
       "minimax"
      ]
     ]
-   },
-   "optional": {
-    "device": [
-     [
-      "default",
-      "cpu"
-     ],
-     {
-      "advanced": true
-     }
-    ]
    }
   },
   "input_order": {
+   "optional": [
+    "device"
+   ],
    "required": [
     "clip_name",
     "type"
-   ],
-   "optional": [
-    "device"
    ]
   },
   "is_input_list": false,
+  "name": "CLIPLoader",
   "output": [
    "CLIP"
   ],
@@ -199,34 +204,21 @@
   "output_name": [
    "CLIP"
   ],
-  "name": "CLIPLoader",
-  "display_name": "Load CLIP",
-  "description": "Recipes:\nsd: clip-l\nstable cascade: clip-g\nsd3: t5 xxl / clip-g / clip-l\nstable audio: t5 base\nmochi: t5 xxl\ncogvideox: t5 xxl (226-token padding)\ncosmos: old t5 xxl\nlumina2: gemma 2 2B\nwan: umt5 xxl\nhidream: llama-3.1 (Recommend) or t5\nomnigen2: qwen vl 2.5 3B\njoyimage: qwen3-vl 8B\nlens: gpt-oss-20b\npixeldit: gemma 2 2B elm\nminimax: MiniMax H3 Qwen3-VL or Music3 Qwen/RVQ",
-  "python_module": "nodes",
-  "category": "model/loaders",
   "output_node": false,
-  "has_intermediate_output": false,
+  "python_module": "nodes",
   "search_aliases": []
  },
  "CreateVideo": {
+  "api_node": false,
+  "category": "video",
+  "deprecated": false,
+  "description": "Create a video from images.",
+  "dev_only": false,
+  "display_name": "Create Video",
+  "essentials_category": "Video Tools",
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
-   "required": {
-    "images": [
-     "IMAGE",
-     {
-      "tooltip": "The images to create a video from."
-     }
-    ],
-    "fps": [
-     "FLOAT",
-     {
-      "default": 30.0,
-      "min": 1.0,
-      "max": 120.0,
-      "step": 1.0
-     }
-    ]
-   },
    "optional": {
     "audio": [
      "AUDIO",
@@ -237,74 +229,91 @@
     "bit_depth": [
      "COMBO",
      {
-      "tooltip": "Auto uses 8-bit for sRGB and 10-bit for HDR. Explicit 8-bit and 10-bit choices are independent of colorspace.",
       "default": "auto",
       "multiselect": false,
       "options": [
        "auto",
        8,
        10
-      ]
+      ],
+      "tooltip": "Auto uses 8-bit for sRGB and 10-bit for HDR. Explicit 8-bit and 10-bit choices are independent of colorspace."
      }
     ],
     "color_space": [
      "COMBO",
      {
-      "tooltip": "Colorspace of the input images. HDR selects BT.2020/HLG and HDR PQ selects BT.2020/PQ.",
       "default": "sRGB",
       "multiselect": false,
       "options": [
        "sRGB",
        "HDR",
        "HDR PQ"
-      ]
+      ],
+      "tooltip": "Colorspace of the input images. HDR selects BT.2020/HLG and HDR PQ selects BT.2020/PQ."
+     }
+    ]
+   },
+   "required": {
+    "fps": [
+     "FLOAT",
+     {
+      "default": 30.0,
+      "max": 120.0,
+      "min": 1.0,
+      "step": 1.0
+     }
+    ],
+    "images": [
+     "IMAGE",
+     {
+      "tooltip": "The images to create a video from."
      }
     ]
    }
   },
   "input_order": {
-   "required": [
-    "images",
-    "fps"
-   ],
    "optional": [
     "audio",
     "bit_depth",
     "color_space"
+   ],
+   "required": [
+    "images",
+    "fps"
    ]
   },
   "is_input_list": false,
+  "name": "CreateVideo",
   "output": [
    "VIDEO"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "VIDEO"
   ],
+  "output_node": false,
   "output_tooltips": [
    null
   ],
-  "output_matchtypes": null,
-  "name": "CreateVideo",
-  "display_name": "Create Video",
-  "description": "Create a video from images.",
-  "python_module": "comfy_extras.nodes_video",
-  "category": "video",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
+  "python_module": "comfy_extras.nodes_video",
   "search_aliases": [
    "images to video"
-  ],
-  "essentials_category": "Video Tools",
-  "has_intermediate_output": false
+  ]
  },
  "KSamplerSelect": {
+  "api_node": false,
+  "category": "model/sampling/samplers",
+  "deprecated": false,
+  "description": "",
+  "dev_only": false,
+  "display_name": null,
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
     "sampler_name": [
@@ -368,35 +377,35 @@
    ]
   },
   "is_input_list": false,
+  "name": "KSamplerSelect",
   "output": [
    "SAMPLER"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "SAMPLER"
   ],
+  "output_node": false,
   "output_tooltips": [
    null
   ],
-  "output_matchtypes": null,
-  "name": "KSamplerSelect",
-  "display_name": null,
-  "description": "",
-  "python_module": "comfy_extras.nodes_custom_sampler",
-  "category": "model/sampling/samplers",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "comfy_extras.nodes_custom_sampler",
+  "search_aliases": null
  },
  "LoadVideo": {
+  "api_node": false,
+  "category": "video",
+  "deprecated": false,
+  "description": "",
+  "dev_only": false,
+  "display_name": "Load Video",
+  "essentials_category": "Basics",
+  "experimental": false,
+  "has_intermediate_output": true,
   "input": {
    "required": {
     "file": [
@@ -415,44 +424,37 @@
    ]
   },
   "is_input_list": false,
+  "name": "LoadVideo",
   "output": [
    "VIDEO"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "VIDEO"
   ],
+  "output_node": false,
   "output_tooltips": [
    null
   ],
-  "output_matchtypes": null,
-  "name": "LoadVideo",
-  "display_name": "Load Video",
-  "description": "",
-  "python_module": "comfy_extras.nodes_video",
-  "category": "video",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
+  "python_module": "comfy_extras.nodes_video",
   "search_aliases": [
    "import video",
    "open video",
    "video file"
-  ],
-  "essentials_category": "Basics",
-  "has_intermediate_output": true
+  ]
  },
  "LoraLoaderModelOnly": {
+  "category": "model/loaders",
+  "description": "This LoRAs loader is used to modify the diffusion model, altering the way in which latents are denoised such as applying styles. Multiple LoRA nodes can be linked together.",
+  "display_name": "Load LoRA",
+  "essentials_category": "Image Generation",
+  "has_intermediate_output": false,
   "input": {
    "required": {
-    "model": [
-     "MODEL"
-    ],
     "lora_name": [
      [
       "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
@@ -460,12 +462,15 @@
       "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
      ]
     ],
+    "model": [
+     "MODEL"
+    ],
     "strength_model": [
      "FLOAT",
      {
       "default": 1.0,
-      "min": -100.0,
       "max": 100.0,
+      "min": -100.0,
       "step": 0.01
      }
     ]
@@ -479,6 +484,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "LoraLoaderModelOnly",
   "output": [
    "MODEL"
   ],
@@ -488,56 +494,121 @@
   "output_name": [
    "MODEL"
   ],
-  "name": "LoraLoaderModelOnly",
-  "display_name": "Load LoRA",
-  "description": "This LoRAs loader is used to modify the diffusion model, altering the way in which latents are denoised such as applying styles. Multiple LoRA nodes can be linked together.",
-  "python_module": "nodes",
-  "category": "model/loaders",
   "output_node": false,
-  "has_intermediate_output": false,
   "output_tooltips": [
    "The modified diffusion model.",
    "The modified CLIP model."
   ],
+  "python_module": "nodes",
   "search_aliases": [
    "lora",
    "load lora",
    "apply lora",
    "lora loader",
    "lora model"
-  ],
-  "essentials_category": "Image Generation"
+  ]
  },
  "MMH3Create": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Describe an H3 generation and attach only the inputs required by the selected task.",
+  "dev_only": false,
+  "display_name": "MMH3 Create",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
+   "optional": {
+    "first_frame": [
+     "IMAGE",
+     {
+      "display_name": "First frame",
+      "tooltip": "Video mode: optional first frame. Ignored in References mode."
+     }
+    ],
+    "last_frame": [
+     "IMAGE",
+     {
+      "display_name": "Last frame",
+      "tooltip": "Video mode: optional last frame. Connect either, both, or neither frame. Ignored in References mode."
+     }
+    ]
+   },
    "required": {
+    "name": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": false,
+      "tooltip": "Optional archive label. If empty, a concise task-based name is used."
+     }
+    ],
+    "notes": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": true,
+      "placeholder": "Optional notes...",
+      "tooltip": "Optional human note stored in the archive."
+     }
+    ],
     "prompt": [
      "STRING",
      {
-      "tooltip": "Main H3 generation prompt.",
       "default": "",
+      "dynamicPrompts": false,
       "multiline": true,
       "placeholder": "Describe the shot, motion, camera, lighting and sound...",
-      "dynamicPrompts": false
+      "tooltip": "Main H3 generation prompt."
+     }
+    ],
+    "seed": [
+     "INT",
+     {
+      "control_after_generate": true,
+      "default": 0,
+      "display_name": "Seed",
+      "max": 18446744073709551615,
+      "min": 0,
+      "tooltip": "Generation seed. ComfyUI can randomize or increment it after each run."
      }
     ],
     "task": [
      "COMFY_DYNAMICCOMBO_V3",
      {
       "display_name": "Generation type",
-      "tooltip": "The selected task controls which media inputs are shown.",
       "options": [
        {
-        "key": "Video (optional frames)",
         "inputs": {
          "required": {}
-        }
+        },
+        "key": "Video (optional frames)"
        },
        {
-        "key": "References to video",
         "inputs": {
-         "required": {},
          "optional": {
+          "reference_audios": [
+           "COMFY_AUTOGROW_V3",
+           {
+            "display_name": "Reference audio",
+            "template": {
+             "input": {
+              "required": {
+               "audio": [
+                "AUDIO",
+                {}
+               ]
+              }
+             },
+             "max": 10,
+             "min": 0,
+             "prefix": "audio_"
+            }
+           }
+          ],
           "reference_images": [
            "COMFY_AUTOGROW_V3",
            {
@@ -551,9 +622,9 @@
                ]
               }
              },
-             "prefix": "image_",
+             "max": 10,
              "min": 0,
-             "max": 10
+             "prefix": "image_"
             }
            }
           ],
@@ -570,135 +641,158 @@
                ]
               }
              },
-             "prefix": "video_",
+             "max": 10,
              "min": 0,
-             "max": 10
-            }
-           }
-          ],
-          "reference_audios": [
-           "COMFY_AUTOGROW_V3",
-           {
-            "display_name": "Reference audio",
-            "template": {
-             "input": {
-              "required": {
-               "audio": [
-                "AUDIO",
-                {}
-               ]
-              }
-             },
-             "prefix": "audio_",
-             "min": 0,
-             "max": 10
+             "prefix": "video_"
             }
            }
           ]
-         }
-        }
+         },
+         "required": {}
+        },
+        "key": "References to video"
        }
-      ]
-     }
-    ],
-    "seed": [
-     "INT",
-     {
-      "display_name": "Seed",
-      "tooltip": "Generation seed. ComfyUI can randomize or increment it after each run.",
-      "default": 0,
-      "min": 0,
-      "max": 18446744073709551615,
-      "control_after_generate": true
-     }
-    ],
-    "name": [
-     "STRING",
-     {
-      "tooltip": "Optional archive label. If empty, a concise task-based name is used.",
-      "advanced": true,
-      "default": "",
-      "multiline": false
-     }
-    ],
-    "notes": [
-     "STRING",
-     {
-      "tooltip": "Optional human note stored in the archive.",
-      "advanced": true,
-      "default": "",
-      "multiline": true,
-      "placeholder": "Optional notes..."
-     }
-    ]
-   },
-   "optional": {
-    "first_frame": [
-     "IMAGE",
-     {
-      "display_name": "First frame",
-      "tooltip": "Video mode: optional first frame. Ignored in References mode."
-     }
-    ],
-    "last_frame": [
-     "IMAGE",
-     {
-      "display_name": "Last frame",
-      "tooltip": "Video mode: optional last frame. Connect either, both, or neither frame. Ignored in References mode."
+      ],
+      "tooltip": "The selected task controls which media inputs are shown."
      }
     ]
    }
   },
   "input_order": {
+   "optional": [
+    "first_frame",
+    "last_frame"
+   ],
    "required": [
     "prompt",
     "task",
     "seed",
     "name",
     "notes"
-   ],
-   "optional": [
-    "first_frame",
-    "last_frame"
    ]
   },
   "is_input_list": false,
+  "name": "MMH3Create",
   "output": [
    "MMH3_MEDIA"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "packet"
   ],
+  "output_node": false,
   "output_tooltips": [
    "New in-memory packet containing the recorded intent and connected resources."
   ],
-  "output_matchtypes": null,
-  "name": "MMH3Create",
-  "display_name": "MMH3 Create",
-  "description": "Describe an H3 generation and attach only the inputs required by the selected task.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
- "MMH3H3AVCombine": {
+ "MMH3GenerationLoRAs": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "View and edit the ordered LoRA list used to create the source media. The list is provenance for reproducible refinement; this node does not load LoRAs.",
+  "dev_only": false,
+  "display_name": "MMH3 Source LoRA List",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
-    "video_latent": [
+    "action": [
+     "COMBO",
+     {
+      "default": "view current",
+      "multiselect": false,
+      "options": [
+       "view current",
+       "save list",
+       "mark no LoRAs",
+       "remove provenance"
+      ],
+      "tooltip": "View leaves the packet unchanged. Save replaces the ordered list. Mark no LoRAs records an explicit empty list. Remove provenance makes the source LoRAs unknown."
+     }
+    ],
+    "loras_list": [
+     "STRING",
+     {
+      "default": "[]",
+      "display_name": "LoRAs list",
+      "multiline": true,
+      "placeholder": "[{\"name\":\"example.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"purpose\":\"style\"}]",
+      "tooltip": "Editable ordered list. Each item needs name and model strength; CLIP strength may be a number or null. Order is preserved."
+     }
+    ],
+    "packet": [
+     "MMH3_MEDIA",
+     {}
+    ]
+   }
+  },
+  "input_order": {
+   "required": [
+    "packet",
+    "action",
+    "loras_list"
+   ]
+  },
+  "is_input_list": false,
+  "name": "MMH3GenerationLoRAs",
+  "output": [
+   "MMH3_MEDIA",
+   "STRING",
+   "INT",
+   "BOOLEAN",
+   "STRING"
+  ],
+  "output_is_list": [
+   false,
+   false,
+   false,
+   false,
+   false
+  ],
+  "output_matchtypes": null,
+  "output_name": [
+   "packet",
+   "current LoRAs list",
+   "LoRA count",
+   "LoRA provenance known",
+   "summary"
+  ],
+  "output_node": false,
+  "output_tooltips": [
+   null,
+   null,
+   null,
+   "True when the packet explicitly records a list, including an empty list meaning no LoRAs were used.",
+   null
+  ],
+  "price_badge": null,
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
+ },
+ "MMH3H3AVCombine": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Combine separated MiniMax H3 video/audio latents into one joint AV latent. Rejects batch/layout/duration mismatches instead of silently trimming or padding audio.",
+  "dev_only": false,
+  "display_name": "MMH3 H3 AV Combine",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
+  "input": {
+   "required": {
+    "audio_latent": [
      "LATENT",
      {}
     ],
-    "audio_latent": [
+    "video_latent": [
      "LATENT",
      {}
     ]
@@ -711,35 +805,35 @@
    ]
   },
   "is_input_list": false,
+  "name": "MMH3H3AVCombine",
   "output": [
    "LATENT"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "latent"
   ],
+  "output_node": false,
   "output_tooltips": [
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3H3AVCombine",
-  "display_name": "MMH3 H3 AV Combine",
-  "description": "Combine separated MiniMax H3 video/audio latents into one joint AV latent. Rejects batch/layout/duration mismatches instead of silently trimming or padding audio.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3H3AVSeparate": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Strictly split a MiniMax H3 joint AV latent into video and audio branches. Preserves auxiliary LATENT fields and split noise masks without copying tensor storage.",
+  "dev_only": false,
+  "display_name": "MMH3 H3 AV Separate",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
     "av_latent": [
@@ -754,6 +848,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "MMH3H3AVSeparate",
   "output": [
    "LATENT",
    "LATENT"
@@ -762,33 +857,64 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "video_latent",
    "audio_latent"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3H3AVSeparate",
-  "display_name": "MMH3 H3 AV Separate",
-  "description": "Strictly split a MiniMax H3 joint AV latent into video and audio branches. Preserves auxiliary LATENT fields and split noise masks without copying tensor storage.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3H3AutoCondition": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Resolve the packet task and prepare native H3 conditioning and latent inputs.",
+  "dev_only": false,
+  "display_name": "Prepare H3 Generation",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
+   "optional": {
+    "audio_vae": [
+     "VAE",
+     {
+      "display_name": "Audio VAE"
+     }
+    ]
+   },
    "required": {
+    "clip": [
+     "CLIP",
+     {}
+    ],
+    "frames_override": [
+     "INT",
+     {
+      "default": 0,
+      "display_name": "Frames",
+      "forceInput": true,
+      "max": 3600,
+      "min": 0
+     }
+    ],
+    "height_override": [
+     "INT",
+     {
+      "default": 0,
+      "display_name": "Height",
+      "forceInput": true,
+      "max": 16384,
+      "min": 0
+     }
+    ],
     "packet": [
      "MMH3_MEDIA",
      {}
@@ -796,26 +922,22 @@
     "prompt_override": [
      "STRING",
      {
-      "display_name": "Prompt override",
-      "tooltip": "Leave blank to use the prompt stored in the MMH3 packet.",
       "default": "",
-      "multiline": true
+      "display_name": "Prompt override",
+      "multiline": true,
+      "tooltip": "Leave blank to use the prompt stored in the MMH3 packet."
      }
     ],
     "seed_override": [
      "INT",
      {
-      "display_name": "Seed override",
-      "tooltip": "-1 uses the seed stored in the packet.",
       "advanced": true,
       "default": -1,
+      "display_name": "Seed override",
+      "max": 18446744073709551615,
       "min": -1,
-      "max": 18446744073709551615
+      "tooltip": "-1 uses the seed stored in the packet."
      }
-    ],
-    "clip": [
-     "CLIP",
-     {}
     ],
     "video_vae": [
      "VAE",
@@ -826,44 +948,19 @@
     "width_override": [
      "INT",
      {
+      "default": 0,
       "display_name": "Width",
-      "default": 0,
       "forceInput": true,
-      "min": 0,
-      "max": 16384
-     }
-    ],
-    "height_override": [
-     "INT",
-     {
-      "display_name": "Height",
-      "default": 0,
-      "forceInput": true,
-      "min": 0,
-      "max": 16384
-     }
-    ],
-    "frames_override": [
-     "INT",
-     {
-      "display_name": "Frames",
-      "default": 0,
-      "forceInput": true,
-      "min": 0,
-      "max": 3600
-     }
-    ]
-   },
-   "optional": {
-    "audio_vae": [
-     "VAE",
-     {
-      "display_name": "Audio VAE"
+      "max": 16384,
+      "min": 0
      }
     ]
    }
   },
   "input_order": {
+   "optional": [
+    "audio_vae"
+   ],
    "required": [
     "packet",
     "prompt_override",
@@ -873,12 +970,10 @@
     "width_override",
     "height_override",
     "frames_override"
-   ],
-   "optional": [
-    "audio_vae"
    ]
   },
   "is_input_list": false,
+  "name": "MMH3H3AutoCondition",
   "output": [
    "CONDITIONING",
    "LATENT",
@@ -899,6 +994,7 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "positive",
    "latent",
@@ -909,6 +1005,7 @@
    "info_json",
    "task_family"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null,
@@ -919,46 +1016,41 @@
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3H3AutoCondition",
-  "display_name": "Prepare H3 Generation",
-  "description": "Resolve the packet task and prepare native H3 conditioning and latent inputs.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3H3DecodedUpscalePrepare": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "F07 decoded-video entry path. Normalizes primary packet AV to the H3 grid, VAE-encodes it, preserves the audio latent and returns aligned learned-upscale geometry with vae_encoded provenance.",
+  "dev_only": false,
+  "display_name": "MMH3 H3 Decoded Upscale Prepare",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
-    "packet": [
-     "MMH3_MEDIA",
-     {}
-    ],
-    "video_vae": [
-     "VAE",
-     {}
+    "align": [
+     "INT",
+     {
+      "advanced": true,
+      "default": 32,
+      "max": 512,
+      "min": 32,
+      "step": 32
+     }
     ],
     "audio_vae": [
      "VAE",
      {}
     ],
-    "missing_audio_policy": [
-     "COMBO",
+    "enable_chunking": [
+     "BOOLEAN",
      {
-      "default": "error",
-      "multiselect": false,
-      "options": [
-       "error",
-       "silence"
-      ]
+      "advanced": true,
+      "default": true
      }
     ],
     "geometry_mode": [
@@ -973,23 +1065,28 @@
       ]
      }
     ],
+    "missing_audio_policy": [
+     "COMBO",
+     {
+      "default": "error",
+      "multiselect": false,
+      "options": [
+       "error",
+       "silence"
+      ]
+     }
+    ],
+    "packet": [
+     "MMH3_MEDIA",
+     {}
+    ],
     "scale": [
      "FLOAT",
      {
       "default": 2.0,
-      "min": 1.0,
       "max": 4.0,
+      "min": 1.0,
       "step": 0.05
-     }
-    ],
-    "target_width": [
-     "INT",
-     {
-      "advanced": true,
-      "default": 0,
-      "min": 0,
-      "max": 4096,
-      "step": 32
      }
     ],
     "target_height": [
@@ -997,8 +1094,8 @@
      {
       "advanced": true,
       "default": 0,
-      "min": 0,
       "max": 4096,
+      "min": 0,
       "step": 32
      }
     ],
@@ -1006,27 +1103,24 @@
      "FLOAT",
      {
       "default": 2.1,
-      "min": 0.1,
       "max": 8.0,
+      "min": 0.1,
       "step": 0.1
      }
     ],
-    "align": [
+    "target_width": [
      "INT",
      {
       "advanced": true,
-      "default": 32,
-      "min": 32,
-      "max": 512,
+      "default": 0,
+      "max": 4096,
+      "min": 0,
       "step": 32
      }
     ],
-    "enable_chunking": [
-     "BOOLEAN",
-     {
-      "advanced": true,
-      "default": true
-     }
+    "video_vae": [
+     "VAE",
+     {}
     ]
    }
   },
@@ -1046,6 +1140,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "MMH3H3DecodedUpscalePrepare",
   "output": [
    "MMH3_MEDIA",
    "LATENT",
@@ -1068,6 +1163,7 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "packet",
    "video_latent",
@@ -1079,6 +1175,7 @@
    "summary",
    "process_info_json"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null,
@@ -1090,25 +1187,33 @@
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3H3DecodedUpscalePrepare",
-  "display_name": "MMH3 H3 Decoded Upscale Prepare",
-  "description": "F07 decoded-video entry path. Normalizes primary packet AV to the H3 grid, VAE-encodes it, preserves the audio latent and returns aligned learned-upscale geometry with vae_encoded provenance.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3H3GenerationSettings": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Set output aspect ratio, resolution and video length with H3-safe alignment.",
+  "dev_only": false,
+  "display_name": "H3 Video Settings",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
+    "duration_seconds": [
+     "FLOAT",
+     {
+      "default": 3.0,
+      "display_name": "Video length (seconds)",
+      "max": 150.0,
+      "min": 0.21,
+      "step": 0.1,
+      "tooltip": "Rounded to the nearest legal H3 frame count at 24 FPS."
+     }
+    ],
     "packet": [
      "MMH3_MEDIA",
      {}
@@ -1117,197 +1222,186 @@
      "COMFY_DYNAMICCOMBO_V3",
      {
       "display_name": "Aspect ratio",
-      "tooltip": "Source keeps the original dimensions (aligned to 32), without resizing to a base resolution. Required for direct latent continuation.",
       "options": [
        {
-        "key": "Source",
         "inputs": {
          "required": {}
-        }
+        },
+        "key": "Source"
        },
        {
-        "key": "16:9",
         "inputs": {
          "required": {
           "megapixels": [
            "FLOAT",
            {
-            "display_name": "Resolution (MP)",
-            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels.",
             "default": 0.98,
-            "min": 0.1,
+            "display_name": "Resolution (MP)",
             "max": 16.0,
-            "step": 0.05
+            "min": 0.1,
+            "step": 0.05,
+            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels."
            }
           ]
          }
-        }
+        },
+        "key": "16:9"
        },
        {
-        "key": "9:16",
         "inputs": {
          "required": {
           "megapixels": [
            "FLOAT",
            {
-            "display_name": "Resolution (MP)",
-            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels.",
             "default": 0.98,
-            "min": 0.1,
+            "display_name": "Resolution (MP)",
             "max": 16.0,
-            "step": 0.05
+            "min": 0.1,
+            "step": 0.05,
+            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels."
            }
           ]
          }
-        }
+        },
+        "key": "9:16"
        },
        {
-        "key": "1:1",
         "inputs": {
          "required": {
           "megapixels": [
            "FLOAT",
            {
-            "display_name": "Resolution (MP)",
-            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels.",
             "default": 0.98,
-            "min": 0.1,
+            "display_name": "Resolution (MP)",
             "max": 16.0,
-            "step": 0.05
+            "min": 0.1,
+            "step": 0.05,
+            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels."
            }
           ]
          }
-        }
+        },
+        "key": "1:1"
        },
        {
-        "key": "4:3",
         "inputs": {
          "required": {
           "megapixels": [
            "FLOAT",
            {
-            "display_name": "Resolution (MP)",
-            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels.",
             "default": 0.98,
-            "min": 0.1,
+            "display_name": "Resolution (MP)",
             "max": 16.0,
-            "step": 0.05
+            "min": 0.1,
+            "step": 0.05,
+            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels."
            }
           ]
          }
-        }
+        },
+        "key": "4:3"
        },
        {
-        "key": "3:4",
         "inputs": {
          "required": {
           "megapixels": [
            "FLOAT",
            {
-            "display_name": "Resolution (MP)",
-            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels.",
             "default": 0.98,
-            "min": 0.1,
+            "display_name": "Resolution (MP)",
             "max": 16.0,
-            "step": 0.05
+            "min": 0.1,
+            "step": 0.05,
+            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels."
            }
           ]
          }
-        }
+        },
+        "key": "3:4"
        },
        {
-        "key": "2:3",
         "inputs": {
          "required": {
           "megapixels": [
            "FLOAT",
            {
-            "display_name": "Resolution (MP)",
-            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels.",
             "default": 0.98,
-            "min": 0.1,
+            "display_name": "Resolution (MP)",
             "max": 16.0,
-            "step": 0.05
+            "min": 0.1,
+            "step": 0.05,
+            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels."
            }
           ]
          }
-        }
+        },
+        "key": "2:3"
        },
        {
-        "key": "3:2",
         "inputs": {
          "required": {
           "megapixels": [
            "FLOAT",
            {
-            "display_name": "Resolution (MP)",
-            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels.",
             "default": 0.98,
-            "min": 0.1,
+            "display_name": "Resolution (MP)",
             "max": 16.0,
-            "step": 0.05
+            "min": 0.1,
+            "step": 0.05,
+            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels."
            }
           ]
          }
-        }
+        },
+        "key": "3:2"
        },
        {
-        "key": "21:9",
         "inputs": {
          "required": {
           "megapixels": [
            "FLOAT",
            {
-            "display_name": "Resolution (MP)",
-            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels.",
             "default": 0.98,
-            "min": 0.1,
+            "display_name": "Resolution (MP)",
             "max": 16.0,
-            "step": 0.05
+            "min": 0.1,
+            "step": 0.05,
+            "tooltip": "Target pixel count; final width and height are aligned to 32 pixels."
            }
           ]
          }
-        }
+        },
+        "key": "21:9"
        },
        {
-        "key": "Custom",
         "inputs": {
          "required": {
-          "width": [
-           "INT",
-           {
-            "display_name": "Width",
-            "default": 1344,
-            "min": 32,
-            "max": 4096,
-            "step": 32
-           }
-          ],
           "height": [
            "INT",
            {
-            "display_name": "Height",
             "default": 768,
-            "min": 32,
+            "display_name": "Height",
             "max": 4096,
+            "min": 32,
+            "step": 32
+           }
+          ],
+          "width": [
+           "INT",
+           {
+            "default": 1344,
+            "display_name": "Width",
+            "max": 4096,
+            "min": 32,
             "step": 32
            }
           ]
          }
-        }
+        },
+        "key": "Custom"
        }
-      ]
-     }
-    ],
-    "duration_seconds": [
-     "FLOAT",
-     {
-      "display_name": "Video length (seconds)",
-      "tooltip": "Rounded to the nearest legal H3 frame count at 24 FPS.",
-      "default": 3.0,
-      "min": 0.21,
-      "max": 150.0,
-      "step": 0.1
+      ],
+      "tooltip": "Source keeps the original dimensions (aligned to 32), without resizing to a base resolution. Required for direct latent continuation."
      }
     ]
    }
@@ -1320,6 +1414,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "MMH3H3GenerationSettings",
   "output": [
    "MMH3_MEDIA",
    "INT",
@@ -1334,6 +1429,7 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "packet",
    "width",
@@ -1341,6 +1437,7 @@
    "frames",
    "Settings JSON"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null,
@@ -1348,28 +1445,38 @@
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3H3GenerationSettings",
-  "display_name": "H3 Video Settings",
-  "description": "Set output aspect ratio, resolution and video length with H3-safe alignment.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3H3LatentUpscalePrepare": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "F07 packet/provenance/geometry boundary for a replaceable learned video-latent upscaler. Returns the original audio latent unchanged and exact aligned target dimensions.",
+  "dev_only": false,
+  "display_name": "MMH3 H3 Latent Upscale Prepare",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
-    "packet": [
-     "MMH3_MEDIA",
-     {}
+    "align": [
+     "INT",
+     {
+      "advanced": true,
+      "default": 32,
+      "max": 512,
+      "min": 32,
+      "step": 32
+     }
+    ],
+    "enable_chunking": [
+     "BOOLEAN",
+     {
+      "advanced": true,
+      "default": true
+     }
     ],
     "geometry_mode": [
      "COMBO",
@@ -1383,23 +1490,17 @@
       ]
      }
     ],
+    "packet": [
+     "MMH3_MEDIA",
+     {}
+    ],
     "scale": [
      "FLOAT",
      {
       "default": 2.0,
-      "min": 1.0,
       "max": 4.0,
+      "min": 1.0,
       "step": 0.05
-     }
-    ],
-    "target_width": [
-     "INT",
-     {
-      "advanced": true,
-      "default": 0,
-      "min": 0,
-      "max": 4096,
-      "step": 32
      }
     ],
     "target_height": [
@@ -1407,8 +1508,8 @@
      {
       "advanced": true,
       "default": 0,
-      "min": 0,
       "max": 4096,
+      "min": 0,
       "step": 32
      }
     ],
@@ -1417,26 +1518,19 @@
      {
       "advanced": true,
       "default": 0.0,
-      "min": 0.0,
       "max": 8.0,
+      "min": 0.0,
       "step": 0.1
      }
     ],
-    "align": [
+    "target_width": [
      "INT",
      {
       "advanced": true,
-      "default": 32,
-      "min": 32,
-      "max": 512,
+      "default": 0,
+      "max": 4096,
+      "min": 0,
       "step": 32
-     }
-    ],
-    "enable_chunking": [
-     "BOOLEAN",
-     {
-      "advanced": true,
-      "default": true
      }
     ]
    }
@@ -1454,6 +1548,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "MMH3H3LatentUpscalePrepare",
   "output": [
    "MMH3_MEDIA",
    "LATENT",
@@ -1476,6 +1571,7 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "packet",
    "video_latent",
@@ -1487,6 +1583,7 @@
    "summary",
    "process_info_json"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null,
@@ -1498,30 +1595,27 @@
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3H3LatentUpscalePrepare",
-  "display_name": "MMH3 H3 Latent Upscale Prepare",
-  "description": "F07 packet/provenance/geometry boundary for a replaceable learned video-latent upscaler. Returns the original audio latent unchanged and exact aligned target dimensions.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3H3LatentUpscaleTarget": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Build a strict joint H3 refine target from upscaled video and source audio. Native nested masks denoise video and lock audio.",
+  "dev_only": false,
+  "display_name": "MMH3 H3 Latent Upscale Refine Target",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
-    "video_latent": [
+    "audio_latent": [
      "LATENT",
      {}
     ],
-    "audio_latent": [
+    "video_latent": [
      "LATENT",
      {}
     ]
@@ -1534,6 +1628,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "MMH3H3LatentUpscaleTarget",
   "output": [
    "LATENT",
    "STRING"
@@ -1542,70 +1637,83 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "latent",
    "summary"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3H3LatentUpscaleTarget",
-  "display_name": "MMH3 H3 Latent Upscale Refine Target",
-  "description": "Build a strict joint H3 refine target from upscaled video and source audio. Native nested masks denoise video and lock audio.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3H3ModelOptimizations": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Apply one H3 attention/architecture strategy plus optional scoped FP16 accumulation. VDN-H3 is an exclusive hybrid-attention architecture extension (FL2VA/Ref2VA) and requires the external ComfyUI-VDN-H3 runtime + VDN stage weights; do not stack it with Sol/SLA.",
+  "dev_only": false,
+  "display_name": "H3 Optimizations",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
+   "optional": {
+    "sampling_profile_json": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": true,
+      "tooltip": "Optional explicit H3 Sampling contract. Normally carried on MODEL automatically; used by internal/refine graphs."
+     }
+    ]
+   },
    "required": {
-    "model": [
-     "MODEL",
-     {}
-    ],
     "attention": [
      "COMFY_DYNAMICCOMBO_V3",
      {
       "display_name": "Attention",
       "options": [
        {
-        "key": "Default",
         "inputs": {
          "required": {}
-        }
+        },
+        "key": "Default"
        },
        {
-        "key": "PyTorch",
         "inputs": {
          "required": {}
-        }
+        },
+        "key": "PyTorch"
        },
        {
-        "key": "Comfy Kitchen",
         "inputs": {
          "required": {}
-        }
+        },
+        "key": "Comfy Kitchen"
        },
        {
-        "key": "SageAttention (KJ)",
         "inputs": {
          "required": {
+          "sage_allow_compile": [
+           "BOOLEAN",
+           {
+            "advanced": true,
+            "default": false,
+            "display_name": "Allow compile"
+           }
+          ],
           "sage_mode": [
            "COMBO",
            {
-            "display_name": "Implementation",
             "advanced": true,
             "default": "auto",
+            "display_name": "Implementation",
             "multiselect": false,
             "options": [
              "auto",
@@ -1617,249 +1725,229 @@
              "sageattn3_per_block_mean"
             ]
            }
-          ],
-          "sage_allow_compile": [
-           "BOOLEAN",
-           {
-            "display_name": "Allow compile",
-            "advanced": true,
-            "default": false
-           }
           ]
          }
-        }
+        },
+        "key": "SageAttention (KJ)"
        },
        {
-        "key": "Sol (ComfyUI)",
         "inputs": {
          "required": {
-          "sol_tau": [
-           "FLOAT",
+          "sol_dense_blocks": [
+           "STRING",
            {
-            "display_name": "Tau",
             "advanced": true,
-            "default": 1.0,
-            "min": 0.0,
-            "max": 4.0,
-            "step": 0.05
-           }
-          ],
-          "sol_start_percent": [
-           "FLOAT",
-           {
-            "display_name": "Start fraction",
-            "advanced": true,
-            "default": 0.2,
-            "min": 0.0,
-            "max": 1.0,
-            "step": 0.01
+            "default": "",
+            "display_name": "Dense blocks",
+            "multiline": false,
+            "tooltip": "Non-negative block indices, e.g. 0-2,47-49."
            }
           ],
           "sol_end_percent": [
            "FLOAT",
            {
-            "display_name": "End fraction",
             "advanced": true,
             "default": 0.9,
-            "min": 0.0,
+            "display_name": "End fraction",
             "max": 1.0,
+            "min": 0.0,
             "step": 0.01
-           }
-          ],
-          "sol_min_tokens": [
-           "INT",
-           {
-            "display_name": "Minimum tokens",
-            "advanced": true,
-            "default": 4096,
-            "min": 0,
-            "max": 1048576,
-            "step": 512
            }
           ],
           "sol_extra_tokens": [
            "INT",
            {
-            "display_name": "Extra exact tokens",
             "advanced": true,
             "default": 256,
-            "min": 0,
+            "display_name": "Extra exact tokens",
             "max": 256,
+            "min": 0,
             "step": 64
            }
           ],
+          "sol_min_tokens": [
+           "INT",
+           {
+            "advanced": true,
+            "default": 4096,
+            "display_name": "Minimum tokens",
+            "max": 1048576,
+            "min": 0,
+            "step": 512
+           }
+          ],
           "sol_sink_conditioning": [
            "COMBO",
            {
-            "display_name": "Conditioning protection",
             "advanced": true,
             "default": "exact_kv_and_rows",
+            "display_name": "Conditioning protection",
             "multiselect": false,
             "options": [
              "exact_kv",
              "exact_kv_and_rows",
              "off"
             ]
-           }
-          ],
-          "sol_dense_blocks": [
-           "STRING",
-           {
-            "display_name": "Dense blocks",
-            "tooltip": "Non-negative block indices, e.g. 0-2,47-49.",
-            "advanced": true,
-            "default": "",
-            "multiline": false
-           }
-          ]
-         }
-        }
-       },
-       {
-        "key": "Sol (Kijai)",
-        "inputs": {
-         "required": {
-          "sol_tau": [
-           "FLOAT",
-           {
-            "display_name": "Tau",
-            "advanced": true,
-            "default": 1.0,
-            "min": 0.0,
-            "max": 4.0,
-            "step": 0.05
            }
           ],
           "sol_start_percent": [
            "FLOAT",
            {
-            "display_name": "Start fraction",
             "advanced": true,
             "default": 0.2,
-            "min": 0.0,
+            "display_name": "Start fraction",
             "max": 1.0,
+            "min": 0.0,
             "step": 0.01
+           }
+          ],
+          "sol_tau": [
+           "FLOAT",
+           {
+            "advanced": true,
+            "default": 1.0,
+            "display_name": "Tau",
+            "max": 4.0,
+            "min": 0.0,
+            "step": 0.05
+           }
+          ]
+         }
+        },
+        "key": "Sol (ComfyUI)"
+       },
+       {
+        "inputs": {
+         "required": {
+          "sol_dense_blocks": [
+           "STRING",
+           {
+            "advanced": true,
+            "default": "",
+            "display_name": "Dense blocks",
+            "multiline": false,
+            "tooltip": "Blocks excluded from Sol, e.g. 0-2,-1. In SLA \u2192 Sol these may use SLA instead of dense attention. Blank applies Sol to all blocks."
            }
           ],
           "sol_end_percent": [
            "FLOAT",
            {
-            "display_name": "End fraction",
             "advanced": true,
             "default": 0.9,
-            "min": 0.0,
+            "display_name": "End fraction",
             "max": 1.0,
+            "min": 0.0,
             "step": 0.01
-           }
-          ],
-          "sol_min_tokens": [
-           "INT",
-           {
-            "display_name": "Minimum tokens",
-            "advanced": true,
-            "default": 4096,
-            "min": 0,
-            "max": 1048576,
-            "step": 512
            }
           ],
           "sol_int8_qk": [
            "BOOLEAN",
            {
-            "display_name": "INT8 QK",
             "advanced": true,
-            "default": true
+            "default": true,
+            "display_name": "INT8 QK"
+           }
+          ],
+          "sol_min_tokens": [
+           "INT",
+           {
+            "advanced": true,
+            "default": 4096,
+            "display_name": "Minimum tokens",
+            "max": 1048576,
+            "min": 0,
+            "step": 512
            }
           ],
           "sol_sink_conditioning": [
            "COMBO",
            {
-            "display_name": "Conditioning protection",
             "advanced": true,
             "default": "exact_kv_and_rows",
+            "display_name": "Conditioning protection",
             "multiselect": false,
             "options": [
              "exact_kv",
              "exact_kv_and_rows",
              "off"
             ]
-           }
-          ],
-          "sol_dense_blocks": [
-           "STRING",
-           {
-            "display_name": "Dense blocks",
-            "tooltip": "Blocks excluded from Sol, e.g. 0-2,-1. In SLA \u2192 Sol these may use SLA instead of dense attention. Blank applies Sol to all blocks.",
-            "advanced": true,
-            "default": "",
-            "multiline": false
-           }
-          ]
-         }
-        }
-       },
-       {
-        "key": "Sol Attention",
-        "inputs": {
-         "required": {
-          "sol_tau": [
-           "FLOAT",
-           {
-            "display_name": "Tau",
-            "advanced": true,
-            "default": 1.0,
-            "min": 0.0,
-            "max": 4.0,
-            "step": 0.05
            }
           ],
           "sol_start_percent": [
            "FLOAT",
            {
-            "display_name": "Start fraction",
             "advanced": true,
             "default": 0.2,
-            "min": 0.0,
+            "display_name": "Start fraction",
             "max": 1.0,
+            "min": 0.0,
             "step": 0.01
+           }
+          ],
+          "sol_tau": [
+           "FLOAT",
+           {
+            "advanced": true,
+            "default": 1.0,
+            "display_name": "Tau",
+            "max": 4.0,
+            "min": 0.0,
+            "step": 0.05
+           }
+          ]
+         }
+        },
+        "key": "Sol (Kijai)"
+       },
+       {
+        "inputs": {
+         "required": {
+          "sol_dense_blocks": [
+           "STRING",
+           {
+            "advanced": true,
+            "default": "",
+            "display_name": "Dense blocks",
+            "multiline": false,
+            "tooltip": "Blocks excluded from Sol, e.g. 0-2,-1. In SLA \u2192 Sol these may use SLA instead of dense attention. Blank applies Sol to all blocks."
            }
           ],
           "sol_end_percent": [
            "FLOAT",
            {
-            "display_name": "End fraction",
             "advanced": true,
             "default": 0.9,
-            "min": 0.0,
+            "display_name": "End fraction",
             "max": 1.0,
+            "min": 0.0,
             "step": 0.01
-           }
-          ],
-          "sol_min_tokens": [
-           "INT",
-           {
-            "display_name": "Minimum tokens",
-            "advanced": true,
-            "default": 4096,
-            "min": 0,
-            "max": 1048576,
-            "step": 512
            }
           ],
           "sol_int8_qk": [
            "BOOLEAN",
            {
-            "display_name": "INT8 QK",
             "advanced": true,
-            "default": true
+            "default": true,
+            "display_name": "INT8 QK"
+           }
+          ],
+          "sol_min_tokens": [
+           "INT",
+           {
+            "advanced": true,
+            "default": 4096,
+            "display_name": "Minimum tokens",
+            "max": 1048576,
+            "min": 0,
+            "step": 512
            }
           ],
           "sol_sink_conditioning": [
            "COMBO",
            {
-            "display_name": "Conditioning protection",
             "advanced": true,
             "default": "exact_kv_and_rows",
+            "display_name": "Conditioning protection",
             "multiselect": false,
             "options": [
              "exact_kv",
@@ -1868,387 +1956,164 @@
             ]
            }
           ],
-          "sol_dense_blocks": [
-           "STRING",
+          "sol_start_percent": [
+           "FLOAT",
            {
-            "display_name": "Dense blocks",
-            "tooltip": "Blocks excluded from Sol, e.g. 0-2,-1. In SLA \u2192 Sol these may use SLA instead of dense attention. Blank applies Sol to all blocks.",
             "advanced": true,
-            "default": "",
-            "multiline": false
+            "default": 0.2,
+            "display_name": "Start fraction",
+            "max": 1.0,
+            "min": 0.0,
+            "step": 0.01
+           }
+          ],
+          "sol_tau": [
+           "FLOAT",
+           {
+            "advanced": true,
+            "default": 1.0,
+            "display_name": "Tau",
+            "max": 4.0,
+            "min": 0.0,
+            "step": 0.05
            }
           ]
          }
-        }
+        },
+        "key": "Sol Attention"
        },
        {
-        "key": "VSA (ComfyUI)",
         "inputs": {
          "required": {
-          "vsa_keep_percent": [
-           "FLOAT",
+          "vsa_dense_blocks": [
+           "STRING",
            {
-            "display_name": "Keep video blocks (%)",
-            "tooltip": "Requires complete VSA model weights and their sampling recipe. No gate transplantation.",
-            "default": 10.0,
-            "min": 0.5,
-            "max": 95.0,
-            "step": 0.5
-           }
-          ],
-          "vsa_start_percent": [
-           "FLOAT",
-           {
-            "display_name": "Start fraction",
             "advanced": true,
-            "default": 0.0,
-            "min": 0.0,
-            "max": 1.0,
-            "step": 0.01
+            "default": "",
+            "display_name": "Dense blocks",
+            "multiline": false,
+            "tooltip": "Optional dense-only blocks. Changes the VSA execution recipe."
            }
           ],
           "vsa_end_percent": [
            "FLOAT",
            {
-            "display_name": "End fraction",
             "advanced": true,
             "default": 1.0,
-            "min": 0.0,
+            "display_name": "End fraction",
             "max": 1.0,
+            "min": 0.0,
             "step": 0.01
+           }
+          ],
+          "vsa_keep_percent": [
+           "FLOAT",
+           {
+            "default": 10.0,
+            "display_name": "Keep video blocks (%)",
+            "max": 95.0,
+            "min": 0.5,
+            "step": 0.5,
+            "tooltip": "Requires complete VSA model weights and their sampling recipe. No gate transplantation."
            }
           ],
           "vsa_min_tokens": [
            "INT",
            {
-            "display_name": "Minimum tokens",
             "advanced": true,
             "default": 0,
-            "min": 0,
+            "display_name": "Minimum tokens",
             "max": 1048576,
+            "min": 0,
             "step": 512
            }
           ],
-          "vsa_dense_blocks": [
-           "STRING",
+          "vsa_start_percent": [
+           "FLOAT",
            {
-            "display_name": "Dense blocks",
-            "tooltip": "Optional dense-only blocks. Changes the VSA execution recipe.",
             "advanced": true,
-            "default": "",
-            "multiline": false
+            "default": 0.0,
+            "display_name": "Start fraction",
+            "max": 1.0,
+            "min": 0.0,
+            "step": 0.01
            }
           ],
           "vsa_verbose": [
            "BOOLEAN",
            {
-            "display_name": "Log attention routing",
             "advanced": true,
-            "default": true
+            "default": true,
+            "display_name": "Log attention routing"
            }
           ]
          }
-        }
+        },
+        "key": "VSA (ComfyUI)"
        },
        {
-        "key": "SLA (ComfyUI)",
         "inputs": {
          "required": {
           "native_sla_keep_percent": [
            "FLOAT",
            {
-            "display_name": "Keep blocks (%)",
-            "tooltip": "Percentage kept exact, not sparsity. Core SLA-style routing; not identical to PlagueKind SLA.",
             "default": 15.0,
-            "min": 0.5,
+            "display_name": "Keep blocks (%)",
             "max": 95.0,
-            "step": 0.5
+            "min": 0.5,
+            "step": 0.5,
+            "tooltip": "Percentage kept exact, not sparsity. Core SLA-style routing; not identical to PlagueKind SLA."
            }
           ],
-          "sol_start_percent": [
-           "FLOAT",
+          "sol_dense_blocks": [
+           "STRING",
            {
-            "display_name": "Start fraction",
             "advanced": true,
-            "default": 0.2,
-            "min": 0.0,
-            "max": 1.0,
-            "step": 0.01
+            "default": "",
+            "display_name": "Dense blocks",
+            "multiline": false,
+            "tooltip": "Non-negative block indices, e.g. 0-2,47-49."
            }
           ],
           "sol_end_percent": [
            "FLOAT",
            {
-            "display_name": "End fraction",
             "advanced": true,
             "default": 0.9,
-            "min": 0.0,
+            "display_name": "End fraction",
             "max": 1.0,
+            "min": 0.0,
             "step": 0.01
-           }
-          ],
-          "sol_min_tokens": [
-           "INT",
-           {
-            "display_name": "Minimum tokens",
-            "advanced": true,
-            "default": 4096,
-            "min": 0,
-            "max": 1048576,
-            "step": 512
            }
           ],
           "sol_extra_tokens": [
            "INT",
            {
-            "display_name": "Extra exact tokens",
             "advanced": true,
             "default": 256,
-            "min": 0,
+            "display_name": "Extra exact tokens",
             "max": 256,
+            "min": 0,
             "step": 64
-           }
-          ],
-          "sol_sink_conditioning": [
-           "COMBO",
-           {
-            "display_name": "Conditioning protection",
-            "advanced": true,
-            "default": "exact_kv_and_rows",
-            "multiselect": false,
-            "options": [
-             "exact_kv",
-             "exact_kv_and_rows",
-             "off"
-            ]
-           }
-          ],
-          "sol_dense_blocks": [
-           "STRING",
-           {
-            "display_name": "Dense blocks",
-            "tooltip": "Non-negative block indices, e.g. 0-2,47-49.",
-            "advanced": true,
-            "default": "",
-            "multiline": false
-           }
-          ]
-         }
-        }
-       },
-       {
-        "key": "H3 SLA",
-        "inputs": {
-         "required": {
-          "sla_sparsity_ratio": [
-           "FLOAT",
-           {
-            "display_name": "Sparsity",
-            "advanced": true,
-            "default": 0.9,
-            "min": 0.0,
-            "max": 0.95,
-            "step": 0.05
-           }
-          ],
-          "sla_block_size": [
-           "COMBO",
-           {
-            "display_name": "Block size",
-            "advanced": true,
-            "default": "64",
-            "multiselect": false,
-            "options": [
-             "64",
-             "128"
-            ]
-           }
-          ],
-          "sla_min_seq_len": [
-           "INT",
-           {
-            "display_name": "Minimum sequence length",
-            "advanced": true,
-            "default": 4096,
-            "min": 0,
-            "max": 1000000,
-            "step": 1024
-           }
-          ],
-          "sla_dense_last_steps": [
-           "INT",
-           {
-            "display_name": "Dense final steps",
-            "advanced": true,
-            "default": 1,
-            "min": 0,
-            "max": 8
-           }
-          ],
-          "sla_protect_audio": [
-           "BOOLEAN",
-           {
-            "display_name": "Protect audio",
-            "advanced": true,
-            "default": true
-           }
-          ],
-          "sla_dense_backend": [
-           "COMBO",
-           {
-            "display_name": "Dense backend",
-            "advanced": true,
-            "default": "comfy_kitchen",
-            "multiselect": false,
-            "options": [
-             "pytorch",
-             "comfy_kitchen",
-             "sage:auto",
-             "sage:qk_int8_pv_fp16_cuda",
-             "sage:qk_int8_pv_fp16_triton",
-             "sage:qk_int8_pv_fp8_cuda",
-             "sage:qk_int8_pv_fp8_cuda++",
-             "auto"
-            ]
-           }
-          ]
-         }
-        }
-       },
-       {
-        "key": "SLA \u2192 Sol (experimental)",
-        "inputs": {
-         "required": {
-          "sla_sparsity_ratio": [
-           "FLOAT",
-           {
-            "display_name": "Sparsity",
-            "advanced": true,
-            "default": 0.9,
-            "min": 0.0,
-            "max": 0.95,
-            "step": 0.05
-           }
-          ],
-          "sla_block_size": [
-           "COMBO",
-           {
-            "display_name": "Block size",
-            "advanced": true,
-            "default": "64",
-            "multiselect": false,
-            "options": [
-             "64",
-             "128"
-            ]
-           }
-          ],
-          "sla_min_seq_len": [
-           "INT",
-           {
-            "display_name": "Minimum sequence length",
-            "advanced": true,
-            "default": 4096,
-            "min": 0,
-            "max": 1000000,
-            "step": 1024
-           }
-          ],
-          "sla_dense_last_steps": [
-           "INT",
-           {
-            "display_name": "Dense final steps",
-            "advanced": true,
-            "default": 1,
-            "min": 0,
-            "max": 8
-           }
-          ],
-          "sla_protect_audio": [
-           "BOOLEAN",
-           {
-            "display_name": "Protect audio",
-            "advanced": true,
-            "default": true
-           }
-          ],
-          "sla_dense_backend": [
-           "COMBO",
-           {
-            "display_name": "Dense backend",
-            "advanced": true,
-            "default": "comfy_kitchen",
-            "multiselect": false,
-            "options": [
-             "pytorch",
-             "comfy_kitchen",
-             "sage:auto",
-             "sage:qk_int8_pv_fp16_cuda",
-             "sage:qk_int8_pv_fp16_triton",
-             "sage:qk_int8_pv_fp8_cuda",
-             "sage:qk_int8_pv_fp8_cuda++",
-             "auto"
-            ]
-           }
-          ],
-          "sol_tau": [
-           "FLOAT",
-           {
-            "display_name": "Tau",
-            "advanced": true,
-            "default": 1.0,
-            "min": 0.0,
-            "max": 4.0,
-            "step": 0.05
-           }
-          ],
-          "sol_start_percent": [
-           "FLOAT",
-           {
-            "display_name": "Start fraction",
-            "advanced": true,
-            "default": 0.2,
-            "min": 0.0,
-            "max": 1.0,
-            "step": 0.01
-           }
-          ],
-          "sol_end_percent": [
-           "FLOAT",
-           {
-            "display_name": "End fraction",
-            "advanced": true,
-            "default": 0.9,
-            "min": 0.0,
-            "max": 1.0,
-            "step": 0.01
            }
           ],
           "sol_min_tokens": [
            "INT",
            {
-            "display_name": "Minimum tokens",
             "advanced": true,
             "default": 4096,
-            "min": 0,
+            "display_name": "Minimum tokens",
             "max": 1048576,
+            "min": 0,
             "step": 512
-           }
-          ],
-          "sol_int8_qk": [
-           "BOOLEAN",
-           {
-            "display_name": "INT8 QK",
-            "advanced": true,
-            "default": true
            }
           ],
           "sol_sink_conditioning": [
            "COMBO",
            {
-            "display_name": "Conditioning protection",
             "advanced": true,
             "default": "exact_kv_and_rows",
+            "display_name": "Conditioning protection",
             "multiselect": false,
             "options": [
              "exact_kv",
@@ -2257,115 +2122,257 @@
             ]
            }
           ],
-          "sol_dense_blocks": [
-           "STRING",
+          "sol_start_percent": [
+           "FLOAT",
            {
-            "display_name": "Dense blocks",
-            "tooltip": "Blocks excluded from Sol, e.g. 0-2,-1. In SLA \u2192 Sol these may use SLA instead of dense attention. Blank applies Sol to all blocks.",
             "advanced": true,
-            "default": "",
-            "multiline": false
+            "default": 0.2,
+            "display_name": "Start fraction",
+            "max": 1.0,
+            "min": 0.0,
+            "step": 0.01
            }
           ]
          }
-        }
+        },
+        "key": "SLA (ComfyUI)"
        },
        {
-        "key": "VDN-H3 \u00b7 FL2VA (experimental)",
         "inputs": {
          "required": {
-          "vdn_checkpoint": [
-           "STRING",
+          "sla_block_size": [
+           "COMBO",
            {
-            "display_name": "VDN checkpoint",
-            "tooltip": "Directory under ComfyUI/models/vdn, e.g. stage-dmd-step-250 or an INT8 ConvRot conversion.",
-            "default": "stage-dmd-step-250",
-            "multiline": false
+            "advanced": true,
+            "default": "64",
+            "display_name": "Block size",
+            "multiselect": false,
+            "options": [
+             "64",
+             "128"
+            ]
            }
           ],
-          "vdn_apply_turbo_adapter": [
+          "sla_dense_backend": [
+           "COMBO",
+           {
+            "advanced": true,
+            "default": "comfy_kitchen",
+            "display_name": "Dense backend",
+            "multiselect": false,
+            "options": [
+             "pytorch",
+             "comfy_kitchen",
+             "sage:auto",
+             "sage:qk_int8_pv_fp16_cuda",
+             "sage:qk_int8_pv_fp16_triton",
+             "sage:qk_int8_pv_fp8_cuda",
+             "sage:qk_int8_pv_fp8_cuda++",
+             "auto"
+            ]
+           }
+          ],
+          "sla_dense_last_steps": [
+           "INT",
+           {
+            "advanced": true,
+            "default": 1,
+            "display_name": "Dense final steps",
+            "max": 8,
+            "min": 0
+           }
+          ],
+          "sla_min_seq_len": [
+           "INT",
+           {
+            "advanced": true,
+            "default": 4096,
+            "display_name": "Minimum sequence length",
+            "max": 1000000,
+            "min": 0,
+            "step": 1024
+           }
+          ],
+          "sla_protect_audio": [
            "BOOLEAN",
            {
-            "display_name": "VDN 8-step turbo adapter",
-            "tooltip": "ON: released DMD/turbo path; use 8 sampling steps. OFF: Stage-B path; use about 50 steps.",
-            "default": true
+            "advanced": true,
+            "default": true,
+            "display_name": "Protect audio"
            }
           ],
-          "vdn_strength": [
+          "sla_sparsity_ratio": [
            "FLOAT",
            {
-            "display_name": "VDN adapter strength",
             "advanced": true,
-            "default": 1.0,
+            "default": 0.9,
+            "display_name": "Sparsity",
+            "max": 0.95,
             "min": 0.0,
-            "max": 2.0,
+            "step": 0.05
+           }
+          ]
+         }
+        },
+        "key": "H3 SLA"
+       },
+       {
+        "inputs": {
+         "required": {
+          "sla_block_size": [
+           "COMBO",
+           {
+            "advanced": true,
+            "default": "64",
+            "display_name": "Block size",
+            "multiselect": false,
+            "options": [
+             "64",
+             "128"
+            ]
+           }
+          ],
+          "sla_dense_backend": [
+           "COMBO",
+           {
+            "advanced": true,
+            "default": "comfy_kitchen",
+            "display_name": "Dense backend",
+            "multiselect": false,
+            "options": [
+             "pytorch",
+             "comfy_kitchen",
+             "sage:auto",
+             "sage:qk_int8_pv_fp16_cuda",
+             "sage:qk_int8_pv_fp16_triton",
+             "sage:qk_int8_pv_fp8_cuda",
+             "sage:qk_int8_pv_fp8_cuda++",
+             "auto"
+            ]
+           }
+          ],
+          "sla_dense_last_steps": [
+           "INT",
+           {
+            "advanced": true,
+            "default": 1,
+            "display_name": "Dense final steps",
+            "max": 8,
+            "min": 0
+           }
+          ],
+          "sla_min_seq_len": [
+           "INT",
+           {
+            "advanced": true,
+            "default": 4096,
+            "display_name": "Minimum sequence length",
+            "max": 1000000,
+            "min": 0,
+            "step": 1024
+           }
+          ],
+          "sla_protect_audio": [
+           "BOOLEAN",
+           {
+            "advanced": true,
+            "default": true,
+            "display_name": "Protect audio"
+           }
+          ],
+          "sla_sparsity_ratio": [
+           "FLOAT",
+           {
+            "advanced": true,
+            "default": 0.9,
+            "display_name": "Sparsity",
+            "max": 0.95,
+            "min": 0.0,
             "step": 0.05
            }
           ],
-          "vdn_lora_mode": [
-           "COMBO",
+          "sol_dense_blocks": [
+           "STRING",
            {
-            "display_name": "VDN LoRA mode",
             "advanced": true,
-            "default": "merge",
-            "multiselect": false,
-            "options": [
-             "merge",
-             "bypass"
-            ]
+            "default": "",
+            "display_name": "Dense blocks",
+            "multiline": false,
+            "tooltip": "Blocks excluded from Sol, e.g. 0-2,-1. In SLA \u2192 Sol these may use SLA instead of dense attention. Blank applies Sol to all blocks."
            }
           ],
-          "vdn_branch_weights": [
-           "COMBO",
+          "sol_end_percent": [
+           "FLOAT",
            {
-            "display_name": "VDN branch weights",
             "advanced": true,
-            "default": "auto",
-            "multiselect": false,
-            "options": [
-             "auto",
-             "stream",
-             "cache_gpu",
-             "resident"
-            ]
+            "default": 0.9,
+            "display_name": "End fraction",
+            "max": 1.0,
+            "min": 0.0,
+            "step": 0.01
            }
           ],
-          "vdn_retain_buffers": [
+          "sol_int8_qk": [
+           "BOOLEAN",
+           {
+            "advanced": true,
+            "default": true,
+            "display_name": "INT8 QK"
+           }
+          ],
+          "sol_min_tokens": [
+           "INT",
+           {
+            "advanced": true,
+            "default": 4096,
+            "display_name": "Minimum tokens",
+            "max": 1048576,
+            "min": 0,
+            "step": 512
+           }
+          ],
+          "sol_sink_conditioning": [
            "COMBO",
            {
-            "display_name": "VDN retain buffers",
             "advanced": true,
-            "default": "auto",
+            "default": "exact_kv_and_rows",
+            "display_name": "Conditioning protection",
             "multiselect": false,
             "options": [
-             "auto",
-             "on",
+             "exact_kv",
+             "exact_kv_and_rows",
              "off"
             ]
            }
           ],
-          "vdn_attention_backend": [
-           "COMBO",
+          "sol_start_percent": [
+           "FLOAT",
            {
-            "display_name": "VDN local softmax",
             "advanced": true,
-            "default": "grouped",
-            "multiselect": false,
-            "options": [
-             "grouped",
-             "flex"
-            ]
+            "default": 0.2,
+            "display_name": "Start fraction",
+            "max": 1.0,
+            "min": 0.0,
+            "step": 0.01
            }
           ],
-          "vdn_verbose": [
-           "BOOLEAN",
+          "sol_tau": [
+           "FLOAT",
            {
-            "display_name": "VDN verbose",
             "advanced": true,
-            "default": false
+            "default": 1.0,
+            "display_name": "Tau",
+            "max": 4.0,
+            "min": 0.0,
+            "step": 0.05
            }
           ]
-         },
+         }
+        },
+        "key": "SLA \u2192 Sol (experimental)"
+       },
+       {
+        "inputs": {
          "optional": {
           "vdn_task_family": [
            "STRING",
@@ -2375,60 +2382,35 @@
             "multiline": false
            }
           ]
-         }
-        }
-       },
-       {
-        "key": "VDN-H3 \u00b7 Ref2VA (experimental)",
-        "inputs": {
+         },
          "required": {
-          "vdn_checkpoint": [
-           "STRING",
-           {
-            "display_name": "VDN checkpoint",
-            "tooltip": "Directory under ComfyUI/models/vdn, e.g. stage-dmd-step-250 or an INT8 ConvRot conversion.",
-            "default": "stage-dmd-step-250",
-            "multiline": false
-           }
-          ],
           "vdn_apply_turbo_adapter": [
            "BOOLEAN",
            {
+            "default": true,
             "display_name": "VDN 8-step turbo adapter",
-            "tooltip": "ON: released DMD/turbo path; use 8 sampling steps. OFF: Stage-B path; use about 50 steps.",
-            "default": true
+            "tooltip": "ON: released DMD/turbo path; use 8 sampling steps. OFF: Stage-B path; use about 50 steps."
            }
           ],
-          "vdn_strength": [
-           "FLOAT",
-           {
-            "display_name": "VDN adapter strength",
-            "advanced": true,
-            "default": 1.0,
-            "min": 0.0,
-            "max": 2.0,
-            "step": 0.05
-           }
-          ],
-          "vdn_lora_mode": [
+          "vdn_attention_backend": [
            "COMBO",
            {
-            "display_name": "VDN LoRA mode",
             "advanced": true,
-            "default": "merge",
+            "default": "grouped",
+            "display_name": "VDN local softmax",
             "multiselect": false,
             "options": [
-             "merge",
-             "bypass"
+             "grouped",
+             "flex"
             ]
            }
           ],
           "vdn_branch_weights": [
            "COMBO",
            {
-            "display_name": "VDN branch weights",
             "advanced": true,
             "default": "auto",
+            "display_name": "VDN branch weights",
             "multiselect": false,
             "options": [
              "auto",
@@ -2438,12 +2420,34 @@
             ]
            }
           ],
+          "vdn_checkpoint": [
+           "STRING",
+           {
+            "default": "stage-dmd-step-250",
+            "display_name": "VDN checkpoint",
+            "multiline": false,
+            "tooltip": "Directory under ComfyUI/models/vdn, e.g. stage-dmd-step-250 or an INT8 ConvRot conversion."
+           }
+          ],
+          "vdn_lora_mode": [
+           "COMBO",
+           {
+            "advanced": true,
+            "default": "merge",
+            "display_name": "VDN LoRA mode",
+            "multiselect": false,
+            "options": [
+             "merge",
+             "bypass"
+            ]
+           }
+          ],
           "vdn_retain_buffers": [
            "COMBO",
            {
-            "display_name": "VDN retain buffers",
             "advanced": true,
             "default": "auto",
+            "display_name": "VDN retain buffers",
             "multiselect": false,
             "options": [
              "auto",
@@ -2452,28 +2456,31 @@
             ]
            }
           ],
-          "vdn_attention_backend": [
-           "COMBO",
+          "vdn_strength": [
+           "FLOAT",
            {
-            "display_name": "VDN local softmax",
             "advanced": true,
-            "default": "grouped",
-            "multiselect": false,
-            "options": [
-             "grouped",
-             "flex"
-            ]
+            "default": 1.0,
+            "display_name": "VDN adapter strength",
+            "max": 2.0,
+            "min": 0.0,
+            "step": 0.05
            }
           ],
           "vdn_verbose": [
            "BOOLEAN",
            {
-            "display_name": "VDN verbose",
             "advanced": true,
-            "default": false
+            "default": false,
+            "display_name": "VDN verbose"
            }
           ]
-         },
+         }
+        },
+        "key": "VDN-H3 \u00b7 FL2VA (experimental)"
+       },
+       {
+        "inputs": {
          "optional": {
           "vdn_task_family": [
            "STRING",
@@ -2483,8 +2490,102 @@
             "multiline": false
            }
           ]
+         },
+         "required": {
+          "vdn_apply_turbo_adapter": [
+           "BOOLEAN",
+           {
+            "default": true,
+            "display_name": "VDN 8-step turbo adapter",
+            "tooltip": "ON: released DMD/turbo path; use 8 sampling steps. OFF: Stage-B path; use about 50 steps."
+           }
+          ],
+          "vdn_attention_backend": [
+           "COMBO",
+           {
+            "advanced": true,
+            "default": "grouped",
+            "display_name": "VDN local softmax",
+            "multiselect": false,
+            "options": [
+             "grouped",
+             "flex"
+            ]
+           }
+          ],
+          "vdn_branch_weights": [
+           "COMBO",
+           {
+            "advanced": true,
+            "default": "auto",
+            "display_name": "VDN branch weights",
+            "multiselect": false,
+            "options": [
+             "auto",
+             "stream",
+             "cache_gpu",
+             "resident"
+            ]
+           }
+          ],
+          "vdn_checkpoint": [
+           "STRING",
+           {
+            "default": "stage-dmd-step-250",
+            "display_name": "VDN checkpoint",
+            "multiline": false,
+            "tooltip": "Directory under ComfyUI/models/vdn, e.g. stage-dmd-step-250 or an INT8 ConvRot conversion."
+           }
+          ],
+          "vdn_lora_mode": [
+           "COMBO",
+           {
+            "advanced": true,
+            "default": "merge",
+            "display_name": "VDN LoRA mode",
+            "multiselect": false,
+            "options": [
+             "merge",
+             "bypass"
+            ]
+           }
+          ],
+          "vdn_retain_buffers": [
+           "COMBO",
+           {
+            "advanced": true,
+            "default": "auto",
+            "display_name": "VDN retain buffers",
+            "multiselect": false,
+            "options": [
+             "auto",
+             "on",
+             "off"
+            ]
+           }
+          ],
+          "vdn_strength": [
+           "FLOAT",
+           {
+            "advanced": true,
+            "default": 1.0,
+            "display_name": "VDN adapter strength",
+            "max": 2.0,
+            "min": 0.0,
+            "step": 0.05
+           }
+          ],
+          "vdn_verbose": [
+           "BOOLEAN",
+           {
+            "advanced": true,
+            "default": false,
+            "display_name": "VDN verbose"
+           }
+          ]
          }
-        }
+        },
+        "key": "VDN-H3 \u00b7 Ref2VA (experimental)"
        }
       ]
      }
@@ -2492,8 +2593,8 @@
     "fp16_accumulation": [
      "COMBO",
      {
-      "display_name": "FP16 accumulation",
       "default": "Default",
+      "display_name": "FP16 accumulation",
       "multiselect": false,
       "options": [
        "Default",
@@ -2501,31 +2602,25 @@
        "Disabled"
       ]
      }
-    ]
-   },
-   "optional": {
-    "sampling_profile_json": [
-     "STRING",
-     {
-      "tooltip": "Optional explicit H3 Sampling contract. Normally carried on MODEL automatically; used by internal/refine graphs.",
-      "advanced": true,
-      "default": "",
-      "multiline": true
-     }
+    ],
+    "model": [
+     "MODEL",
+     {}
     ]
    }
   },
   "input_order": {
+   "optional": [
+    "sampling_profile_json"
+   ],
    "required": [
     "model",
     "attention",
     "fp16_accumulation"
-   ],
-   "optional": [
-    "sampling_profile_json"
    ]
   },
   "is_input_list": false,
+  "name": "MMH3H3ModelOptimizations",
   "output": [
    "MODEL",
    "STRING"
@@ -2534,106 +2629,179 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "model",
    "optimization_profile_json"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3H3ModelOptimizations",
-  "display_name": "H3 Optimizations",
-  "description": "Apply one H3 attention/architecture strategy plus optional scoped FP16 accumulation. VDN-H3 is an exclusive hybrid-attention architecture extension (FL2VA/Ref2VA) and requires the external ComfyUI-VDN-H3 runtime + VDN stage weights; do not stack it with Sol/SLA.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3H3NativeTileRefine": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Sequentially refine a decoded H3 video in spatial tiles using the supplied Guider/Sampler/Sigmas. Every tile carries the complete timeline, video uses an all-one noise mask, source audio uses an all-zero mask and sampled audio is discarded. The final composited video is VAE-encoded once and recombined with the exact source audio latent. Optional F16 inputs crop full-canvas control to each tile sample_rect before sampling; full-canvas control is never sent to a cropped latent.",
+  "dev_only": false,
+  "display_name": "MMH3 H3 Native Tile Refine",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
-   "required": {
-    "video": [
-     "IMAGE",
+   "optional": {
+    "control_checkpoint": [
+     "COMBO",
+     {
+      "default": "",
+      "multiselect": false,
+      "options": [
+       ""
+      ],
+      "tooltip": "Current #15975 MODEL_PATCH checkpoint. Preferred over legacy control_net inputs."
+     }
+    ],
+    "control_net": [
+     "CONTROL_NET",
      {}
     ],
-    "guider": [
-     "GUIDER",
-     {}
+    "control_preflight_info_json": [
+     "STRING",
+     {
+      "default": "{}",
+      "multiline": true
+     }
     ],
-    "sampler": [
-     "SAMPLER",
-     {}
-    ],
-    "sigmas": [
-     "SIGMAS",
-     {}
-    ],
-    "video_vae": [
+    "control_vae": [
      "VAE",
      {}
     ],
-    "source_audio_latent": [
-     "LATENT",
+    "control_video": [
+     "IMAGE",
      {}
     ],
-    "frames": [
-     "INT",
-     {
-      "default": 5,
-      "min": 5,
-      "max": 999999
-     }
+    "mask": [
+     "MASK",
+     {}
     ],
-    "seed": [
-     "INT",
-     {
-      "default": 0,
-      "min": 0,
-      "max": 18446744073709551615
-     }
+    "packet": [
+     "MMH3_MEDIA",
+     {}
     ],
-    "tile_width": [
-     "INT",
-     {
-      "default": 640,
-      "min": 32,
-      "max": 8192,
-      "step": 32
-     }
+    "positive": [
+     "CONDITIONING",
+     {}
     ],
-    "tile_height": [
-     "INT",
+    "source_video": [
+     "IMAGE",
+     {}
+    ]
+   },
+   "required": {
+    "blend_mode": [
+     "COMBO",
      {
-      "default": 384,
-      "min": 32,
-      "max": 8192,
-      "step": 32
-     }
-    ],
-    "overlap": [
-     "INT",
-     {
-      "default": 64,
-      "min": 0,
-      "max": 4096,
-      "step": 32
+      "default": "hard",
+      "multiselect": false,
+      "options": [
+       "hard",
+       "linear",
+       "half_cosine"
+      ]
      }
     ],
     "context_padding": [
      "INT",
      {
       "default": 64,
-      "min": 0,
       "max": 4096,
+      "min": 0,
+      "step": 32
+     }
+    ],
+    "context_source": [
+     "COMBO",
+     {
+      "default": "composited",
+      "multiselect": false,
+      "options": [
+       "original",
+       "composited"
+      ]
+     }
+    ],
+    "frames": [
+     "INT",
+     {
+      "default": 5,
+      "max": 999999,
+      "min": 5
+     }
+    ],
+    "guider": [
+     "GUIDER",
+     {}
+    ],
+    "overlap": [
+     "INT",
+     {
+      "default": 64,
+      "max": 4096,
+      "min": 0,
+      "step": 32
+     }
+    ],
+    "overlap_mode": [
+     "COMBO",
+     {
+      "default": "context_only",
+      "multiselect": false,
+      "options": [
+       "context_only",
+       "reprocess"
+      ]
+     }
+    ],
+    "sampler": [
+     "SAMPLER",
+     {}
+    ],
+    "seed": [
+     "INT",
+     {
+      "default": 0,
+      "max": 18446744073709551615,
+      "min": 0
+     }
+    ],
+    "sigmas": [
+     "SIGMAS",
+     {}
+    ],
+    "source_audio_latent": [
+     "LATENT",
+     {}
+    ],
+    "tile_height": [
+     "INT",
+     {
+      "default": 384,
+      "max": 8192,
+      "min": 32,
+      "step": 32
+     }
+    ],
+    "tile_width": [
+     "INT",
+     {
+      "default": 640,
+      "max": 8192,
+      "min": 32,
       "step": 32
      }
     ],
@@ -2648,91 +2816,28 @@
       ]
      }
     ],
-    "overlap_mode": [
-     "COMBO",
-     {
-      "default": "context_only",
-      "multiselect": false,
-      "options": [
-       "context_only",
-       "reprocess"
-      ]
-     }
-    ],
-    "blend_mode": [
-     "COMBO",
-     {
-      "default": "hard",
-      "multiselect": false,
-      "options": [
-       "hard",
-       "linear",
-       "half_cosine"
-      ]
-     }
-    ],
-    "context_source": [
-     "COMBO",
-     {
-      "default": "composited",
-      "multiselect": false,
-      "options": [
-       "original",
-       "composited"
-      ]
-     }
-    ]
-   },
-   "optional": {
-    "packet": [
-     "MMH3_MEDIA",
+    "video": [
+     "IMAGE",
      {}
     ],
-    "positive": [
-     "CONDITIONING",
-     {}
-    ],
-    "control_checkpoint": [
-     "COMBO",
-     {
-      "tooltip": "Current #15975 MODEL_PATCH checkpoint. Preferred over legacy control_net inputs.",
-      "default": "",
-      "multiselect": false,
-      "options": [
-       ""
-      ]
-     }
-    ],
-    "control_net": [
-     "CONTROL_NET",
-     {}
-    ],
-    "control_vae": [
+    "video_vae": [
      "VAE",
-     {}
-    ],
-    "control_preflight_info_json": [
-     "STRING",
-     {
-      "default": "{}",
-      "multiline": true
-     }
-    ],
-    "control_video": [
-     "IMAGE",
-     {}
-    ],
-    "mask": [
-     "MASK",
-     {}
-    ],
-    "source_video": [
-     "IMAGE",
      {}
     ]
    }
   },
   "input_order": {
+   "optional": [
+    "packet",
+    "positive",
+    "control_checkpoint",
+    "control_net",
+    "control_vae",
+    "control_preflight_info_json",
+    "control_video",
+    "mask",
+    "source_video"
+   ],
    "required": [
     "video",
     "guider",
@@ -2750,20 +2855,10 @@
     "overlap_mode",
     "blend_mode",
     "context_source"
-   ],
-   "optional": [
-    "packet",
-    "positive",
-    "control_checkpoint",
-    "control_net",
-    "control_vae",
-    "control_preflight_info_json",
-    "control_video",
-    "mask",
-    "source_video"
    ]
   },
   "is_input_list": false,
+  "name": "MMH3H3NativeTileRefine",
   "output": [
    "LATENT",
    "IMAGE",
@@ -2782,6 +2877,7 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "latent",
    "video",
@@ -2791,6 +2887,7 @@
    "summary",
    "control_process_info_json"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null,
@@ -2800,35 +2897,67 @@
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3H3NativeTileRefine",
-  "display_name": "MMH3 H3 Native Tile Refine",
-  "description": "Sequentially refine a decoded H3 video in spatial tiles using the supplied Guider/Sampler/Sigmas. Every tile carries the complete timeline, video uses an all-one noise mask, source audio uses an all-zero mask and sampled audio is discarded. The final composited video is VAE-encoded once and recombined with the exact source audio latent. Optional F16 inputs crop full-canvas control to each tile sample_rect before sampling; full-canvas control is never sent to a cropped latent.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3H3RefineLoRAs": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Reapply the packet's recorded source-generation LoRAs to standard MODEL/CLIP outputs in exact order before high-sigma refine. Missing/unknown overrides are explicit; hash mismatch blocks.",
+  "dev_only": false,
+  "display_name": "MMH3 H3 Refine Source LoRAs",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
+   "optional": {
+    "acceleration_policy": [
+     "COMBO",
+     {
+      "advanced": true,
+      "default": "preserve",
+      "multiselect": false,
+      "options": [
+       "preserve",
+       "drop"
+      ],
+      "tooltip": "drop removes source Turbo/PDD/FastH3 acceleration adapters but preserves creative/style/content LoRAs. Required when changing to a trajectory-owning architecture such as VDN."
+     }
+    ],
+    "turbo_override": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": false,
+      "tooltip": "Replace only source acceleration LoRAs with this model-only LoRA at strength 1."
+     }
+    ]
+   },
    "required": {
-    "packet": [
-     "MMH3_MEDIA",
+    "clip": [
+     "CLIP",
      {}
+    ],
+    "missing_policy": [
+     "COMBO",
+     {
+      "default": "error",
+      "multiselect": false,
+      "options": [
+       "error",
+       "skip_missing"
+      ]
+     }
     ],
     "model": [
      "MODEL",
      {}
     ],
-    "clip": [
-     "CLIP",
+    "packet": [
+     "MMH3_MEDIA",
      {}
     ],
     "unknown_policy": [
@@ -2841,58 +2970,24 @@
        "continue_without_source_loras"
       ]
      }
-    ],
-    "missing_policy": [
-     "COMBO",
-     {
-      "default": "error",
-      "multiselect": false,
-      "options": [
-       "error",
-       "skip_missing"
-      ]
-     }
-    ]
-   },
-   "optional": {
-    "turbo_override": [
-     "STRING",
-     {
-      "tooltip": "Replace only source acceleration LoRAs with this model-only LoRA at strength 1.",
-      "advanced": true,
-      "default": "",
-      "multiline": false
-     }
-    ],
-    "acceleration_policy": [
-     "COMBO",
-     {
-      "tooltip": "drop removes source Turbo/PDD/FastH3 acceleration adapters but preserves creative/style/content LoRAs. Required when changing to a trajectory-owning architecture such as VDN.",
-      "advanced": true,
-      "default": "preserve",
-      "multiselect": false,
-      "options": [
-       "preserve",
-       "drop"
-      ]
-     }
     ]
    }
   },
   "input_order": {
+   "optional": [
+    "turbo_override",
+    "acceleration_policy"
+   ],
    "required": [
     "packet",
     "model",
     "clip",
     "unknown_policy",
     "missing_policy"
-   ],
-   "optional": [
-    "turbo_override",
-    "acceleration_policy"
    ]
   },
   "is_input_list": false,
+  "name": "MMH3H3RefineLoRAs",
   "output": [
    "MODEL",
    "CLIP",
@@ -2909,6 +3004,7 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "model",
    "clip",
@@ -2917,6 +3013,7 @@
    "process_info_json",
    "applied_loras_json"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null,
@@ -2925,39 +3022,36 @@
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3H3RefineLoRAs",
-  "display_name": "MMH3 H3 Refine Source LoRAs",
-  "description": "Reapply the packet's recorded source-generation LoRAs to standard MODEL/CLIP outputs in exact order before high-sigma refine. Missing/unknown overrides are explicit; hash mismatch blocks.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3H3UpscaleRefineSampling": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Derive the HR second-pass sampler from the source MMH3 packet. Inherits task family, sampler/scheduler, steps and AV shifts, then truncates that same trajectory to a low-sigma tail so upscale refinement does not restart near sigma=1 and drift from source context.",
+  "dev_only": false,
+  "display_name": "MMH3 H3 Upscale Refine Sampling",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
-    "packet": [
-     "MMH3_MEDIA",
-     {}
-    ],
     "denoise_override": [
      "FLOAT",
      {
-      "tooltip": "0 = source-aware auto. Non-zero is clamped to the safe 0.05\u20130.50 refine range.",
       "advanced": true,
       "default": 0.0,
-      "min": 0.0,
       "max": 0.5,
-      "step": 0.025
+      "min": 0.0,
+      "step": 0.025,
+      "tooltip": "0 = source-aware auto. Non-zero is clamped to the safe 0.05\u20130.50 refine range."
      }
+    ],
+    "packet": [
+     "MMH3_MEDIA",
+     {}
     ]
    }
   },
@@ -2968,6 +3062,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "MMH3H3UpscaleRefineSampling",
   "output": [
    "STRING",
    "COMBO",
@@ -2990,6 +3085,7 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "refine_sampling_json",
    "task_family",
@@ -3001,6 +3097,7 @@
    "denoise",
    "summary"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null,
@@ -3012,23 +3109,20 @@
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3H3UpscaleRefineSampling",
-  "display_name": "MMH3 H3 Upscale Refine Sampling",
-  "description": "Derive the HR second-pass sampler from the source MMH3 packet. Inherits task family, sampler/scheduler, steps and AV shifts, then truncates that same trajectory to a low-sigma tail so upscale refinement does not restart near sigma=1 and drift from source context.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3Inspect": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Manifest-only inspection. Loaded heavy resources are not decoded or materialized.",
+  "dev_only": false,
+  "display_name": "MMH3 Inspect",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
     "packet": [
@@ -3043,6 +3137,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "MMH3Inspect",
   "output": [
    "STRING",
    "STRING",
@@ -3079,6 +3174,7 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "summary",
    "info_json",
@@ -3097,6 +3193,7 @@
    "seed_recorded",
    "name"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null,
@@ -3115,34 +3212,40 @@
    "Distinguishes an absent seed from the valid seed value 0.",
    "Packet name."
   ],
-  "output_matchtypes": null,
-  "name": "MMH3Inspect",
-  "display_name": "MMH3 Inspect",
-  "description": "Manifest-only inspection. Loaded heavy resources are not decoded or materialized.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3Load": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Load packet.json and the ZIP directory only. Heavy media/latents remain lazy.",
+  "dev_only": false,
+  "display_name": "MMH3 Load",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
     "file": [
      "COMBO",
      {
-      "tooltip": "Archives in ComfyUI input/output. Use the standard ComfyUI Refresh (R), as with LoRA lists, to rescan files.",
       "multiselect": false,
       "options": [
        "(none)",
        "output::mmh3/smoke_20260910-183840.mmh3"
-      ]
+      ],
+      "tooltip": "Archives in ComfyUI input/output. Use the standard ComfyUI Refresh (R), as with LoRA lists, to rescan files."
+     }
+    ],
+    "path_override": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": false,
+      "tooltip": "Optional absolute/local path for automation. The file selector is ignored when set."
      }
     ],
     "verify": [
@@ -3157,15 +3260,6 @@
        "full"
       ]
      }
-    ],
-    "path_override": [
-     "STRING",
-     {
-      "tooltip": "Optional absolute/local path for automation. The file selector is ignored when set.",
-      "advanced": true,
-      "default": "",
-      "multiline": false
-     }
     ]
    }
   },
@@ -3177,109 +3271,78 @@
    ]
   },
   "is_input_list": false,
+  "name": "MMH3Load",
   "output": [
    "MMH3_MEDIA"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "packet"
   ],
+  "output_node": false,
   "output_tooltips": [
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3Load",
-  "display_name": "MMH3 Load",
-  "description": "Load packet.json and the ZIP directory only. Heavy media/latents remain lazy.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3PackH3Result": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Atomically pack standard H3 process outputs into a new packet and record one process-level provenance entry.",
+  "dev_only": false,
+  "display_name": "MMH3 Pack H3 Result",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
-   "required": {
-    "packet": [
-     "MMH3_MEDIA",
-     {}
-    ],
-    "operation": [
-     "STRING",
-     {
-      "default": "generate",
-      "multiline": false
-     }
-    ],
-    "mode": [
-     "STRING",
-     {
-      "advanced": true,
-      "default": "",
-      "multiline": false
-     }
-    ],
-    "status": [
-     "STRING",
-     {
-      "advanced": true,
-      "default": "",
-      "multiline": true
-     }
-    ],
-    "process_info_json": [
-     "STRING",
-     {
-      "advanced": true,
-      "default": "",
-      "multiline": true
-     }
-    ],
-    "latent_origin": [
-     "COMBO",
-     {
-      "advanced": true,
-      "default": "sampler_output",
-      "multiselect": false,
-      "options": [
-       "unknown",
-       "sampler_output",
-       "vae_encoded",
-       "derived"
-      ]
-     }
-    ]
-   },
    "optional": {
-    "latent": [
-     "LATENT",
-     {}
-    ],
-    "video": [
-     "VIDEO",
-     {}
+    "applied_loras_json": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": true
+     }
     ],
     "audio": [
      "AUDIO",
      {}
     ],
+    "control_process_info_json": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": true
+     }
+    ],
     "first_frame": [
      "IMAGE",
      {}
+    ],
+    "generation_settings_json": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": true
+     }
     ],
     "last_frame": [
      "IMAGE",
      {}
     ],
-    "generation_settings_json": [
+    "latent": [
+     "LATENT",
+     {}
+    ],
+    "optimization_profile_json": [
      "STRING",
      {
       "advanced": true,
@@ -3295,7 +3358,46 @@
       "multiline": true
      }
     ],
-    "optimization_profile_json": [
+    "video": [
+     "VIDEO",
+     {}
+    ]
+   },
+   "required": {
+    "latent_origin": [
+     "COMBO",
+     {
+      "advanced": true,
+      "default": "sampler_output",
+      "multiselect": false,
+      "options": [
+       "unknown",
+       "sampler_output",
+       "vae_encoded",
+       "derived"
+      ]
+     }
+    ],
+    "mode": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": false
+     }
+    ],
+    "operation": [
+     "STRING",
+     {
+      "default": "generate",
+      "multiline": false
+     }
+    ],
+    "packet": [
+     "MMH3_MEDIA",
+     {}
+    ],
+    "process_info_json": [
      "STRING",
      {
       "advanced": true,
@@ -3303,15 +3405,7 @@
       "multiline": true
      }
     ],
-    "applied_loras_json": [
-     "STRING",
-     {
-      "advanced": true,
-      "default": "",
-      "multiline": true
-     }
-    ],
-    "control_process_info_json": [
+    "status": [
      "STRING",
      {
       "advanced": true,
@@ -3322,14 +3416,6 @@
    }
   },
   "input_order": {
-   "required": [
-    "packet",
-    "operation",
-    "mode",
-    "status",
-    "process_info_json",
-    "latent_origin"
-   ],
    "optional": [
     "latent",
     "video",
@@ -3341,9 +3427,18 @@
     "optimization_profile_json",
     "applied_loras_json",
     "control_process_info_json"
+   ],
+   "required": [
+    "packet",
+    "operation",
+    "mode",
+    "status",
+    "process_info_json",
+    "latent_origin"
    ]
   },
   "is_input_list": false,
+  "name": "MMH3PackH3Result",
   "output": [
    "MMH3_MEDIA",
    "STRING",
@@ -3354,42 +3449,102 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "packet",
    "summary",
    "result_info_json"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3PackH3Result",
-  "display_name": "MMH3 Pack H3 Result",
-  "description": "Atomically pack standard H3 process outputs into a new packet and record one process-level provenance entry.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3Put": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Add or replace one canonical v0.3 resource.",
+  "dev_only": false,
+  "display_name": "MMH3 Put",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
+    "descriptor_json": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": true
+     }
+    ],
+    "extensions_json": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": true
+     }
+    ],
+    "mode": [
+     "COMBO",
+     {
+      "default": "add",
+      "multiselect": false,
+      "options": [
+       "add",
+       "upsert",
+       "replace"
+      ]
+     }
+    ],
+    "name": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": false
+     }
+    ],
+    "order": [
+     "INT",
+     {
+      "default": -1,
+      "max": 9999,
+      "min": -1,
+      "tooltip": "-1 stores no semantic order."
+     }
+    ],
     "packet": [
      "MMH3_MEDIA",
      {}
     ],
+    "primary": [
+     "BOOLEAN",
+     {
+      "default": false,
+      "tooltip": "For video/audio/image/latent/mask, atomically replace and bind the primary resource. When enabled, role/order/mode are ignored and the resource is stored as auxiliary with no order."
+     }
+    ],
     "resource": [
      "LATENT,IMAGE,VIDEO,AUDIO,MASK",
      {}
+    ],
+    "resource_id": [
+     "STRING",
+     {
+      "advanced": true,
+      "default": "",
+      "multiline": false,
+      "tooltip": "Required for deterministic replace; blank lets MMH3 select by role/kind/order for upsert."
+     }
     ],
     "role": [
      "COMBO",
@@ -3405,74 +3560,13 @@
       ]
      }
     ],
-    "order": [
-     "INT",
-     {
-      "tooltip": "-1 stores no semantic order.",
-      "default": -1,
-      "min": -1,
-      "max": 9999
-     }
-    ],
-    "mode": [
-     "COMBO",
-     {
-      "default": "add",
-      "multiselect": false,
-      "options": [
-       "add",
-       "upsert",
-       "replace"
-      ]
-     }
-    ],
-    "primary": [
-     "BOOLEAN",
-     {
-      "tooltip": "For video/audio/image/latent/mask, atomically replace and bind the primary resource. When enabled, role/order/mode are ignored and the resource is stored as auxiliary with no order.",
-      "default": false
-     }
-    ],
-    "resource_id": [
-     "STRING",
-     {
-      "tooltip": "Required for deterministic replace; blank lets MMH3 select by role/kind/order for upsert.",
-      "advanced": true,
-      "default": "",
-      "multiline": false
-     }
-    ],
-    "name": [
-     "STRING",
-     {
-      "advanced": true,
-      "default": "",
-      "multiline": false
-     }
-    ],
     "tags": [
      "STRING",
      {
-      "tooltip": "Comma-separated canonical tags.",
       "advanced": true,
       "default": "",
-      "multiline": false
-     }
-    ],
-    "descriptor_json": [
-     "STRING",
-     {
-      "advanced": true,
-      "default": "",
-      "multiline": true
-     }
-    ],
-    "extensions_json": [
-     "STRING",
-     {
-      "advanced": true,
-      "default": "",
-      "multiline": true
+      "multiline": false,
+      "tooltip": "Comma-separated canonical tags."
      }
     ]
    }
@@ -3493,6 +3587,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "MMH3Put",
   "output": [
    "MMH3_MEDIA",
    "STRING"
@@ -3501,90 +3596,90 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "packet",
    "resource_id"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3Put",
-  "display_name": "MMH3 Put",
-  "description": "Add or replace one canonical v0.3 resource.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MMH3Save": {
+  "api_node": false,
+  "category": "MiniMax H3/MMH3 Media",
+  "deprecated": false,
+  "description": "Save a self-contained MMH3 archive with image/video previews. Existing media are byte-copied when possible.",
+  "dev_only": false,
+  "display_name": "MMH3 Save",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
+   "hidden": {
+    "extra_pnginfo": [
+     "EXTRA_PNGINFO"
+    ],
+    "prompt": [
+     "PROMPT"
+    ]
+   },
    "required": {
+    "filename_prefix": [
+     "STRING",
+     {
+      "default": "mmh3/MMH3",
+      "display_name": "Filename",
+      "multiline": false,
+      "tooltip": "Output-relative folder and filename. Extension is added automatically; existing names get a numeric suffix unless overwrite is enabled."
+     }
+    ],
+    "overwrite": [
+     "BOOLEAN",
+     {
+      "advanced": true,
+      "default": false,
+      "tooltip": "Allow replacing an existing archive at the resolved path. Keep off for safer iterative work."
+     }
+    ],
     "packet": [
      "MMH3_MEDIA",
      {}
     ],
-    "filename_prefix": [
-     "STRING",
-     {
-      "display_name": "Filename",
-      "tooltip": "Output-relative folder and filename. Extension is added automatically; existing names get a numeric suffix unless overwrite is enabled.",
-      "default": "mmh3/MMH3",
-      "multiline": false
-     }
-    ],
     "target": [
      "COMBO",
      {
-      "tooltip": "Output creates an archive. Source replaces the original file, ignores Filename and requires overwrite.",
       "advanced": true,
       "default": "output",
       "multiselect": false,
       "options": [
        "output",
        "source (in-place)"
-      ]
+      ],
+      "tooltip": "Output creates an archive. Source replaces the original file, ignores Filename and requires overwrite."
      }
-    ],
-    "overwrite": [
-     "BOOLEAN",
-     {
-      "tooltip": "Allow replacing an existing archive at the resolved path. Keep off for safer iterative work.",
-      "advanced": true,
-      "default": false
-     }
-    ]
-   },
-   "hidden": {
-    "prompt": [
-     "PROMPT"
-    ],
-    "extra_pnginfo": [
-     "EXTRA_PNGINFO"
     ]
    }
   },
   "input_order": {
+   "hidden": [
+    "prompt",
+    "extra_pnginfo"
+   ],
    "required": [
     "packet",
     "filename_prefix",
     "target",
     "overwrite"
-   ],
-   "hidden": [
-    "prompt",
-    "extra_pnginfo"
    ]
   },
   "is_input_list": false,
+  "name": "MMH3Save",
   "output": [
    "MMH3_MEDIA",
    "STRING"
@@ -3593,77 +3688,31 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "packet",
    "path"
   ],
+  "output_node": true,
   "output_tooltips": [
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MMH3Save",
-  "display_name": "MMH3 Save",
-  "description": "Save a self-contained MMH3 archive with image/video previews. Existing media are byte-copied when possible.",
-  "python_module": "custom_nodes.ComfyUI_mmh3_media",
-  "category": "MiniMax H3/MMH3 Media",
-  "output_node": true,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "custom_nodes.ComfyUI_mmh3_media",
+  "search_aliases": null
  },
  "MiniMaxH3ImageToVideo": {
+  "api_node": false,
+  "category": "model/conditioning/minimax",
+  "deprecated": false,
+  "description": "",
+  "dev_only": false,
+  "display_name": "MiniMax H3 Image to Video",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
-   "required": {
-    "clip": [
-     "CLIP",
-     {}
-    ],
-    "vae": [
-     "VAE",
-     {}
-    ],
-    "prompt": [
-     "STRING",
-     {
-      "multiline": true,
-      "dynamicPrompts": true
-     }
-    ],
-    "width": [
-     "INT",
-     {
-      "default": 1344,
-      "min": 32,
-      "max": 16384,
-      "step": 32
-     }
-    ],
-    "height": [
-     "INT",
-     {
-      "default": 768,
-      "min": 32,
-      "max": 16384,
-      "step": 32
-     }
-    ],
-    "length": [
-     "INT",
-     {
-      "tooltip": "Frame count at 24 fps, snapped up to the model's 17k+5 grid (124 = ~5s; trained range is ~124-362, longer is untested)",
-      "default": 124,
-      "min": 5,
-      "max": 3600,
-      "step": 17
-     }
-    ]
-   },
    "optional": {
     "first_frame": [
      "IMAGE",
@@ -3673,9 +3722,58 @@
      "IMAGE",
      {}
     ]
+   },
+   "required": {
+    "clip": [
+     "CLIP",
+     {}
+    ],
+    "height": [
+     "INT",
+     {
+      "default": 768,
+      "max": 16384,
+      "min": 32,
+      "step": 32
+     }
+    ],
+    "length": [
+     "INT",
+     {
+      "default": 124,
+      "max": 3600,
+      "min": 5,
+      "step": 17,
+      "tooltip": "Frame count at 24 fps, snapped up to the model's 17k+5 grid (124 = ~5s; trained range is ~124-362, longer is untested)"
+     }
+    ],
+    "prompt": [
+     "STRING",
+     {
+      "dynamicPrompts": true,
+      "multiline": true
+     }
+    ],
+    "vae": [
+     "VAE",
+     {}
+    ],
+    "width": [
+     "INT",
+     {
+      "default": 1344,
+      "max": 16384,
+      "min": 32,
+      "step": 32
+     }
+    ]
    }
   },
   "input_order": {
+   "optional": [
+    "first_frame",
+    "last_frame"
+   ],
    "required": [
     "clip",
     "vae",
@@ -3683,13 +3781,10 @@
     "width",
     "height",
     "length"
-   ],
-   "optional": [
-    "first_frame",
-    "last_frame"
    ]
   },
   "is_input_list": false,
+  "name": "MiniMaxH3ImageToVideo",
   "output": [
    "CONDITIONING",
    "LATENT"
@@ -3698,52 +3793,51 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "positive",
    "LATENT"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "MiniMaxH3ImageToVideo",
-  "display_name": "MiniMax H3 Image to Video",
-  "description": "",
-  "python_module": "comfy_extras.nodes_minimax_h3",
-  "category": "model/conditioning/minimax",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "comfy_extras.nodes_minimax_h3",
+  "search_aliases": null
  },
  "MiniMaxH3SigmaShift": {
+  "api_node": false,
+  "category": "model/patch/minimax",
+  "deprecated": false,
+  "description": "Set the video/audio flow shifts.",
+  "dev_only": false,
+  "display_name": "ModelSamplingMiniMaxH3",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
     "model": [
      "MODEL",
      {}
     ],
-    "shift_video": [
-     "FLOAT",
-     {
-      "default": 12.0,
-      "min": 0.01,
-      "max": 100.0,
-      "step": 0.01
-     }
-    ],
     "shift_audio": [
      "FLOAT",
      {
       "default": 3.0,
-      "min": 0.01,
       "max": 100.0,
+      "min": 0.01,
+      "step": 0.01
+     }
+    ],
+    "shift_video": [
+     "FLOAT",
+     {
+      "default": 12.0,
+      "max": 100.0,
+      "min": 0.01,
       "step": 0.01
      }
     ]
@@ -3757,147 +3851,48 @@
    ]
   },
   "is_input_list": false,
+  "name": "MiniMaxH3SigmaShift",
   "output": [
    "MODEL"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "MODEL"
   ],
+  "output_node": false,
   "output_tooltips": [
    null
   ],
-  "output_matchtypes": null,
-  "name": "MiniMaxH3SigmaShift",
-  "display_name": "ModelSamplingMiniMaxH3",
-  "description": "Set the video/audio flow shifts.",
-  "python_module": "comfy_extras.nodes_minimax_h3",
-  "category": "model/patch/minimax",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
+  "python_module": "comfy_extras.nodes_minimax_h3",
   "search_aliases": [
    "sigma shift",
    "minimax shift"
-  ],
-  "essentials_category": null,
-  "has_intermediate_output": false
+  ]
  },
  "MinimaxH3LatentUpscaler3D": {
+  "api_node": false,
+  "category": "video/MinimaxH3",
+  "deprecated": false,
+  "description": "",
+  "dev_only": false,
+  "display_name": "Minimax H3 Latent Upscaler (3D)",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
-    "latent": [
-     "*",
-     {
-      "tooltip": "Input latent (image or video)."
-     }
-    ],
-    "model_name": [
-     "COMBO",
-     {
-      "tooltip": "Minimax H3 upscale model.",
-      "multiselect": false,
-      "options": [
-       "minimax_h3_latent_upscaler_3d_bf16.safetensors"
-      ]
-     }
-    ],
-    "mode": [
-     "COMFY_DYNAMICCOMBO_V3",
-     {
-      "tooltip": "How the target size is computed.",
-      "options": [
-       {
-        "key": "scale by multiplier",
-        "inputs": {
-         "required": {
-          "scale": [
-           "FLOAT",
-           {
-            "tooltip": "Upscale factor.",
-            "default": 2.0,
-            "min": 1.0,
-            "max": 4.0,
-            "step": 0.05
-           }
-          ]
-         }
-        }
-       },
-       {
-        "key": "target dimensions",
-        "inputs": {
-         "required": {
-          "width": [
-           "INT",
-           {
-            "tooltip": "Target pixel width.",
-            "default": 1280,
-            "min": 64,
-            "max": 8192,
-            "step": 8
-           }
-          ],
-          "height": [
-           "INT",
-           {
-            "tooltip": "Target pixel height.",
-            "default": 704,
-            "min": 64,
-            "max": 8192,
-            "step": 8
-           }
-          ]
-         }
-        }
-       },
-       {
-        "key": "megapixels",
-        "inputs": {
-         "required": {
-          "megapixels": [
-           "FLOAT",
-           {
-            "tooltip": "Target megapixels.",
-            "default": 1.0,
-            "min": 0.1,
-            "max": 16.0,
-            "step": 0.1
-           }
-          ]
-         }
-        }
-       }
-      ]
-     }
-    ],
     "align": [
      "INT",
      {
-      "tooltip": "Pixel-space alignment. 32 is strictly recommended.",
       "default": 32,
-      "min": 1,
       "max": 512,
-      "step": 1
-     }
-    ],
-    "enable_temporal_chunking": [
-     "BOOLEAN",
-     {
-      "tooltip": "Enable temporal chunking to save VRAM for long videos and fix end-frame flickering.",
-      "default": true
-     }
-    ],
-    "force_unload": [
-     "BOOLEAN",
-     {
-      "tooltip": "Unload model to CPU after inference to free VRAM for subsequent nodes. Disable if you run this node repeatedly to avoid reload overhead.",
-      "default": true
+      "min": 1,
+      "step": 1,
+      "tooltip": "Pixel-space alignment. 32 is strictly recommended."
      }
     ],
     "device": [
@@ -3910,6 +3905,105 @@
        "rocm",
        "cpu"
       ]
+     }
+    ],
+    "enable_temporal_chunking": [
+     "BOOLEAN",
+     {
+      "default": true,
+      "tooltip": "Enable temporal chunking to save VRAM for long videos and fix end-frame flickering."
+     }
+    ],
+    "force_unload": [
+     "BOOLEAN",
+     {
+      "default": true,
+      "tooltip": "Unload model to CPU after inference to free VRAM for subsequent nodes. Disable if you run this node repeatedly to avoid reload overhead."
+     }
+    ],
+    "latent": [
+     "*",
+     {
+      "tooltip": "Input latent (image or video)."
+     }
+    ],
+    "mode": [
+     "COMFY_DYNAMICCOMBO_V3",
+     {
+      "options": [
+       {
+        "inputs": {
+         "required": {
+          "scale": [
+           "FLOAT",
+           {
+            "default": 2.0,
+            "max": 4.0,
+            "min": 1.0,
+            "step": 0.05,
+            "tooltip": "Upscale factor."
+           }
+          ]
+         }
+        },
+        "key": "scale by multiplier"
+       },
+       {
+        "inputs": {
+         "required": {
+          "height": [
+           "INT",
+           {
+            "default": 704,
+            "max": 8192,
+            "min": 64,
+            "step": 8,
+            "tooltip": "Target pixel height."
+           }
+          ],
+          "width": [
+           "INT",
+           {
+            "default": 1280,
+            "max": 8192,
+            "min": 64,
+            "step": 8,
+            "tooltip": "Target pixel width."
+           }
+          ]
+         }
+        },
+        "key": "target dimensions"
+       },
+       {
+        "inputs": {
+         "required": {
+          "megapixels": [
+           "FLOAT",
+           {
+            "default": 1.0,
+            "max": 16.0,
+            "min": 0.1,
+            "step": 0.1,
+            "tooltip": "Target megapixels."
+           }
+          ]
+         }
+        },
+        "key": "megapixels"
+       }
+      ],
+      "tooltip": "How the target size is computed."
+     }
+    ],
+    "model_name": [
+     "COMBO",
+     {
+      "multiselect": false,
+      "options": [
+       "minimax_h3_latent_upscaler_3d_bf16.safetensors"
+      ],
+      "tooltip": "Minimax H3 upscale model."
      }
     ],
     "precision": [
@@ -3939,41 +4033,36 @@
    ]
   },
   "is_input_list": false,
+  "name": "MinimaxH3LatentUpscaler3D",
   "output": [
    "*"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "latent"
   ],
+  "output_node": false,
   "output_tooltips": [
    "Upscaled latent."
   ],
-  "output_matchtypes": null,
-  "name": "MinimaxH3LatentUpscaler3D",
-  "display_name": "Minimax H3 Latent Upscaler (3D)",
-  "description": "",
-  "python_module": "custom_nodes.Comfyui_Minimax_h3_latent_Upscaler",
-  "category": "video/MinimaxH3",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
+  "python_module": "custom_nodes.Comfyui_Minimax_h3_latent_Upscaler",
   "search_aliases": [
    "minimax",
    "h3",
    "latent",
    "upscale",
    "3d"
-  ],
-  "essentials_category": null,
-  "has_intermediate_output": false
+  ]
  },
  "PreviewAny": {
+  "category": "utilities",
+  "description": "Preview any input value as text.",
+  "display_name": "Preview as Text",
+  "has_intermediate_output": false,
   "input": {
    "required": {
     "source": [
@@ -3988,6 +4077,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "PreviewAny",
   "output": [
    "STRING"
   ],
@@ -3997,13 +4087,8 @@
   "output_name": [
    "STRING"
   ],
-  "name": "PreviewAny",
-  "display_name": "Preview as Text",
-  "description": "Preview any input value as text.",
-  "python_module": "comfy_extras.nodes_preview_any",
-  "category": "utilities",
   "output_node": true,
-  "has_intermediate_output": false,
+  "python_module": "comfy_extras.nodes_preview_any",
   "search_aliases": [
    "preview",
    "preview text",
@@ -4015,15 +4100,24 @@
   ]
  },
  "RandomNoise": {
+  "api_node": false,
+  "category": "model/sampling/noise",
+  "deprecated": false,
+  "description": "",
+  "dev_only": false,
+  "display_name": null,
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
     "noise_seed": [
      "INT",
      {
+      "control_after_generate": true,
       "default": 0,
-      "min": 0,
       "max": 18446744073709551615,
-      "control_after_generate": true
+      "min": 0
      }
     ]
    }
@@ -4034,43 +4128,47 @@
    ]
   },
   "is_input_list": false,
+  "name": "RandomNoise",
   "output": [
    "NOISE"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "NOISE"
   ],
+  "output_node": false,
   "output_tooltips": [
    null
   ],
-  "output_matchtypes": null,
-  "name": "RandomNoise",
-  "display_name": null,
-  "description": "",
-  "python_module": "comfy_extras.nodes_custom_sampler",
-  "category": "model/sampling/noise",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "comfy_extras.nodes_custom_sampler",
+  "search_aliases": null
  },
  "SamplerCustomAdvanced": {
+  "api_node": false,
+  "category": "model/sampling/custom",
+  "deprecated": false,
+  "description": "",
+  "dev_only": false,
+  "display_name": null,
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
-    "noise": [
-     "NOISE",
-     {}
-    ],
     "guider": [
      "GUIDER",
+     {}
+    ],
+    "latent_image": [
+     "LATENT",
+     {}
+    ],
+    "noise": [
+     "NOISE",
      {}
     ],
     "sampler": [
@@ -4079,10 +4177,6 @@
     ],
     "sigmas": [
      "SIGMAS",
-     {}
-    ],
-    "latent_image": [
-     "LATENT",
      {}
     ]
    }
@@ -4097,6 +4191,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "SamplerCustomAdvanced",
   "output": [
    "LATENT",
    "LATENT"
@@ -4105,572 +4200,566 @@
    false,
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "output",
    "denoised_output"
   ],
+  "output_node": false,
   "output_tooltips": [
    null,
    null
   ],
-  "output_matchtypes": null,
-  "name": "SamplerCustomAdvanced",
-  "display_name": null,
-  "description": "",
-  "python_module": "comfy_extras.nodes_custom_sampler",
-  "category": "model/sampling/custom",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
-  "search_aliases": null,
-  "essentials_category": null,
-  "has_intermediate_output": false
+  "python_module": "comfy_extras.nodes_custom_sampler",
+  "search_aliases": null
  },
  "SaveVideo": {
+  "api_node": false,
+  "category": "video",
+  "deprecated": false,
+  "description": "Saves the input videos to your ComfyUI output directory.",
+  "dev_only": false,
+  "display_name": "Save Video",
+  "essentials_category": "Basics",
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
-   "required": {
-    "video": [
-     "VIDEO",
-     {
-      "tooltip": "The video to save."
-     }
+   "hidden": {
+    "extra_pnginfo": [
+     "EXTRA_PNGINFO"
     ],
-    "filename_prefix": [
-     "STRING",
-     {
-      "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes.",
-      "default": "video/ComfyUI",
-      "multiline": false
-     }
-    ],
-    "format": [
-     "COMFY_DYNAMICCOMBO_V3",
-     {
-      "tooltip": "The output container. Auto uses MP4 for Auto/H.264 and WebM for AV1. MP4, MKV, and WebM select a specific container.",
-      "options": [
-       {
-        "key": "auto",
-        "inputs": {
-         "required": {
-          "codec": [
-           "COMFY_DYNAMICCOMBO_V3",
-           {
-            "tooltip": "The output video codec. Auto preserves a compatible source stream. H.264 and AV1 re-encoding support SDR, HDR (HLG), and HDR PQ.",
-            "options": [
-             {
-              "key": "auto",
-              "inputs": {
-               "required": {}
-              }
-             },
-             {
-              "key": "h264",
-              "inputs": {
-               "required": {},
-               "optional": {
-                "encoding": [
-                 "COMFY_DYNAMICCOMBO_V3",
-                 {
-                  "display_name": "encoding mode",
-                  "tooltip": "Automatic preserves compatible H.264 streams. Re-encode applies custom encoding options.",
-                  "options": [
-                   {
-                    "key": "auto",
-                    "inputs": {
-                     "required": {}
-                    }
-                   },
-                   {
-                    "key": "re-encode",
-                    "inputs": {
-                     "required": {
-                      "crf": [
-                       "FLOAT",
-                       {
-                        "tooltip": "Lower values produce higher quality and larger files.",
-                        "default": 23.0,
-                        "min": 0.0,
-                        "max": 51.0,
-                        "step": 1.0
-                       }
-                      ]
-                     }
-                    }
-                   }
-                  ]
-                 }
-                ]
-               }
-              }
-             },
-             {
-              "key": "av1",
-              "inputs": {
-               "required": {},
-               "optional": {
-                "encoding": [
-                 "COMFY_DYNAMICCOMBO_V3",
-                 {
-                  "display_name": "encoding mode",
-                  "tooltip": "Automatic preserves compatible AV1 streams. Re-encode applies custom encoding options.",
-                  "options": [
-                   {
-                    "key": "auto",
-                    "inputs": {
-                     "required": {}
-                    }
-                   },
-                   {
-                    "key": "re-encode",
-                    "inputs": {
-                     "required": {
-                      "crf": [
-                       "FLOAT",
-                       {
-                        "tooltip": "Lower values produce higher quality and larger files.",
-                        "default": 30.0,
-                        "min": 0.0,
-                        "max": 63.0,
-                        "step": 1.0
-                       }
-                      ]
-                     }
-                    }
-                   }
-                  ]
-                 }
-                ]
-               }
-              }
-             }
-            ]
-           }
-          ]
-         }
-        }
-       },
-       {
-        "key": "mp4",
-        "inputs": {
-         "required": {
-          "codec": [
-           "COMFY_DYNAMICCOMBO_V3",
-           {
-            "tooltip": "The output video codec. Auto preserves a compatible source stream. H.264 and AV1 re-encoding support SDR, HDR (HLG), and HDR PQ.",
-            "options": [
-             {
-              "key": "auto",
-              "inputs": {
-               "required": {}
-              }
-             },
-             {
-              "key": "h264",
-              "inputs": {
-               "required": {},
-               "optional": {
-                "encoding": [
-                 "COMFY_DYNAMICCOMBO_V3",
-                 {
-                  "display_name": "encoding mode",
-                  "tooltip": "Automatic preserves compatible H.264 streams. Re-encode applies custom encoding options.",
-                  "options": [
-                   {
-                    "key": "auto",
-                    "inputs": {
-                     "required": {}
-                    }
-                   },
-                   {
-                    "key": "re-encode",
-                    "inputs": {
-                     "required": {
-                      "crf": [
-                       "FLOAT",
-                       {
-                        "tooltip": "Lower values produce higher quality and larger files.",
-                        "default": 23.0,
-                        "min": 0.0,
-                        "max": 51.0,
-                        "step": 1.0
-                       }
-                      ]
-                     }
-                    }
-                   }
-                  ]
-                 }
-                ]
-               }
-              }
-             },
-             {
-              "key": "av1",
-              "inputs": {
-               "required": {},
-               "optional": {
-                "encoding": [
-                 "COMFY_DYNAMICCOMBO_V3",
-                 {
-                  "display_name": "encoding mode",
-                  "tooltip": "Automatic preserves compatible AV1 streams. Re-encode applies custom encoding options.",
-                  "options": [
-                   {
-                    "key": "auto",
-                    "inputs": {
-                     "required": {}
-                    }
-                   },
-                   {
-                    "key": "re-encode",
-                    "inputs": {
-                     "required": {
-                      "crf": [
-                       "FLOAT",
-                       {
-                        "tooltip": "Lower values produce higher quality and larger files.",
-                        "default": 30.0,
-                        "min": 0.0,
-                        "max": 63.0,
-                        "step": 1.0
-                       }
-                      ]
-                     }
-                    }
-                   }
-                  ]
-                 }
-                ]
-               }
-              }
-             }
-            ]
-           }
-          ]
-         }
-        }
-       },
-       {
-        "key": "mkv",
-        "inputs": {
-         "required": {
-          "codec": [
-           "COMFY_DYNAMICCOMBO_V3",
-           {
-            "tooltip": "The output video codec. Auto preserves a compatible source stream. H.264 and AV1 re-encoding support SDR, HDR (HLG), and HDR PQ.",
-            "options": [
-             {
-              "key": "auto",
-              "inputs": {
-               "required": {}
-              }
-             },
-             {
-              "key": "h264",
-              "inputs": {
-               "required": {},
-               "optional": {
-                "encoding": [
-                 "COMFY_DYNAMICCOMBO_V3",
-                 {
-                  "display_name": "encoding mode",
-                  "tooltip": "Automatic preserves compatible H.264 streams. Re-encode applies custom encoding options.",
-                  "options": [
-                   {
-                    "key": "auto",
-                    "inputs": {
-                     "required": {}
-                    }
-                   },
-                   {
-                    "key": "re-encode",
-                    "inputs": {
-                     "required": {
-                      "crf": [
-                       "FLOAT",
-                       {
-                        "tooltip": "Lower values produce higher quality and larger files.",
-                        "default": 23.0,
-                        "min": 0.0,
-                        "max": 51.0,
-                        "step": 1.0
-                       }
-                      ]
-                     }
-                    }
-                   }
-                  ]
-                 }
-                ]
-               }
-              }
-             },
-             {
-              "key": "av1",
-              "inputs": {
-               "required": {},
-               "optional": {
-                "encoding": [
-                 "COMFY_DYNAMICCOMBO_V3",
-                 {
-                  "display_name": "encoding mode",
-                  "tooltip": "Automatic preserves compatible AV1 streams. Re-encode applies custom encoding options.",
-                  "options": [
-                   {
-                    "key": "auto",
-                    "inputs": {
-                     "required": {}
-                    }
-                   },
-                   {
-                    "key": "re-encode",
-                    "inputs": {
-                     "required": {
-                      "crf": [
-                       "FLOAT",
-                       {
-                        "tooltip": "Lower values produce higher quality and larger files.",
-                        "default": 30.0,
-                        "min": 0.0,
-                        "max": 63.0,
-                        "step": 1.0
-                       }
-                      ]
-                     }
-                    }
-                   }
-                  ]
-                 }
-                ]
-               }
-              }
-             }
-            ]
-           }
-          ]
-         }
-        }
-       },
-       {
-        "key": "webm",
-        "inputs": {
-         "required": {
-          "codec": [
-           "COMFY_DYNAMICCOMBO_V3",
-           {
-            "tooltip": "The output video codec. Auto preserves a compatible source stream. H.264 and AV1 re-encoding support SDR, HDR (HLG), and HDR PQ.",
-            "options": [
-             {
-              "key": "auto",
-              "inputs": {
-               "required": {}
-              }
-             },
-             {
-              "key": "av1",
-              "inputs": {
-               "required": {},
-               "optional": {
-                "encoding": [
-                 "COMFY_DYNAMICCOMBO_V3",
-                 {
-                  "display_name": "encoding mode",
-                  "tooltip": "Automatic preserves compatible AV1 streams. Re-encode applies custom encoding options.",
-                  "options": [
-                   {
-                    "key": "auto",
-                    "inputs": {
-                     "required": {}
-                    }
-                   },
-                   {
-                    "key": "re-encode",
-                    "inputs": {
-                     "required": {
-                      "crf": [
-                       "FLOAT",
-                       {
-                        "tooltip": "Lower values produce higher quality and larger files.",
-                        "default": 30.0,
-                        "min": 0.0,
-                        "max": 63.0,
-                        "step": 1.0
-                       }
-                      ]
-                     }
-                    }
-                   }
-                  ]
-                 }
-                ]
-               }
-              }
-             }
-            ]
-           }
-          ]
-         }
-        }
-       }
-      ]
-     }
+    "prompt": [
+     "PROMPT"
     ]
    },
    "optional": {
     "codec": [
      "COMFY_DYNAMICCOMBO_V3",
      {
-      "tooltip": "The output video codec. Auto preserves a compatible source stream. H.264 and AV1 re-encoding support SDR, HDR (HLG), and HDR PQ.",
       "hidden": true,
       "options": [
        {
-        "key": "auto",
         "inputs": {
          "required": {}
-        }
+        },
+        "key": "auto"
        },
        {
-        "key": "h264",
         "inputs": {
-         "required": {},
          "optional": {
           "encoding": [
            "COMFY_DYNAMICCOMBO_V3",
            {
             "display_name": "encoding mode",
-            "tooltip": "Automatic preserves compatible H.264 streams. Re-encode applies custom encoding options.",
             "options": [
              {
-              "key": "auto",
               "inputs": {
                "required": {}
-              }
+              },
+              "key": "auto"
              },
              {
-              "key": "re-encode",
               "inputs": {
                "required": {
                 "crf": [
                  "FLOAT",
                  {
-                  "tooltip": "Lower values produce higher quality and larger files.",
                   "default": 23.0,
-                  "min": 0.0,
                   "max": 51.0,
-                  "step": 1.0
+                  "min": 0.0,
+                  "step": 1.0,
+                  "tooltip": "Lower values produce higher quality and larger files."
                  }
                 ]
                }
-              }
+              },
+              "key": "re-encode"
              }
-            ]
+            ],
+            "tooltip": "Automatic preserves compatible H.264 streams. Re-encode applies custom encoding options."
            }
           ]
-         }
-        }
+         },
+         "required": {}
+        },
+        "key": "h264"
        },
        {
-        "key": "av1",
         "inputs": {
-         "required": {},
          "optional": {
           "encoding": [
            "COMFY_DYNAMICCOMBO_V3",
            {
             "display_name": "encoding mode",
-            "tooltip": "Automatic preserves compatible AV1 streams. Re-encode applies custom encoding options.",
             "options": [
              {
-              "key": "auto",
               "inputs": {
                "required": {}
-              }
+              },
+              "key": "auto"
              },
              {
-              "key": "re-encode",
               "inputs": {
                "required": {
                 "crf": [
                  "FLOAT",
                  {
-                  "tooltip": "Lower values produce higher quality and larger files.",
                   "default": 30.0,
-                  "min": 0.0,
                   "max": 63.0,
-                  "step": 1.0
+                  "min": 0.0,
+                  "step": 1.0,
+                  "tooltip": "Lower values produce higher quality and larger files."
                  }
                 ]
                }
-              }
+              },
+              "key": "re-encode"
              }
-            ]
+            ],
+            "tooltip": "Automatic preserves compatible AV1 streams. Re-encode applies custom encoding options."
            }
           ]
-         }
-        }
+         },
+         "required": {}
+        },
+        "key": "av1"
        }
-      ]
+      ],
+      "tooltip": "The output video codec. Auto preserves a compatible source stream. H.264 and AV1 re-encoding support SDR, HDR (HLG), and HDR PQ."
      }
     ]
    },
-   "hidden": {
-    "prompt": [
-     "PROMPT"
+   "required": {
+    "filename_prefix": [
+     "STRING",
+     {
+      "default": "video/ComfyUI",
+      "multiline": false,
+      "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes."
+     }
     ],
-    "extra_pnginfo": [
-     "EXTRA_PNGINFO"
+    "format": [
+     "COMFY_DYNAMICCOMBO_V3",
+     {
+      "options": [
+       {
+        "inputs": {
+         "required": {
+          "codec": [
+           "COMFY_DYNAMICCOMBO_V3",
+           {
+            "options": [
+             {
+              "inputs": {
+               "required": {}
+              },
+              "key": "auto"
+             },
+             {
+              "inputs": {
+               "optional": {
+                "encoding": [
+                 "COMFY_DYNAMICCOMBO_V3",
+                 {
+                  "display_name": "encoding mode",
+                  "options": [
+                   {
+                    "inputs": {
+                     "required": {}
+                    },
+                    "key": "auto"
+                   },
+                   {
+                    "inputs": {
+                     "required": {
+                      "crf": [
+                       "FLOAT",
+                       {
+                        "default": 23.0,
+                        "max": 51.0,
+                        "min": 0.0,
+                        "step": 1.0,
+                        "tooltip": "Lower values produce higher quality and larger files."
+                       }
+                      ]
+                     }
+                    },
+                    "key": "re-encode"
+                   }
+                  ],
+                  "tooltip": "Automatic preserves compatible H.264 streams. Re-encode applies custom encoding options."
+                 }
+                ]
+               },
+               "required": {}
+              },
+              "key": "h264"
+             },
+             {
+              "inputs": {
+               "optional": {
+                "encoding": [
+                 "COMFY_DYNAMICCOMBO_V3",
+                 {
+                  "display_name": "encoding mode",
+                  "options": [
+                   {
+                    "inputs": {
+                     "required": {}
+                    },
+                    "key": "auto"
+                   },
+                   {
+                    "inputs": {
+                     "required": {
+                      "crf": [
+                       "FLOAT",
+                       {
+                        "default": 30.0,
+                        "max": 63.0,
+                        "min": 0.0,
+                        "step": 1.0,
+                        "tooltip": "Lower values produce higher quality and larger files."
+                       }
+                      ]
+                     }
+                    },
+                    "key": "re-encode"
+                   }
+                  ],
+                  "tooltip": "Automatic preserves compatible AV1 streams. Re-encode applies custom encoding options."
+                 }
+                ]
+               },
+               "required": {}
+              },
+              "key": "av1"
+             }
+            ],
+            "tooltip": "The output video codec. Auto preserves a compatible source stream. H.264 and AV1 re-encoding support SDR, HDR (HLG), and HDR PQ."
+           }
+          ]
+         }
+        },
+        "key": "auto"
+       },
+       {
+        "inputs": {
+         "required": {
+          "codec": [
+           "COMFY_DYNAMICCOMBO_V3",
+           {
+            "options": [
+             {
+              "inputs": {
+               "required": {}
+              },
+              "key": "auto"
+             },
+             {
+              "inputs": {
+               "optional": {
+                "encoding": [
+                 "COMFY_DYNAMICCOMBO_V3",
+                 {
+                  "display_name": "encoding mode",
+                  "options": [
+                   {
+                    "inputs": {
+                     "required": {}
+                    },
+                    "key": "auto"
+                   },
+                   {
+                    "inputs": {
+                     "required": {
+                      "crf": [
+                       "FLOAT",
+                       {
+                        "default": 23.0,
+                        "max": 51.0,
+                        "min": 0.0,
+                        "step": 1.0,
+                        "tooltip": "Lower values produce higher quality and larger files."
+                       }
+                      ]
+                     }
+                    },
+                    "key": "re-encode"
+                   }
+                  ],
+                  "tooltip": "Automatic preserves compatible H.264 streams. Re-encode applies custom encoding options."
+                 }
+                ]
+               },
+               "required": {}
+              },
+              "key": "h264"
+             },
+             {
+              "inputs": {
+               "optional": {
+                "encoding": [
+                 "COMFY_DYNAMICCOMBO_V3",
+                 {
+                  "display_name": "encoding mode",
+                  "options": [
+                   {
+                    "inputs": {
+                     "required": {}
+                    },
+                    "key": "auto"
+                   },
+                   {
+                    "inputs": {
+                     "required": {
+                      "crf": [
+                       "FLOAT",
+                       {
+                        "default": 30.0,
+                        "max": 63.0,
+                        "min": 0.0,
+                        "step": 1.0,
+                        "tooltip": "Lower values produce higher quality and larger files."
+                       }
+                      ]
+                     }
+                    },
+                    "key": "re-encode"
+                   }
+                  ],
+                  "tooltip": "Automatic preserves compatible AV1 streams. Re-encode applies custom encoding options."
+                 }
+                ]
+               },
+               "required": {}
+              },
+              "key": "av1"
+             }
+            ],
+            "tooltip": "The output video codec. Auto preserves a compatible source stream. H.264 and AV1 re-encoding support SDR, HDR (HLG), and HDR PQ."
+           }
+          ]
+         }
+        },
+        "key": "mp4"
+       },
+       {
+        "inputs": {
+         "required": {
+          "codec": [
+           "COMFY_DYNAMICCOMBO_V3",
+           {
+            "options": [
+             {
+              "inputs": {
+               "required": {}
+              },
+              "key": "auto"
+             },
+             {
+              "inputs": {
+               "optional": {
+                "encoding": [
+                 "COMFY_DYNAMICCOMBO_V3",
+                 {
+                  "display_name": "encoding mode",
+                  "options": [
+                   {
+                    "inputs": {
+                     "required": {}
+                    },
+                    "key": "auto"
+                   },
+                   {
+                    "inputs": {
+                     "required": {
+                      "crf": [
+                       "FLOAT",
+                       {
+                        "default": 23.0,
+                        "max": 51.0,
+                        "min": 0.0,
+                        "step": 1.0,
+                        "tooltip": "Lower values produce higher quality and larger files."
+                       }
+                      ]
+                     }
+                    },
+                    "key": "re-encode"
+                   }
+                  ],
+                  "tooltip": "Automatic preserves compatible H.264 streams. Re-encode applies custom encoding options."
+                 }
+                ]
+               },
+               "required": {}
+              },
+              "key": "h264"
+             },
+             {
+              "inputs": {
+               "optional": {
+                "encoding": [
+                 "COMFY_DYNAMICCOMBO_V3",
+                 {
+                  "display_name": "encoding mode",
+                  "options": [
+                   {
+                    "inputs": {
+                     "required": {}
+                    },
+                    "key": "auto"
+                   },
+                   {
+                    "inputs": {
+                     "required": {
+                      "crf": [
+                       "FLOAT",
+                       {
+                        "default": 30.0,
+                        "max": 63.0,
+                        "min": 0.0,
+                        "step": 1.0,
+                        "tooltip": "Lower values produce higher quality and larger files."
+                       }
+                      ]
+                     }
+                    },
+                    "key": "re-encode"
+                   }
+                  ],
+                  "tooltip": "Automatic preserves compatible AV1 streams. Re-encode applies custom encoding options."
+                 }
+                ]
+               },
+               "required": {}
+              },
+              "key": "av1"
+             }
+            ],
+            "tooltip": "The output video codec. Auto preserves a compatible source stream. H.264 and AV1 re-encoding support SDR, HDR (HLG), and HDR PQ."
+           }
+          ]
+         }
+        },
+        "key": "mkv"
+       },
+       {
+        "inputs": {
+         "required": {
+          "codec": [
+           "COMFY_DYNAMICCOMBO_V3",
+           {
+            "options": [
+             {
+              "inputs": {
+               "required": {}
+              },
+              "key": "auto"
+             },
+             {
+              "inputs": {
+               "optional": {
+                "encoding": [
+                 "COMFY_DYNAMICCOMBO_V3",
+                 {
+                  "display_name": "encoding mode",
+                  "options": [
+                   {
+                    "inputs": {
+                     "required": {}
+                    },
+                    "key": "auto"
+                   },
+                   {
+                    "inputs": {
+                     "required": {
+                      "crf": [
+                       "FLOAT",
+                       {
+                        "default": 30.0,
+                        "max": 63.0,
+                        "min": 0.0,
+                        "step": 1.0,
+                        "tooltip": "Lower values produce higher quality and larger files."
+                       }
+                      ]
+                     }
+                    },
+                    "key": "re-encode"
+                   }
+                  ],
+                  "tooltip": "Automatic preserves compatible AV1 streams. Re-encode applies custom encoding options."
+                 }
+                ]
+               },
+               "required": {}
+              },
+              "key": "av1"
+             }
+            ],
+            "tooltip": "The output video codec. Auto preserves a compatible source stream. H.264 and AV1 re-encoding support SDR, HDR (HLG), and HDR PQ."
+           }
+          ]
+         }
+        },
+        "key": "webm"
+       }
+      ],
+      "tooltip": "The output container. Auto uses MP4 for Auto/H.264 and WebM for AV1. MP4, MKV, and WebM select a specific container."
+     }
+    ],
+    "video": [
+     "VIDEO",
+     {
+      "tooltip": "The video to save."
+     }
     ]
    }
   },
   "input_order": {
-   "required": [
-    "video",
-    "filename_prefix",
-    "format"
+   "hidden": [
+    "prompt",
+    "extra_pnginfo"
    ],
    "optional": [
     "codec"
    ],
-   "hidden": [
-    "prompt",
-    "extra_pnginfo"
+   "required": [
+    "video",
+    "filename_prefix",
+    "format"
    ]
   },
   "is_input_list": false,
+  "name": "SaveVideo",
   "output": [
    "VIDEO"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "video"
   ],
+  "output_node": true,
   "output_tooltips": [
    "The input video, unchanged."
   ],
-  "output_matchtypes": null,
-  "name": "SaveVideo",
-  "display_name": "Save Video",
-  "description": "Saves the input videos to your ComfyUI output directory.",
-  "python_module": "comfy_extras.nodes_video",
-  "category": "video",
-  "output_node": true,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
+  "python_module": "comfy_extras.nodes_video",
   "search_aliases": [
    "export video"
-  ],
-  "essentials_category": "Basics",
-  "has_intermediate_output": false
+  ]
  },
  "UNETLoader": {
+  "category": "model/loaders",
+  "description": "",
+  "display_name": "Load Diffusion Model",
+  "has_intermediate_output": false,
   "input": {
    "required": {
     "unet_name": [
@@ -4700,6 +4789,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "UNETLoader",
   "output": [
    "MODEL"
   ],
@@ -4709,16 +4799,15 @@
   "output_name": [
    "MODEL"
   ],
-  "name": "UNETLoader",
-  "display_name": "Load Diffusion Model",
-  "description": "",
-  "python_module": "nodes",
-  "category": "model/loaders",
   "output_node": false,
-  "has_intermediate_output": false,
+  "python_module": "nodes",
   "search_aliases": []
  },
  "VAEDecode": {
+  "category": "model/latent",
+  "description": "Decodes latent images back into pixel space images.",
+  "display_name": "VAE Decode",
+  "has_intermediate_output": false,
   "input": {
    "required": {
     "samples": [
@@ -4742,6 +4831,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "VAEDecode",
   "output": [
    "IMAGE"
   ],
@@ -4751,16 +4841,11 @@
   "output_name": [
    "IMAGE"
   ],
-  "name": "VAEDecode",
-  "display_name": "VAE Decode",
-  "description": "Decodes latent images back into pixel space images.",
-  "python_module": "nodes",
-  "category": "model/latent",
   "output_node": false,
-  "has_intermediate_output": false,
   "output_tooltips": [
    "The decoded image."
   ],
+  "python_module": "nodes",
   "search_aliases": [
    "decode",
    "decode latent",
@@ -4769,6 +4854,15 @@
   ]
  },
  "VAEDecodeAudio": {
+  "api_node": false,
+  "category": "model/latent",
+  "deprecated": false,
+  "description": "",
+  "dev_only": false,
+  "display_name": "VAE Decode Audio",
+  "essentials_category": null,
+  "experimental": false,
+  "has_intermediate_output": false,
   "input": {
    "required": {
     "samples": [
@@ -4788,37 +4882,32 @@
    ]
   },
   "is_input_list": false,
+  "name": "VAEDecodeAudio",
   "output": [
    "AUDIO"
   ],
   "output_is_list": [
    false
   ],
+  "output_matchtypes": null,
   "output_name": [
    "AUDIO"
   ],
+  "output_node": false,
   "output_tooltips": [
    null
   ],
-  "output_matchtypes": null,
-  "name": "VAEDecodeAudio",
-  "display_name": "VAE Decode Audio",
-  "description": "",
-  "python_module": "comfy_extras.nodes_audio",
-  "category": "model/latent",
-  "output_node": false,
-  "deprecated": false,
-  "experimental": false,
-  "dev_only": false,
-  "api_node": false,
   "price_badge": null,
+  "python_module": "comfy_extras.nodes_audio",
   "search_aliases": [
    "latent to audio"
-  ],
-  "essentials_category": null,
-  "has_intermediate_output": false
+  ]
  },
  "VAELoader": {
+  "category": "model/loaders",
+  "description": "",
+  "display_name": "Load VAE",
+  "has_intermediate_output": false,
   "input": {
    "required": {
     "vae_name": [
@@ -4837,6 +4926,7 @@
    ]
   },
   "is_input_list": false,
+  "name": "VAELoader",
   "output": [
    "VAE"
   ],
@@ -4846,18 +4936,13 @@
   "output_name": [
    "VAE"
   ],
-  "name": "VAELoader",
-  "display_name": "Load VAE",
-  "description": "",
-  "python_module": "nodes",
-  "category": "model/loaders",
   "output_node": false,
-  "has_intermediate_output": false,
+  "python_module": "nodes",
   "search_aliases": []
  },
  "__meta__": {
-  "written": "20260910-191227",
   "classes_missing": [],
-  "comfyui": "0.34.0"
+  "comfyui": "0.34.0",
+  "written": "20260910-191227"
  }
 }

@@ -89,6 +89,7 @@ UPSCALER_MODE_DIMS = "target dimensions"        # MinimaxH3LatentUpscaler3D.mode
 CREATE_TASK_FRAMES = "Video (optional frames)"  # MMH3Create.task
 SETTINGS_RESOLUTION_CUSTOM = "Custom"           # MMH3H3GenerationSettings.resolution
 PUT_ROLE = "auxiliary"                          # MMH3Put.role for the decoded import
+LORAS_ACTION_NONE = "mark no LoRAs"             # MMH3GenerationLoRAs.action: record an explicit empty list
 LOAD_FILE_NONE = "(none)"                       # MMH3Load.file when path_override is used
 LATENT_ORIGIN_SAMPLER = "sampler_output"
 LATENT_ORIGIN_DERIVED = "derived"
@@ -570,9 +571,15 @@ def build_decoded_upscale(u, video_name, src_dims, filename_prefix, prompt=None,
                     "inputs": {"packet": ["pkt_create", 0], "resource": ["load", 0], "role": PUT_ROLE, "order": -1,
                                "mode": "add", "primary": True, "resource_id": "", "name": "", "tags": "",
                                "descriptor_json": "", "extensions_json": ""}}
+    # PC 2026-09-10: MMH3H3RefineLoRAs.turbo_override needs a recorded LoRA list ("Record source
+    # LoRAs before overriding Turbo"); a created packet has none, so record an explicit empty list.
+    # The refine-sampling node then infers the stock 20-step profile (no acceleration LoRA is
+    # recorded on the packet it sees) and the graph pins steps_override / denoise itself.
+    g["pkt_loras"] = {"class_type": "MMH3GenerationLoRAs",
+                      "inputs": {"packet": ["pkt_put", 0], "action": LORAS_ACTION_NONE, "loras_list": "[]"}}
     _loaders(g, "fl2va", None)
     g["prep"] = {"class_type": "MMH3H3DecodedUpscalePrepare",
-                 "inputs": {"packet": ["pkt_put", 0], "video_vae": ["vae", 0], "audio_vae": ["avae", 0],
+                 "inputs": {"packet": ["pkt_loras", 0], "video_vae": ["vae", 0], "audio_vae": ["avae", 0],
                             "missing_audio_policy": u["missing_audio_policy"], "geometry_mode": GEOMETRY_MODE_DIMS,
                             "scale": 2.0, "target_width": w32, "target_height": h32, "target_megapixels": 2.1,
                             "align": ALIGN, "enable_chunking": True}}

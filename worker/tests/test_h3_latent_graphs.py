@@ -224,6 +224,9 @@ class UpscaleGraphs(unittest.TestCase):
         self.assertTrue(g["pkt_put"]["inputs"]["primary"])
         self.assertEqual(g["prep"]["class_type"], "MMH3H3DecodedUpscalePrepare")
         self.assertEqual(g["prep"]["inputs"]["missing_audio_policy"], "error")
+        # PC 2026-09-10: turbo_override needs a recorded (here: explicitly empty) LoRA list
+        self.assertEqual(g["pkt_loras"]["inputs"], {"packet": ["pkt_put", 0], "action": "mark no LoRAs", "loras_list": "[]"})
+        self.assertEqual(g["prep"]["inputs"]["packet"], ["pkt_loras", 0])
         self.assertEqual(g["loras"]["inputs"]["unknown_policy"], "continue_without_source_loras")
         self.assertEqual(g["loras"]["inputs"]["turbo_override"], graphs.TURBO_LORAS["fl2va"][8])
         self.assertEqual(g["pkt_create"]["inputs"]["prompt"], graphs_h3.DECODED_PROMPT)
