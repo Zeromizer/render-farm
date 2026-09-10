@@ -33,7 +33,11 @@ from videogen import estimate, fidelity, graphs_h3, h3_preflight, provenance  # 
 
 
 def log(msg):
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    # Probe texts and ComfyUI messages can carry emoji; a cp1252 console or pipe must not kill the run.
+    try:
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    except UnicodeEncodeError:
+        print(f"[{time.strftime('%H:%M:%S')}] {str(msg).encode('ascii', 'replace').decode()}", flush=True)
 
 
 def vram(tag):
