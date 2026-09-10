@@ -52,6 +52,14 @@ def _options(val):
     return None
 
 
+def _is_upload_combo(val):
+    """True for combos whose options are the input folder listing (cfg carries
+    video_upload / image_upload / audio_upload): the value is only valid once the
+    runner has uploaded the file, so the schema cannot be checked ahead of time."""
+    cfg = val[1] if len(val) > 1 and isinstance(val[1], dict) else {}
+    return any(k.endswith("_upload") and cfg[k] for k in cfg)
+
+
 def _hint_for(cls):
     if cls.startswith("MMH3"):
         return INSTALL_HINTS["mmh3"]
@@ -94,6 +102,8 @@ def check(object_info, graph, optional_classes=OPTIONAL_CLASSES):
                 continue
             if isinstance(val, list):
                 continue  # a link; types are ComfyUI's job
+            if _is_upload_combo(inputs[name]):
+                continue  # LoadVideo/LoadImage file lists: the file is uploaded right before /prompt
             opts = _options(inputs[name])
             if opts is not None and val not in opts:
                 res["bad_enum"].append({"node": key, "class": cls, "input": name, "value": val,

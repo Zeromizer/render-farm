@@ -95,3 +95,43 @@ class Preflight(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UploadCombosAndInstalledSchema(unittest.TestCase):
+    def test_upload_file_combo_is_not_enum_checked(self):
+        # LoadVideo.file lists the input folder (empty on a fresh install) and carries
+        # video_upload: true; the runner uploads the file right before /prompt.
+        graph = {"load": {"class_type": "LoadVideo", "inputs": {"file": "clip.mp4"}}}
+        info = {"LoadVideo": {"input": {"required": {"file": ["COMBO", {"options": [], "video_upload": True}]}}}}
+        res = h3_preflight.check(info, graph)
+        self.assertEqual(res["bad_enum"], [])
+        self.assertIsNone(h3_preflight.error_message(res))
+
+    def test_plain_combo_still_enum_checked(self):
+        graph = {"n": {"class_type": "X", "inputs": {"mode": "nope"}}}
+        info = {"X": {"input": {"required": {"mode": ["COMBO", {"options": ["a", "b"]}]}}}}
+        self.assertEqual(len(h3_preflight.check(info, graph)["bad_enum"]), 1)
+
+    def test_all_four_graphs_pass_against_the_pc_fixture(self):
+        """tests/fixtures/object_info_pc.json is the trimmed /object_info of the render PC
+        (ComfyUI 0.34.0, mmh3_media bca81b8c, upscaler d7c01b90, 2026-09-10). The same four
+        graphs smoke.py --preflight-only builds; MMH3Put's five advanced string inputs are
+        required there, and LoadVideo.file is an upload combo."""
+        import json
+        fx = os.path.join(os.path.dirname(__file__), "fixtures", "object_info_pc.json")
+        if not os.path.exists(fx):
+            self.skipTest("fixture not present")
+        with open(fx, encoding="utf-8") as f:
+            info = json.load(f)
+        gen, _ = graphs_h3.build_generation_with_packet("t2v", {"prompt": "x"}, {}, "video_gen/t", "mmh3/t")
+        u = graphs_h3.validate_upscale_params({"method": "h3_latent_upscale", "shorter_size": 1080, "variant": "tile",
+                                               "latent": {"bucket": "b", "path": "p"}}, "upscale")
+        tile, _ = graphs_h3.build_latent_upscale(u, ABS, (480, 832), "video_gen/t")
+        full, _ = graphs_h3.build_latent_upscale(dict(u, variant="full"), ABS, (480, 832), "video_gen/t")
+        dec, _ = graphs_h3.build_decoded_upscale(
+            graphs_h3.validate_upscale_params({"method": "h3_latent_upscale", "shorter_size": 1080, "variant": "decoded"}, "upscale"),
+            "x.mp4", (480, 832), "video_gen/t")
+        for name, graph in (("generation+packet", gen), ("tile", tile), ("full", full), ("decoded", dec)):
+            res = h3_preflight.check(info, graph)
+            self.assertIsNone(h3_preflight.error_message(res), f"{name}: {h3_preflight.error_message(res)}")
+            self.assertEqual(res["unknown_inputs"], [], name)

@@ -501,9 +501,12 @@ def build_decoded_upscale(u, video_name, src_dims, filename_prefix, prompt=None,
                        "inputs": {"prompt": (prompt or "").strip() or DECODED_PROMPT, "task": CREATE_TASK_FRAMES,
                                   "seed": int(u["seed"]), "name": os.path.basename(filename_prefix),
                                   "notes": "render-farm video_gen decoded upscale import"}}
+    # mmh3_media bca81b8c declares the advanced string inputs as required (defaults ""); a graph
+    # that omits them is rejected by the preflight and by /prompt, so set them explicitly.
     g["pkt_put"] = {"class_type": "MMH3Put",
                     "inputs": {"packet": ["pkt_create", 0], "resource": ["load", 0], "role": PUT_ROLE, "order": -1,
-                               "mode": "add", "primary": True}}
+                               "mode": "add", "primary": True, "resource_id": "", "name": "", "tags": "",
+                               "descriptor_json": "", "extensions_json": ""}}
     _loaders(g, "fl2va", None)
     g["prep"] = {"class_type": "MMH3H3DecodedUpscalePrepare",
                  "inputs": {"packet": ["pkt_put", 0], "video_vae": ["vae", 0], "audio_vae": ["avae", 0],
