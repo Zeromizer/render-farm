@@ -119,39 +119,3 @@ def concat(segment_paths, audio_source, dest, log):
     _run(cmd)
     log(f"concat: {len(segment_paths)} segments -> {dest} ({os.path.getsize(dest)} bytes)")
     return dest
-
-
-def trim_frames(src, dest, frames, fps=24.0, log=print):
-    """Keep the first `frames` video frames (near-lossless re-encode) with the audio cut a
-    little past them: the decoded H3 import slices audio itself and fails when it is short."""
-    _, _, has_audio = probe(src)
-    frames = int(frames)
-    end = frames / float(fps)
-    # per-stream trims (not -frames:v / -t): the audio must run past the last video frame, and
-    # ffmpeg stops every stream as soon as a global frame or time limit is reached
-    fc = f"[0:v]trim=end_frame={frames},setpts=PTS-STARTPTS[v]"
-    cmd = ["ffmpeg", "-v", "error", "-y", "-i", src]
-    if has_audio:
-        fc += f";[0:a]apad=pad_dur=1,atrim=end={end + 0.2:.4f},asetpts=PTS-STARTPTS[a]"
-        cmd += ["-filter_complex", fc, "-map", "[v]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
-    else:
-        cmd += ["-filter_complex", fc, "-map", "[v]", "-an"]
-    cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "10", "-pix_fmt", "yuv420p", "-movflags", "+faststart", dest]
-    _run(cmd)
-    log(f"trim -> first {frames} frames ({end:.3f} s) -> {dest} ({os.path.getsize(dest)} bytes)")
-    return dest
-
-
-def crop_exact(src, dest, width, height, log=print):
-    """Centre-crop to exactly width x height (near-lossless), audio copied.
-    The H3 latent refine runs on a 32-aligned canvas (1088 for a 1080 request);
-    this trims the few border pixels afterwards instead of resampling."""
-    _, _, has_audio = probe(src)
-    vf = f"crop={int(width)}:{int(height)}"
-    cmd = ["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", vf, "-c:v", "libx264", "-preset", "medium",
-           "-crf", "10", "-pix_fmt", "yuv420p"]
-    cmd += ["-c:a", "copy"] if has_audio else ["-an"]
-    cmd += ["-movflags", "+faststart", dest]
-    _run(cmd)
-    log(f"crop -> {int(width)}x{int(height)} -> {dest} ({os.path.getsize(dest)} bytes)")
-    return dest
