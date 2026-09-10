@@ -8,6 +8,11 @@ instead of a spinner. Calibrated on the RTX 4080 SUPER 2026-09-06:
   decode + save    ~1.2e-7 s per pixel-frame (768p 10 s -> ~30 s)
   SeedVR2          ~55 s per second of video at 1080p (3 s segment ~165 s)
   lanczos          ~10 s
+  h3 latent upscale  PROVISIONAL (not yet measured on the PC): model load ~60 s,
+                   3D upscaler ~0.02 s per megapixel-frame, then the refine tail
+                   (~3 steps of the source profile) at the generation cost per
+                   pixel-frame per step, per tile (x1.35 for overlap/context),
+                   two decodes, ~40 s fidelity check
   turntable        one generation per segment (2 halves or 4 quarters, minus reused
                    ones) + ~90 s of post; retries/repairs add a segment each
 
@@ -22,6 +27,22 @@ LOAD_S = 25.0
 SEEDVR2_S_PER_VIDEO_S = 55.0
 LANCZOS_S = 10.0
 TURNTABLE_POST_S = 90.0
+# h3_latent_upscale, calibrated on the RTX 4080 SUPER 2026-09-10 (docs/h3-latent-upscale-pc-handoff.md):
+# tile 480x832x124 -> 1088x1888 in 12 tiles of 640x384 took 1589 s: ~10 s per step per tile (8 steps),
+# ~50 s of VAE/model shuffle per tile, ~90 s before the first step. 73 f: 1066 s, 243 f: 3523 s,
+# 1344x768x124 -> 1920x1088 in 16 tiles: 2233 s. full 1088x1888x73: 319 s.
+H3UP_LOAD_S = 90.0
+H3UP_UPSCALER_S_PER_MPXF = 0.02
+H3UP_STEP_S_PER_PXF = STEP_S_PER_PXF
+H3UP_TILE_OVERHEAD = 1.35
+H3UP_TILE_FIXED_S_PER_FRAME = 0.42   # per tile, per timeline frame: decode/encode round trip and model re-staging
+                                     # (73 f: ~30 s, 124 f: ~50 s, 243 f: ~100 s measured)
+H3UP_DECODE_S_PER_PXF = DECODE_S_PER_PXF * 2
+FIDELITY_S = 10.0
+# BasicScheduler keeps the profile's full step count at denoise 0.375 (it takes the last 8 of a
+# 21-step schedule), so a refine runs all 8 steps per tile, not 3.
+H3UP_REFINE_STEPS = 8
+H3UP_DEFAULT_SOURCE = (480, 832, 124)   # 9:16 480p 5 s when the source is unknown
 
 
 def _dims(vg):
@@ -54,11 +75,65 @@ def generation_seconds(vg, mode="i2v"):
     return h["load_seconds"] + h["steps"] * h["step_seconds"] + h["tail_seconds"]
 
 
-def upscale_seconds(u, seconds_of_video):
+def latent_upscale_plan(u, src_w, src_h, frames):
+    """{refine, tiles, steps, step_seconds, load_seconds, upscaler_seconds, decode_seconds, total}
+    for one h3_latent_upscale pass. Pure; never raises (falls back to defaults)."""
+    from videogen import graphs_h3
+    u = dict(u or {})
+    try:
+        # estimate only: a generation+upscale job has no latent yet, so validate with a placeholder
+        # (otherwise the fallback below plans a 2x refine instead of the requested size)
+        v = graphs_h3.validate_upscale_params(dict(u, method=graphs_h3.METHOD,
+                                                   latent=u.get("latent") or {"bucket": "-", "path": "-"}), "upscale",
+                                              dev=True)
+        dims = graphs_h3.target_dims(src_w, src_h, v)
+    except ValueError:
+        v = dict(u, tile_width=640, tile_height=384, tile_overlap=64, variant=u.get("variant") or "tile",
+                 steps_override=int(u.get("steps_override") or 0))
+        dims = {"refine": (int(src_w) * 2 // 32 * 32, int(src_h) * 2 // 32 * 32)}
+    w, h = dims["refine"]
+    frames = int(frames)
+    steps = int(v.get("steps_override") or 0) or H3UP_REFINE_STEPS
+    variant = v.get("variant") or "tile"
+    if variant == "full":
+        tiles = 1
+        pxf = w * h * frames
+        step_s = H3UP_STEP_S_PER_PXF * pxf
+    else:
+        tiles = graphs_h3.tile_count((w, h), v)
+        pxf = int(v["tile_width"]) * int(v["tile_height"]) * frames
+        step_s = H3UP_STEP_S_PER_PXF * pxf * H3UP_TILE_OVERHEAD
+    upscaler_s = H3UP_UPSCALER_S_PER_MPXF * (w * h * frames / 1e6)
+    decode_s = H3UP_DECODE_S_PER_PXF * w * h * frames
+    per_tile_fixed = H3UP_TILE_FIXED_S_PER_FRAME * frames if variant != "full" else 0.0
+    total = H3UP_LOAD_S + upscaler_s + tiles * (steps * step_s + per_tile_fixed) + decode_s + FIDELITY_S
+    return {"refine": [w, h], "tiles": tiles, "steps": steps, "step_seconds": step_s, "load_seconds": H3UP_LOAD_S,
+            "upscaler_seconds": upscaler_s, "decode_seconds": decode_s, "total": total}
+
+
+def latent_upscale_seconds(u, src_w, src_h, frames):
+    return latent_upscale_plan(u, src_w, src_h, frames)["total"]
+
+
+def latent_upscale_hint(u, src_w, src_h, frames):
+    """The {steps, step_seconds, load_seconds, tail_seconds} dict comfy_client.wait
+    consumes. With tiles the tqdm bar restarts per tile, so steps is the total
+    over tiles and step_seconds the per-step cost of one tile."""
+    p = latent_upscale_plan(u, src_w, src_h, frames)
+    return {"steps": p["steps"] * p["tiles"], "step_seconds": p["step_seconds"],
+            "load_seconds": p["load_seconds"] + p["upscaler_seconds"], "tail_seconds": p["decode_seconds"]}
+
+
+def upscale_seconds(u, seconds_of_video, src_dims=None):
     if not u:
         return 0.0
-    if (u.get("method") or "lanczos") == "lanczos":
+    method = (u.get("method") or "lanczos")
+    if method == "lanczos":
         return LANCZOS_S
+    if method == "h3_latent_upscale":
+        w, h = src_dims or H3UP_DEFAULT_SOURCE[:2]
+        frames = graphs.frames_for(max(1, min(15, float(seconds_of_video) or 5)))
+        return latent_upscale_seconds(u, w, h, frames)
     return SEEDVR2_S_PER_VIDEO_S * float(seconds_of_video) + 30.0
 
 
@@ -81,10 +156,10 @@ def job_seconds(params):
         seg = {"duration_s": secs, "resolution": tt.get("resolution", "768p"), "ratio": tt.get("ratio", "16:9")}
         return n * generation_seconds(seg, "i2v") + TURNTABLE_POST_S
     if mode == "upscale":
-        return upscale_seconds(vg.get("upscale") or {}, 10)
+        return upscale_seconds(vg.get("upscale") or {}, 5 if (vg.get("upscale") or {}).get("method") == "h3_latent_upscale" else 10)
     secs = generation_seconds(vg, mode)
     if vg.get("upscale"):
-        secs += upscale_seconds(vg["upscale"], vg.get("duration_s", 5))
+        secs += upscale_seconds(vg["upscale"], vg.get("duration_s", 5), src_dims=_dims(vg))
     return secs
 
 

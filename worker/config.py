@@ -6,6 +6,11 @@ from dotenv import load_dotenv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+WORKER_LANE = os.environ.get("RENDER_WORKER_LANE", "main")
+# h3_latent_upscale policy (2026-09-11): production runs the full-frame refine only (at most 73
+# frames of 1080p on the 16 GB card); the tile and decoded variants and allow_large_full are
+# dev-only, enabled by starting the worker with H3_TILE_DEV=1 (tile stays capped at 5 s).
+H3_TILE_DEV = os.environ.get("H3_TILE_DEV", "0") == "1"
 load_dotenv(os.path.join(ROOT, ".env"))
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]

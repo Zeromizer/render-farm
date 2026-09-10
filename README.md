@@ -138,7 +138,13 @@ shell is downloaded once into `~/.cache\hyperframes\chrome` by `hyperframes
 browser ensure`, which the runner calls the first time each worker process
 renders; fonts pulled from Google Fonts are cached under
 `~/.cache\hyperframes\fonts`, so warm them once online. Telemetry and update
-checks are disabled through the environment. Measured on the laptop iGPU: a
+checks are disabled through the environment. On Windows the runner also patches
+`@puppeteer/browsers/lib/launch.js` inside the npx cache right after `browser
+ensure` (`detached` off for win32): Puppeteer's detached launch makes
+CreateProcess ignore CREATE_NO_WINDOW, so chrome-headless-shell and each child
+process it forks otherwise open a visible Windows Terminal window on the render
+PC (eight per snapshot, measured 2026-09-07). Idempotent, re-applied per
+version. Measured on the laptop iGPU: a
 645-frame 1080x1920 footage reel with music in 69 s, A/V offset 0 ms (no AAC
 priming compensation needed, unlike Remotion's ~+40 ms).
 
@@ -267,3 +273,52 @@ Contract for the platform: `docs/video_gen-platform-brief.md`.
 PC-side checks without Supabase: `worker\videogen\smoke.py` (t2v/i2v/r2v
 flags, prints VRAM before/after and wall time). Queue path:
 `worker\insert_test_job.py --engine video_gen --params "{\"prompt\": \"...\"}"`.
+
+### H3 latent upscale (added 2026-09-10, validated on the render PC the same day)
+
+A third finishing method, `upscale.method: "h3_latent_upscale"`, upsamples in
+H3's own latent space instead of post-processing pixels: the F07 workflows of
+[einhorn13/mmh3_media](https://github.com/einhorn13/mmh3_media) (MIT) with the
+external `MinimaxH3LatentUpscaler3D` node
+([LBH-123-AI](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler),
+weights `minimax_h3_latent_upscaler_3d_bf16.safetensors` in
+`ComfyUI/models/latent_upscale_models/`). Graphs live in
+`worker/videogen/graphs_h3.py` (transcribed from the reference JSONs vendored
+under `worker/videogen/recipes/reference/`); a `/object_info` preflight fails
+the job with install hints when the node pack or the weight is missing. It
+never falls back to SeedVR2 or lanczos.
+
+- `save_latent: true` on a generation (t2v/i2v/turntable) also saves the joint
+  AV latent as an `.mmh3` packet: `outputs/<id>-latent.mmh3`
+  (`outputs/<id>-<segment>-latent.mmh3` per turntable quarter). Same models,
+  sampler and seed as the default graph, which stays untouched.
+- `upscale: {method: "h3_latent_upscale", variant: "tile"|"full"|"decoded",
+  latent: {bucket, path}, shorter_size|factor, denoise (0 = source-aware),
+  steps_override, seed, tile_*}`. `tile` is the 16 GB default; `full` refines
+  the whole frame (short clips only, guarded); `decoded` re-encodes an mp4
+  that has no packet (clips generated before this branch; lower fidelity,
+  experimental, 24 fps native clips only).
+- The refine runs on the 32-aligned cover of the request (1088x1888 for a
+  480x832 -> 1080 job) and the result is centre-cropped. Sidecars:
+  `outputs/<id>-upscale.json` (provenance: source, latent, recipe, weight,
+  refine settings, ComfyUI/node versions, timing, VRAM), `-fidelity.json`
+  (ffmpeg ssim/psnr against a lanczos resize, 4x4 grid, warns only),
+  `-compare.mp4` (source | upscaled), `-upscaled-latent.mmh3` with `save_latent`.
+- Measured on the RTX 4080 SUPER (2026-09-10): 480p 9:16 5 s -> 1080p in 12 tiles
+  27 min (peak VRAM 14.9-15.2 GB, i.e. the whole card; ComfyUI process peaked at
+  21 GB working set / 51 GB paged on the 31 GB box); `full` fits 3 s (73 frames) of
+  1080p in 5.3 min and kills ComfyUI at 5 s, hence the 73-frame guard; the packet
+  save adds ~6 s to a generation. Tiles default to `overlap_mode: reprocess` +
+  `blend_mode: half_cosine` (the F07 `context_only`/`hard` pair leaves visible
+  seams). `decoded` sources are trimmed to AV-exact lengths (39/90/141/... frames)
+  because the node pack's decoded import rejects every other length. Known
+  limitation: the tile refine re-imagines small emblems (badges) because its
+  per-tile sampling cannot carry the image conditioning; `full` keeps it. MCP
+  default `timeout_minutes` 90 (standalone) / 120 (generation + upscale).
+- Policy (2026-09-11): production runs `variant: full` only (the default), within
+  the 73-frame guard; `tile`, `decoded` and `allow_large_full` need the worker
+  started with `H3_TILE_DEV=1` (tile capped at 5 s). `fidelity.critical_cells`
+  (badge/grille/wheel/plate cells of the 4x4 grid) fail the job at a 0.10 drop;
+  the rest warn at 0.25.
+- Deploy on the render PC: `docs/h3-latent-upscale-pc-handoff.md` (install,
+  the five option strings to confirm, measurements, failure drills, calibration).

@@ -43,11 +43,37 @@ params (jsonb):
                          outputs/<jid>-manifest.json (segments, seams, defects, timing); two-anchor jobs also
                          keep outputs/<jid>-piece1..2.mp4 as before. ~9 min per 10 s half, ~5 min per 5 s
                          quarter at 768p, plus retries; file with timeout_minutes 150 (two) / 180 (four).
+    save_latent          bool (default false): also save the joint AV latent of the generation
+                         as an .mmh3 packet (einhorn13/mmh3_media) at outputs/<jid>-latent.mmh3
+                         (turntable: outputs/<jid>-<segment>-latent.mmh3, repaired segments
+                         -piece<k>-latent). Uses videogen/graphs_h3.build_generation_with_packet:
+                         the same models/sampler/seed as the default graph plus the packet nodes.
+                         Fails loudly if the mmh3_media node pack is not installed. Not for r2v yet.
     upscale              optional resize pass, on generation modes (runs after the
                          clip is made) or the whole job in upscale mode:
                            method   lanczos (default: plain ffmpeg resize, instant, faithful)
                                     | seedvr2 (restoration model, ~55 s per second of video)
-                           factor 2.0 | shorter_size px  (both methods)
+                                    | h3_latent_upscale (refine in H3's own latent space, see below)
+                           factor 2.0 | shorter_size px  (all methods)
+                         h3_latent_upscale only (videogen/graphs_h3.py, F07 of mmh3_media):
+                           variant  tile (default on 16 GB: MMH3H3NativeTileRefine) | full (whole
+                                    frame, short clips only) | decoded (no saved latent: the mp4 is
+                                    VAE-encoded back into latent space; lower fidelity, experimental)
+                           latent   {bucket, path} the .mmh3 packet (required for tile/full in
+                                    upscale mode; on generation modes the packet just made is used
+                                    and save_latent is switched on)
+                           denoise  0 = source-aware (0.375 for turbo-8 packets) | 0.05-0.5
+                           steps_override 0 = source profile | 1-20; seed; force_unload (true);
+                           attention Default; fp16_accumulation Default|Enabled|Disabled;
+                           tile_width 640, tile_height 384, tile_overlap 64, context_padding 64;
+                           missing_audio_policy error|silence (decoded); prompt (decoded);
+                           fidelity {enabled, compare, ssim_min, psnr_min, cell_ssim_min, cell_drop_max}
+                         The refine runs on the 32-aligned cover of the requested size and the
+                         result is centre-cropped to it. Sidecars: outputs/<jid>-upscale.json
+                         (provenance: source, latent, recipe, weights, refine settings, versions,
+                         timing, VRAM), -fidelity.json, -compare.mp4 (source | upscaled), and
+                         -upscaled-latent.mmh3 when save_latent is on. Never falls back to
+                         seedvr2/lanczos: a missing latent, node pack or weight fails the job.
                          seedvr2 only: color_correction wavelet|lab|adain|none (default wavelet),
                            temporal_overlap (latent frames, default 1), frames_per_chunk (4n+1,
                            default auto from free VRAM), seed, blend (0..1 share of SeedVR2 vs the
@@ -79,8 +105,26 @@ import proc
 from runners import gate_common
 import json
 
-from videogen import comfy_client, estimate, graphs, media_type, segments, tts_guard
+from videogen import comfy_client, estimate, fidelity, graphs, graphs_h3, h3_preflight, media_type, provenance, segments, tts_guard
+from studio import post
 from studio import turntable as turntable_flow
+
+_OBJECT_INFO = {"info": None, "at": 0.0}
+
+
+def _preflight(graph, log, max_age=600):
+    """Verify every node class / combo value of an mmh3 graph against ComfyUI's
+    /object_info before submitting; raises with install hints. The dict is
+    cached for the job (both the generation and the upscale graph use it)."""
+    if _OBJECT_INFO["info"] is None or time.monotonic() - _OBJECT_INFO["at"] > max_age:
+        _OBJECT_INFO["info"] = comfy_client.object_info()
+        _OBJECT_INFO["at"] = time.monotonic()
+    graph, res = h3_preflight.run(_OBJECT_INFO["info"], graph)
+    if res["dropped_optional"]:
+        log(f"preflight: dropped optional probe nodes {res['dropped_optional']} (class not installed)")
+    if res["unknown_inputs"]:
+        log(f"preflight: inputs unknown to this node version (ignored by ComfyUI): {res['unknown_inputs']}")
+    return graph
 
 _IMAGE, _VIDEO, _AUDIO = ("image",), ("video",), ("audio",)
 
@@ -97,8 +141,12 @@ def _fetch(ref, work_dir, name, log, allowed, download=None):
 
 
 def _run_prompt(jid, graph, label, heartbeat, cancel_check, deadline, dest, log, prange=None, hint=None,
-                after_seconds=0.0, after_text=""):
+                after_seconds=0.0, after_text="", extra=None):
     """Submit one graph, wait for it, fetch its video to dest. Raises on cancel/timeout.
+
+    extra           None (default: return dest) or {"mmh3": <dest path for the .mmh3 packet an
+                    MMH3Save node wrote>, "prefix_glob": <output-relative prefix for the disk
+                    fallback>, "texts": True}; then returns (dest, {"mmh3": path|None, "texts": {...}})
 
     prange         (lo, hi) job-progress percent this prompt spans (default: from the current
                    heartbeat progress to 90)
@@ -117,7 +165,7 @@ def _run_prompt(jid, graph, label, heartbeat, cancel_check, deadline, dest, log,
         db.set_phase(jid, text[:120], heartbeat.progress)
 
     outputs = None
-    for attempt in (1, 2):
+    for attempt in (1, 2, 3):
         since = datetime.now().isoformat()
         db.set_phase(jid, f"{label}: queued" + (" (retry)" if attempt > 1 else ""), lo)
         prompt_id = comfy_client.submit(graph)
@@ -129,12 +177,18 @@ def _run_prompt(jid, graph, label, heartbeat, cancel_check, deadline, dest, log,
         except comfy_client._CanceledSignal:
             raise proc.Canceled()
         except comfy_client.ComfyError as exc:
-            # --fast-disk streams the checkpoint from disk; twice today a read failed the moment a
-            # freshly /free'd model was re-staged ("HostBuffer.read_file_slice failed",
-            # "hostbuf_file_reader_read failed"). A retry after a /free has always succeeded.
-            if attempt == 1 and "hostbuf" in str(exc).lower():
-                log(f"{label}: transient weight-stream read error, retrying once: {exc}")
-                comfy_client.free()
+            # --fast-disk streams the checkpoint from disk; a read can fail the moment a freshly
+            # /free'd model is re-staged ("HostBuffer.read_file_slice failed",
+            # "hostbuf_file_reader_read failed"). Usually a /free + retry clears it; on the
+            # 2026-09-10 PC run it persisted after a 10 s tile refine (process at 85 GB paged)
+            # until ComfyUI was restarted, so the second retry restarts the server.
+            if "hostbuf" in str(exc).lower() and attempt < 3:
+                if attempt == 1:
+                    log(f"{label}: transient weight-stream read error, retrying once: {exc}")
+                    comfy_client.free()
+                else:
+                    log(f"{label}: weight-stream read error again, restarting ComfyUI: {exc}")
+                    comfy_client.restart_server(log)
                 time.sleep(5)
                 continue
             raise
@@ -143,17 +197,36 @@ def _run_prompt(jid, graph, label, heartbeat, cancel_check, deadline, dest, log,
     if not os.path.exists(dest) or os.path.getsize(dest) == 0:
         raise RuntimeError(f"comfyui reported success for {label} but no video was retrieved")
     log(f"{label} done: {os.path.getsize(dest)} bytes")
-    return dest
+    if extra is None:
+        return dest
+    got = {"mmh3": None, "texts": {}}
+    if extra.get("mmh3"):
+        # A packet that was asked for but not produced is a hard error: the whole point of
+        # save_latent is that the latent exists afterwards.
+        comfy_client.fetch_file_output(outputs, extra["mmh3"], prefix_glob=extra.get("prefix_glob"))
+        if not provenance.is_packet(extra["mmh3"]):
+            raise RuntimeError(f"{label}: MMH3Save produced no readable .mmh3 packet (see comfyui-headless.log)")
+        got["mmh3"] = extra["mmh3"]
+        log(f"{label} packet: {os.path.getsize(extra['mmh3'])} bytes")
+    if extra.get("texts"):
+        got["texts"] = comfy_client.fetch_texts(outputs)
+    return dest, got
 
 
-def _upscale_clip(jid, src_local, u, work_dir, heartbeat, cancel_check, deadline, dest, log):
-    """Resize pass over src_local: plain lanczos (default) or SeedVR2 in segments."""
+UPSCALE_METHODS = ("lanczos", "seedvr2", graphs_h3.METHOD)
+
+
+def _upscale_clip(jid, src_local, u, work_dir, heartbeat, cancel_check, deadline, dest, log, h3=None):
+    """Resize pass over src_local: plain lanczos (default), SeedVR2 in segments, or the H3
+    latent refine (h3 = context dict from run(): latent_local, save_latent, prompt, refs, stats)."""
     method = (u.get("method") or "lanczos").lower()
-    if method not in ("lanczos", "seedvr2"):
-        raise RuntimeError(f"upscale.method must be lanczos or seedvr2, got {method!r}")
+    if method not in UPSCALE_METHODS:
+        raise RuntimeError(f"upscale.method must be one of {UPSCALE_METHODS}, got {method!r}")
     if method == "lanczos":
         db.set_phase(jid, "upscale: lanczos")
         return segments.lanczos(src_local, dest, factor=u.get("factor"), shorter_size=u.get("shorter_size"), log=log)
+    if method == graphs_h3.METHOD:
+        return _h3_latent_upscale(jid, src_local, u, work_dir, heartbeat, cancel_check, deadline, dest, log, h3 or {})
     seg_frames = int(u.get("segment_frames") or segments.DEFAULT_SEGMENT_FRAMES)
     seg_dir = os.path.join(work_dir, "segments")
     os.makedirs(seg_dir, exist_ok=True)
@@ -180,6 +253,192 @@ def _upscale_clip(jid, src_local, u, work_dir, heartbeat, cancel_check, deadline
     return segments.concat(done, src_local, dest, log)
 
 
+def _h3_error(exc):
+    """Prefix the ComfyUI error text of a latent upscale with the operator's next move."""
+    text = str(exc)
+    low = text.lower()
+    if "out of memory" in low or "cuda oom" in low or "allocation on device" in low:
+        return RuntimeError(f"h3_latent_upscale ran out of VRAM: {text[:900]} -- try variant 'tile' (default), smaller "
+                            f"tile_width/tile_height, or a shorter clip; no fallback to seedvr2/lanczos was attempted")
+    if "lora stack is not recorded" in low or "no lora provenance" in low:
+        return RuntimeError(f"h3_latent_upscale: {text[:900]} -- the packet has no LoRA provenance; regenerate the clip "
+                            f"with save_latent on the current worker, or use variant 'decoded'")
+    if "hostbuf" in low:
+        return RuntimeError(f"h3_latent_upscale: {text[:900]} -- ComfyUI's --fast-disk weight stream failed on three "
+                            f"attempts (after a /free and after a ComfyUI restart); check comfyui-headless.log and the "
+                            f"pagefile (the process reached 85 GB paged on a 10 s tile refine), then retry")
+    if "primary h3 latent" in low or "sampler_output provenance" in low:
+        return RuntimeError(f"h3_latent_upscale: {text[:900]} -- upscale.latent is not a generation packet of this clip")
+    return RuntimeError(f"h3_latent_upscale failed: {text[:1200]}")
+
+
+def _h3_latent_upscale(jid, src_local, u, work_dir, heartbeat, cancel_check, deadline, dest, log, h3):
+    """F07 latent refine of src_local. Sidecars: -upscale.json, -fidelity.json, -compare.mp4,
+    -upscaled-latent.mmh3 (save_latent). Raises with a clear reason; never falls back."""
+    timer = provenance.Timer()
+    warnings = []
+    src = post.info(src_local)
+    frames = src["frames"]
+    try:
+        u = graphs_h3.validate_upscale_params(u, h3.get("mode") or "upscale", (src["width"], src["height"]), frames,
+                                              dev=config.H3_TILE_DEV)
+    except ValueError as exc:
+        raise RuntimeError(str(exc))
+    variant = u["variant"]
+    dims = u["_dims"]
+    latent_local = h3.get("latent_local")
+    latent_info = None
+    if variant in ("tile", "full"):
+        if not latent_local or not os.path.exists(latent_local):
+            raise RuntimeError("h3_latent_upscale: no latent packet available for this clip (upscale.latent missing "
+                               "or the generation did not save one); use variant 'decoded' or lanczos")
+        if not provenance.is_packet(latent_local):
+            raise RuntimeError(f"upscale.latent is not an .mmh3 packet (no packet.json inside): {latent_local}")
+        manifest = provenance.packet_manifest(latent_local)
+        geo = provenance.packet_geometry(manifest)
+        if geo and (geo[0], geo[1], geo[2]) != (src["width"], src["height"], frames):
+            raise RuntimeError(f"latent packet is {geo[0]}x{geo[1]}x{geo[2]}f but the source clip is "
+                               f"{src['width']}x{src['height']}x{frames}f: pass the latent of the same generation")
+        latent_info = {"path": latent_local, "sha256": provenance.sha256(latent_local),
+                       "size": os.path.getsize(latent_local), "packet": provenance.packet_summary(manifest),
+                       **(h3.get("latent_ref") or {})}
+    else:
+        if abs(src["fps"] - graphs.FPS) > 0.05:
+            raise RuntimeError(f"variant 'decoded' needs a {graphs.FPS} fps source (got {src['fps']:g} fps): use the "
+                               f"native segment clip (outputs/<id>-<segment>.mp4), not a RIFE'd master")
+        kept = graphs_h3.av_boundary_frames(frames)
+        if not kept:
+            raise RuntimeError(f"variant 'decoded' needs a source of at least {graphs_h3.AV_BOUNDARY_MIN} frames "
+                               f"({graphs_h3.AV_BOUNDARY_MIN / graphs.FPS:.2f} s at {graphs.FPS} fps); got {frames}")
+        if kept != frames:
+            trimmed = os.path.join(work_dir, "decoded-source.mp4")
+            segments.trim_frames(src_local, trimmed, kept, fps=graphs.FPS, log=log)
+            warnings.append(f"source has {frames} frames; the decoded import keeps the first {kept} "
+                            f"({kept / graphs.FPS:.2f} s): mmh3_media's decoded entry only accepts AV-exact lengths "
+                            f"(39, 90, 141, ... frames)")
+            log(f"decoded: {warnings[-1]}")
+            src_local = trimmed
+            src = post.info(src_local)
+            frames = src["frames"]
+    timer.lap("prepare")
+
+    packet_prefix = f"mmh3/video_gen/{jid}-upscaled" if h3.get("save_latent") else None
+    prefix = f"video_gen/{jid}-h3up"
+    if variant == "decoded":
+        name = comfy_client.upload_input(src_local)
+        graph, meta = graphs_h3.build_decoded_upscale(u, name, (src["width"], src["height"]), prefix,
+                                                      prompt=u.get("prompt") or h3.get("prompt"),
+                                                      packet_prefix=packet_prefix)
+    else:
+        graph, meta = graphs_h3.build_latent_upscale(u, os.path.abspath(latent_local), (src["width"], src["height"]),
+                                                     prefix, packet_prefix=packet_prefix)
+    log(f"h3 upscale {variant}: {meta['source'][0]}x{meta['source'][1]} -> refine {meta['refine'][0]}x{meta['refine'][1]} "
+        f"-> {meta['requested'][0]}x{meta['requested'][1]} (x{meta['scale'][0]:.2f}), {frames}f, "
+        f"denoise={u['denoise'] or 'auto'} steps={u['steps_override'] or 'source'} seed={u['seed']}"
+        + (f", {meta['tiles']['count']} tiles of {u['tile_width']}x{u['tile_height']}" if meta.get('tiles') else ""))
+    db.set_phase(jid, "h3 upscale: preflight")
+    graph = _preflight(graph, log)
+    timer.lap("preflight")
+    # H3 generation weights may still be resident; the refine reloads what it needs.
+    comfy_client.free()
+    sampler = provenance.VramSampler(comfy_client.system_stats).start()
+    raw = os.path.join(work_dir, "h3up-raw.mp4")
+    hint = estimate.latent_upscale_hint(u, src["width"], src["height"], frames)
+    try:
+        _, got = _run_prompt(jid, graph, "h3 upscale", heartbeat, cancel_check, deadline, raw, log, hint=hint,
+                             extra={"mmh3": os.path.join(work_dir, "h3up-latent.mmh3") if packet_prefix else None,
+                                    "prefix_glob": packet_prefix, "texts": True})
+    except comfy_client.ComfyError as exc:
+        sampler.stop()
+        raise _h3_error(exc)
+    vram = sampler.stop()
+    timer.lap("prompt")
+
+    refine_actual, tile_plan = None, None
+    for texts in (got.get("texts") or {}).values():
+        for t in texts:
+            try:
+                d = json.loads(t)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(d, dict) and "sampler_name" in d and "denoise" in d:
+                refine_actual = dict(d, _source="MMH3H3UpscaleRefineSampling probe")
+            elif isinstance(d, dict) and ("tiles" in d or "tile_plan" in d or "tile_width" in d):
+                tile_plan = d
+    if refine_actual is None and got.get("mmh3"):
+        try:
+            refine_actual = dict(provenance.packet_last_process(provenance.packet_manifest(got["mmh3"])) or {},
+                                 _source="packet last_process")
+        except Exception as exc:  # noqa: BLE001 - provenance only
+            warnings.append(f"could not read refine settings from the saved packet: {exc}")
+
+    crop = graphs_h3.crop_args(dims["refine"], dims["req"])
+    if crop:
+        db.set_phase(jid, "upscale: cropping to the requested size")
+        segments.crop_exact(raw, dest, dims["req"][0], dims["req"][1], log=log)
+    else:
+        os.replace(raw, dest)
+    timer.lap("crop")
+
+    fid_result, fid_paths = None, {}
+    if u["fidelity"].get("enabled", True):
+        db.set_phase(jid, "upscale: fidelity check")
+        fid_dir = os.path.join(work_dir, "fidelity")
+        try:
+            fid_result = fidelity.measure(src_local, dest, fid_dir, thresholds=u["fidelity"], log=log)
+            fid_paths["fidelity"] = fidelity.write_json(fid_result, os.path.join(work_dir, "fidelity.json"))
+            if u["fidelity"].get("compare", True):
+                fid_paths["compare"] = fidelity.compare_video(src_local, dest, os.path.join(work_dir, "compare.mp4"), log=log)
+        except Exception as exc:  # noqa: BLE001 - review information, never a job failure
+            warnings.append(f"fidelity check failed: {exc}")
+            log(f"fidelity check failed (continuing): {exc}")
+        timer.lap("fidelity")
+
+    db.set_phase(jid, "uploading sidecars", 93)
+    outputs = {"video": f"outputs/{jid}.mp4"}
+    for label, local, ctype in (("fidelity.json", fid_paths.get("fidelity"), "application/json"),
+                                ("compare.mp4", fid_paths.get("compare"), "video/mp4"),
+                                ("upscaled-latent.mmh3", got.get("mmh3"), "application/zip")):
+        if not local:
+            continue
+        try:
+            outputs[label.split(".")[0].replace("-", "_")] = db.upload_file(f"outputs/{jid}-{label}", local, ctype)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"sidecar {label} upload failed: {exc}")
+            log(f"sidecar {label} upload failed: {exc}")
+    timer.lap("upload")
+    timing = dict(timer.marks, total=timer.total())
+    record = provenance.build_upscale_json(
+        job_id=jid, meta=meta, u=u,
+        source={**(h3.get("source_ref") or {}), "sha256": provenance.sha256(src_local), "width": src["width"],
+                "height": src["height"], "frames": frames, "fps": src["fps"]},
+        latent=latent_info, comfy_stats=h3.get("stats"), comfy_dir=config.COMFYUI_DIR, timing=timing, vram=vram,
+        fidelity=({"path": f"outputs/{jid}-fidelity.json", "verdict": fid_result["verdict"],
+                   "ssim_mean": fid_result["ssim"]["mean"], "psnr_mean": fid_result["psnr"]["mean"],
+                   "cells_drift": len(fid_result["flags"]["cells_drift"])} if fid_result else None),
+        outputs=outputs, refine_actual=refine_actual, tile_plan=tile_plan, warnings=warnings)
+    rec_path = os.path.join(work_dir, "upscale.json")
+    with open(rec_path, "w", encoding="utf-8") as f:
+        json.dump(record, f, indent=1)
+    try:
+        db.upload_file(f"outputs/{jid}-upscale.json", rec_path, "application/json")
+    except Exception as exc:  # noqa: BLE001
+        log(f"upscale.json upload failed: {exc}")
+    log(f"h3 upscale done in {timing['total']} s (prompt {timing.get('prompt')} s), peak VRAM ~"
+        f"{vram.get('peak_used_estimate_mb')} MiB" + (f", fidelity {fid_result['verdict']}" if fid_result else ""))
+    if fid_result and fid_result["verdict"] == "fail":
+        hits = fid_result["flags"]["cells_critical"]
+        cells = sorted({(h["row"], h["col"]) for h in hits})
+        worst = min(hits, key=lambda h: h["ssim"] - h["frame_mean"])
+        raise RuntimeError(f"h3_latent_upscale fidelity FAIL: critical cell(s) {cells} drifted more than "
+                           f"{u['fidelity']['cell_drop_critical']} below the frame mean on {len(hits)} cell-frames "
+                           f"(worst: frame {worst['frame']} cell ({worst['row']},{worst['col']}) ssim {worst['ssim']} vs "
+                           f"mean {worst['frame_mean']}); the badge/grille/wheel/plate content was re-imagined. "
+                           f"Review outputs/{jid}-compare.mp4 and outputs/{jid}-fidelity.json (uploaded); the result "
+                           f"video was not filed")
+    return dest
+
+
 def turntable_manifest(jid, res):
     """The storage contract for a turntable job's pieces: which native 24 fps segment lives where,
     how the seams measured, and what still looks wrong. outputs/<jid>-manifest.json."""
@@ -189,6 +448,17 @@ def turntable_manifest(jid, res):
         segs[name] = {"bucket": config.BUCKET, "path": f"outputs/{jid}-{name}.mp4", "frames": s["frames"],
                       "seconds": s["seconds"], "fps": graphs.FPS, "reused": s["reused"], "attempts": s["attempts"],
                       "repairs": s["repairs"]}
+        if s.get("latents"):
+            if s["repairs"]:
+                segs[name]["latent"] = None
+                segs[name]["latent_pieces"] = [{"bucket": config.BUCKET, "path": f"outputs/{jid}-{name}-piece{k}-latent.mmh3"}
+                                               for k in range(len(s["latents"]))]
+                segs[name]["latent_note"] = "repaired segment: one packet per generated piece, refine per piece"
+            else:
+                segs[name]["latent"] = {"bucket": config.BUCKET, "path": f"outputs/{jid}-{name}-latent.mmh3"}
+        elif s["reused"]:
+            segs[name]["latent"] = None
+            segs[name]["latent_note"] = "reused clip: no packet in this job"
     return {"job_id": jid, "variant": f"{res['variant']}_anchor", "sequence": turntable_flow.SEQUENCES[res["variant"]],
             "segments_in_order": res["order"], "complete": res["complete"], "loops": res["loops"],
             "canvas": {"width": res["canvas"][0], "height": res["canvas"][1], "fps": graphs.FPS},
@@ -208,6 +478,12 @@ def _upload_turntable_sidecars(jid, res, log):
     files.append(("joined24.mp4", res["joined"], "video/mp4"))
     if res["variant"] == "two":
         files += [(f"piece{i + 1}.mp4", res["segments"][name]["local"], "video/mp4") for i, name in enumerate(res["order"])]
+    for name in res["order"]:
+        lats = res["segments"][name].get("latents") or []
+        if len(lats) == 1:
+            files.append((f"{name}-latent.mmh3", lats[0], "application/zip"))
+        else:
+            files += [(f"{name}-piece{k}-latent.mmh3", pth, "application/zip") for k, pth in enumerate(lats)]
     for name, pth, ctype in files:
         try:
             db.upload_file(f"outputs/{jid}-{name}", pth, ctype)
@@ -226,12 +502,15 @@ class _TurntableApi:
     """studio/turntable.py's api, backed directly by ComfyUI (no nested farm jobs:
     the worker is single-instance, so a job that queued sub-jobs would wait forever)."""
 
-    def __init__(self, jid, work_dir, heartbeat, cancel_check, deadline, log):
+    def __init__(self, jid, work_dir, heartbeat, cancel_check, deadline, log, save_latent=False):
         self.jid, self.heartbeat, self.cancel_check, self.deadline, self.log = jid, heartbeat, cancel_check, deadline, log
         self.work_dir = os.path.join(work_dir, "turntable")
         os.makedirs(self.work_dir, exist_ok=True)
         self._n, self._results = 0, {}
         self.halves_done = 0   # the flow tells us via phase() text; we count finished generations
+        self.save_latent = bool(save_latent)
+        self.packets = {}      # (segment, piece) -> local .mmh3 path of the LAST generation for it
+        self._preflighted = False
 
     def phase(self, text, progress=None):
         if progress is not None:
@@ -245,23 +524,39 @@ class _TurntableApi:
     def upload(self, local):
         return {"name": comfy_client.upload_input(local)}
 
-    def submit(self, vg, label, prange=None, after_seconds=0.0, after_text=""):
+    def submit(self, vg, label, prange=None, after_seconds=0.0, after_text="", segment=None, piece=0):
         """Run one anchored i2v generation synchronously. prange is the job-progress span the
         flow planned for this segment; retries and repairs re-enter the same span, so the
-        low end is clamped to the current progress to keep the bar monotonic."""
+        low end is clamped to the current progress to keep the bar monotonic.
+        segment/piece name the generation for the latent sidecars (save_latent)."""
         self._n += 1
         key = f"{self._n:02d}"
         names = {"first_frame": vg["first_frame"]["name"], "last_frame": vg["last_frame"]["name"]}
-        graph, meta = graphs.build("i2v", vg, names, f"video_gen/{self.jid}-tt{key}")
+        extra = None
+        if self.save_latent:
+            packet_prefix = f"mmh3/video_gen/{self.jid}-tt{key}"
+            graph, meta = graphs_h3.build_generation_with_packet("i2v", vg, names, f"video_gen/{self.jid}-tt{key}",
+                                                                 packet_prefix)
+            if not self._preflighted:
+                graph = _preflight(graph, self.log)
+                self._preflighted = True
+            extra = {"mmh3": os.path.join(self.work_dir, f"tt{key}.mmh3"), "prefix_glob": packet_prefix}
+        else:
+            graph, meta = graphs.build("i2v", vg, names, f"video_gen/{self.jid}-tt{key}")
         self.log(f"{label}: {meta['width']}x{meta['height']} {meta['length']}f seed={meta['seed']}")
         dest = os.path.join(self.work_dir, f"tt{key}.mp4")
         lo, hi = prange or (5, 85)
         lo = max(lo, int(self.heartbeat.progress))
         hi = max(hi, lo + 1)
-        self._results[key] = _run_prompt(self.jid, graph, label[:60], self.heartbeat, self.cancel_check,
-                                         self.deadline, dest, self.log, prange=(lo, hi),
-                                         hint=estimate.sampling_hint(vg, "i2v"), after_seconds=after_seconds,
-                                         after_text=after_text)
+        out = _run_prompt(self.jid, graph, label[:60], self.heartbeat, self.cancel_check,
+                          self.deadline, dest, self.log, prange=(lo, hi),
+                          hint=estimate.sampling_hint(vg, "i2v"), after_seconds=after_seconds,
+                          after_text=after_text, extra=extra)
+        if extra:
+            out, got = out
+            if segment is not None:
+                self.packets[(segment, int(piece))] = got["mmh3"]
+        self._results[key] = out
         return key
 
     def wait(self, key, label):
@@ -292,6 +587,25 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     upscale = p.get("upscale")
     tt = p.get("turntable") or {}
     tt_plan = None
+    method = ((upscale or {}).get("method") or "lanczos").lower()
+    if upscale and method not in UPSCALE_METHODS:
+        raise RuntimeError(f"upscale.method must be one of {UPSCALE_METHODS}, got {method!r}")
+    save_latent = bool(p.get("save_latent"))
+    h3_variant = None
+    if method == graphs_h3.METHOD:
+        if mode == "turntable":
+            raise RuntimeError("h3_latent_upscale is not available inside a turntable job; upscale the native "
+                               "segment clips as standalone upscale jobs with their -latent.mmh3 sidecars")
+        try:
+            gen_frames = graphs.frames_for(p.get("duration_s", 5)) if mode in graphs.GEN_MODES else None
+            h3_variant = graphs_h3.validate_upscale_params(upscale, mode, frames=gen_frames,
+                                                           dev=config.H3_TILE_DEV)["variant"]
+        except ValueError as exc:
+            raise RuntimeError(str(exc))
+        if mode in graphs.GEN_MODES and h3_variant in ("tile", "full"):
+            save_latent = True   # the refine needs the packet of the clip it refines
+    if save_latent and mode == "r2v":
+        raise RuntimeError("save_latent is not supported for r2v yet (the MMH3Create reference inputs are unverified)")
     if mode == "turntable":
         try:
             tt_plan = turntable_flow.plan(tt)
@@ -321,6 +635,17 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
             inputs[key] = [_fetch(r, work_dir, f"{key}_{i}", log, allowed) for i, r in enumerate(refs)]
     elif mode == "upscale":
         inputs["source"] = _fetch(p["source"], work_dir, "source", log, _VIDEO)
+        if h3_variant in ("tile", "full"):
+            lat = upscale["latent"]
+            local = gate_common.download(lat["bucket"], lat["path"], work_dir, "latent", log)
+            if not local.lower().endswith(".mmh3"):
+                # content-addressed assets are extensionless; MMH3Load wants the suffix
+                renamed = os.path.join(work_dir, "latent.mmh3")
+                os.replace(local, renamed)
+                local = renamed
+            if not provenance.is_packet(local):
+                raise RuntimeError(f"upscale.latent {lat['bucket']}/{lat['path']} is not an .mmh3 packet")
+            inputs["latent"] = local
     elif mode == "turntable":
         inputs["anchors"] = {a: _fetch(tt[a], work_dir, a, log, _IMAGE) for a in tt_plan["anchors"]}
         inputs["ready"] = {n: _fetch(tt["ready_segments"][n], work_dir, f"ready_{n}", log, _VIDEO)
@@ -348,6 +673,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     db.set_phase(jid, "starting comfyui", 3)
     comfy_client.ensure_server(log)
     with tts_guard.paused(log):
+        stats = None
         try:
             stats = comfy_client.system_stats()
             dev = (stats.get("devices") or [{}])[0]
@@ -355,6 +681,10 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
                 f"vram_free={dev.get('vram_free', 0) // (1 << 20)} MiB")
         except Exception as e:  # noqa: BLE001 - telemetry only
             log(f"system_stats unavailable: {e}")
+        h3 = {"mode": mode, "save_latent": save_latent, "prompt": p.get("prompt"), "stats": stats,
+              "source_ref": dict(p["source"]) if isinstance(p.get("source"), dict) else None,
+              "latent_ref": dict(upscale["latent"]) if h3_variant in ("tile", "full") and mode == "upscale" else None,
+              "latent_local": inputs.get("latent")}
 
         db.set_phase(jid, "uploading inputs", 5)
         names = {}
@@ -368,15 +698,37 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
 
         try:
             if mode in graphs.GEN_MODES:
-                graph, meta = graphs.build(mode, p, names, f"video_gen/{jid}")
+                extra = None
+                if save_latent:
+                    packet_prefix = f"mmh3/video_gen/{jid}"
+                    graph, meta = graphs_h3.build_generation_with_packet(mode, p, names, f"video_gen/{jid}", packet_prefix)
+                    db.set_phase(jid, "generate: preflight", 6)
+                    graph = _preflight(graph, log)
+                    extra = {"mmh3": os.path.join(work_dir, "video_gen-latent.mmh3"), "prefix_glob": packet_prefix}
+                else:
+                    graph, meta = graphs.build(mode, p, names, f"video_gen/{jid}")
                 log(f"video_gen {mode} {meta['width']}x{meta['height']} {meta['length']}f (~{meta['seconds']}s) "
-                    f"steps={meta['steps']} turbo={meta['turbo']} seed={meta['seed']} family={meta['family']}")
+                    f"steps={meta['steps']} turbo={meta['turbo']} seed={meta['seed']} family={meta['family']}"
+                    + (" +packet" if save_latent else ""))
                 heartbeat.progress = 8
-                up_secs = estimate.upscale_seconds(upscale, meta["seconds"]) if upscale else 0.0
+                up_secs = estimate.upscale_seconds(upscale, meta["seconds"], src_dims=(meta["width"], meta["height"])) if upscale else 0.0
                 base_local = _run_prompt(jid, graph, "generate", heartbeat, cancel_check, deadline,
                                          os.path.join(work_dir, "video_gen.mp4"), log,
                                          prange=(8, 55 if upscale else 90), hint=estimate.sampling_hint(p, mode),
-                                         after_seconds=up_secs, after_text=" - then upscale" if upscale else "")
+                                         after_seconds=up_secs, after_text=" - then upscale" if upscale else "",
+                                         extra=extra)
+                if extra:
+                    base_local, got = base_local
+                    h3["latent_local"] = got["mmh3"]
+                    # The packet goes up right away (before any upscale), like the base clip: a failed
+                    # upscale must not lose the latent the operator paid GPU minutes for.
+                    db.set_phase(jid, "uploading latent packet", 54 if upscale else 90)
+                    try:
+                        remote = db.upload_file(f"outputs/{jid}-latent.mmh3", got["mmh3"], "application/zip")
+                        h3["latent_ref"] = {"bucket": config.BUCKET, "path": remote}
+                        log(f"latent packet -> {remote} ({os.path.getsize(got['mmh3'])} bytes)")
+                    except Exception as exc:  # noqa: BLE001
+                        log(f"latent packet upload failed (continuing): {exc}")
                 out_local = base_local
                 if upscale:
                     # Free H3 before SeedVR2 so the two never share the 16 GB.
@@ -392,21 +744,27 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
                     except Exception as exc:  # noqa: BLE001
                         log(f"base clip upload failed (continuing to upscale): {exc}")
                     db.set_phase(jid, "upscale: preparing", 56)
+                    h3["source_ref"] = {"bucket": config.BUCKET, "path": f"outputs/{jid}-base.mp4"}
                     out_local = _upscale_clip(jid, base_local, upscale, work_dir, heartbeat, cancel_check,
-                                              deadline, os.path.join(work_dir, "video_gen-upscaled.mp4"), log)
+                                              deadline, os.path.join(work_dir, "video_gen-upscaled.mp4"), log, h3=h3)
             elif mode == "turntable":
                 opts = dict(tt, anchor_local=inputs["anchors"], ready_local=inputs["ready"])
-                api = _TurntableApi(jid, work_dir, heartbeat, cancel_check, deadline, log)
+                api = _TurntableApi(jid, work_dir, heartbeat, cancel_check, deadline, log, save_latent=save_latent)
                 heartbeat.progress = 5
                 res = turntable_flow.run(opts, api, log)
                 out_local = res["video"]
+                if save_latent:
+                    for name, seg in res["segments"].items():
+                        pieces = sorted((k, v) for (s, k), v in api.packets.items() if s == name)
+                        if pieces:
+                            seg["latents"] = [v for _, v in pieces]
                 _upload_turntable_sidecars(jid, res, log)
                 log(f"turntable done: {res['frames']} frames at {res['fps']} fps, segments {res['order']}, "
                     f"{'loops' if res['loops'] else 'partial'}; defects: {res['defects'] or 'none'}")
             else:
                 heartbeat.progress = 8
                 out_local = _upscale_clip(jid, inputs["source"], upscale, work_dir, heartbeat, cancel_check,
-                                          deadline, os.path.join(work_dir, "video_gen-upscaled.mp4"), log)
+                                          deadline, os.path.join(work_dir, "video_gen-upscaled.mp4"), log, h3=h3)
         finally:
             # Hand the card back whether we succeeded, failed or were canceled.
             comfy_client.free()
