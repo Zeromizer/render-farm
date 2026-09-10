@@ -65,8 +65,16 @@ TILE_DEFAULTS = {"tile_width": 640, "tile_height": 384, "tile_overlap": 64, "con
 # car footage, see docs/h3-latent-upscale-pc-handoff.md.
 TILE_MODE_OPTIONS = {"traversal": ("row_major", "snake"), "overlap_mode": ("context_only", "reprocess"),
                      "blend_mode": ("hard", "linear", "half_cosine"), "context_source": ("original", "composited")}
-FIDELITY_DEFAULTS = {"enabled": True, "compare": True, "ssim_min": 0.80, "psnr_min": 28.0,
-                     "cell_ssim_min": 0.70, "cell_drop_max": 0.10}
+# Anchored on the RTX 4080 SUPER 2026-09-10 (lanczos-resized source as the reference): lanczos
+# 0.996 / 52.8 dB, lanczos blurred (sigma 1.5) 0.9925 / 47.3, raw SeedVR2 0.956 / 35.7 (bottom
+# row of cells 0.83-0.94), tile refine 0.922 / 25.2 (min 0.909 / 23.4), full refine 0.919 / 24.9.
+# A latent refine legitimately moves far below raw SeedVR2 on these metrics, so the frame floors sit
+# under the measured refines and only a broken refine (wrong packet, blank tiles) trips them. The
+# car tile's four centre cells ran 0.78-0.83 against 0.9997 background cells (drop 0.17-0.22) with a
+# visibly re-imagined badge, so cell_drop_max 0.25 flags only a worse case; the -compare.mp4 is the
+# real badge/plate review. Warns, never gates.
+FIDELITY_DEFAULTS = {"enabled": True, "compare": True, "ssim_min": 0.85, "psnr_min": 22.0,
+                     "cell_ssim_min": 0.70, "cell_drop_max": 0.25}
 ATTENTION_DEFAULT = "Default"
 FP16_ACCUMULATION_DEFAULT = "Default"
 FP16_ACCUMULATION_OPTIONS = ("Default", "Enabled", "Disabled")

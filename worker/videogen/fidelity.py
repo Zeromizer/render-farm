@@ -14,8 +14,11 @@ write per-frame stats files. Stats paths are relative and ffmpeg runs with
 cwd=work_dir because its filter parser trips over "C:" in option values
 (same trap as studio/post.py).
 
-Thresholds are provisional until the PC anchors them on a known-good
-(Lanczos vs Lanczos-blurred) and a known-bad (SeedVR2 raw) pair.
+Thresholds were anchored on the render PC 2026-09-10 (see FIDELITY_DEFAULTS in
+graphs_h3.py): a healthy latent refine scores ~0.92 SSIM / 25 dB against the
+lanczos reference, well below raw SeedVR2 (0.956 / 35.7), so the floors only
+catch a broken refine; the per-cell drift flag and the compare video are the
+badge/plate review.
 """
 import json
 import os

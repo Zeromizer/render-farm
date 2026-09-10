@@ -29,7 +29,7 @@ class Validation(unittest.TestCase):
         self.assertTrue(u["force_unload"])
         self.assertEqual((u["attention"], u["fp16_accumulation"]), ("Default", "Default"))
         self.assertEqual(u["tile_width"], 640)
-        self.assertEqual(u["fidelity"]["ssim_min"], 0.8)
+        self.assertEqual(u["fidelity"]["ssim_min"], 0.85)
 
     def test_latent_required_for_tile_and_full(self):
         for variant in ("tile", "full"):

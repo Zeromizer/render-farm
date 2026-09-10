@@ -18,7 +18,7 @@ n:3 Y:0.700000 U:0.800000 V:0.800000 All:0.720000 (5.5)
 """
 PSNR_LOG = """n:1 mse_avg:0.50 mse_y:0.6 mse_u:0.3 mse_v:0.3 psnr_avg:51.14 psnr_y:50.3 psnr_u:53.4 psnr_v:53.4
 n:2 mse_avg:0.00 mse_y:0.0 mse_u:0.0 mse_v:0.0 psnr_avg:inf psnr_y:inf psnr_u:inf psnr_v:inf
-n:3 mse_avg:120.0 mse_y:130 mse_u:100 mse_v:100 psnr_avg:27.34 psnr_y:26.9 psnr_u:28.1 psnr_v:28.1
+n:3 mse_avg:760.0 mse_y:830 mse_u:600 mse_v:600 psnr_avg:19.34 psnr_y:18.9 psnr_u:20.1 psnr_v:20.1
 """
 
 
@@ -31,7 +31,7 @@ class Parsing(unittest.TestCase):
     def test_psnr_inf(self):
         rows = fidelity.parse_psnr_log(PSNR_LOG)
         self.assertEqual(rows[1]["psnr_avg"], fidelity.INF_PSNR)
-        self.assertAlmostEqual(rows[2]["psnr_avg"], 27.34)
+        self.assertAlmostEqual(rows[2]["psnr_avg"], 19.34)
 
 
 class Summary(unittest.TestCase):
@@ -39,7 +39,7 @@ class Summary(unittest.TestCase):
         ssim = fidelity.parse_ssim_log(SSIM_LOG)
         psnr = fidelity.parse_psnr_log(PSNR_LOG)
         cells = {(r, c): [0.95, 0.9, 0.85] for r in range(4) for c in range(4)}
-        cells[(1, 2)] = [0.95, 0.9, 0.60]     # one cell falls away on frame 3
+        cells[(1, 2)] = [0.95, 0.9, 0.50]     # one cell falls away on frame 3 (drop > cell_drop_max 0.25)
         res = fidelity.summarise(ssim, psnr, cells, 4)
         self.assertEqual(res["frames"], 3)
         self.assertEqual(res["verdict"], "review")
@@ -48,9 +48,9 @@ class Summary(unittest.TestCase):
         drift = res["flags"]["cells_drift"]
         self.assertEqual(len(drift), 1)
         self.assertEqual((drift[0]["frame"], drift[0]["row"], drift[0]["col"]), (2, 1, 2))
-        self.assertEqual(res["grid"]["cell_min"][1][2], 0.6)
+        self.assertEqual(res["grid"]["cell_min"][1][2], 0.5)
         self.assertAlmostEqual(res["ssim"]["min"], 0.72)
-        self.assertEqual(res["thresholds"]["ssim_min"], 0.8)
+        self.assertEqual(res["thresholds"]["ssim_min"], 0.85)
 
     def test_clean_is_ok(self):
         ssim = [{"n": i, "Y": 0.95, "U": 0.95, "V": 0.95, "All": 0.95} for i in range(5)]

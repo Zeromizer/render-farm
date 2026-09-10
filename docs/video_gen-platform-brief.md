@@ -249,7 +249,7 @@ Request shapes:
 | `denoise` | 0 = source-aware (0.375 for the worker's turbo-8 packets, 0.5 for turbo-4, 0.25 otherwise); else 0.05-0.50. Lower = less drift. |
 | `steps_override` | 0 = the packet's own profile (8 steps res_multistep/simple, shift 12/3); else 1-20. `decoded` defaults to 8 steps at denoise 0.375. |
 | `seed`, `force_unload` (true), `attention` (Default only), `fp16_accumulation` (Default/Enabled/Disabled), `tile_width` 640, `tile_height` 384, `tile_overlap` 64, `context_padding` 64 (multiples of 32), `missing_audio_policy` (decoded), `prompt` (decoded) | |
-| `fidelity` | `{enabled: true, compare: true, ssim_min: 0.80, psnr_min: 28, cell_ssim_min: 0.70, cell_drop_max: 0.10}` (provisional). ffmpeg ssim/psnr of the result against a lanczos resize of the source, globally and on a 4x4 grid; a cell far below its frame's mean is the badge/plate/wheel drift signal. Warns, never gates. |
+| `fidelity` | `{enabled: true, compare: true, ssim_min: 0.85, psnr_min: 22, cell_ssim_min: 0.70, cell_drop_max: 0.25}` (PC-anchored 2026-09-10: lanczos 0.996/52.8 dB, raw SeedVR2 0.956/35.7, tile refine 0.922/25.2, full refine 0.919/24.9; the floors sit under a healthy refine and only a broken one trips them). ffmpeg ssim/psnr of the result against a lanczos resize of the source, globally and on a 4x4 grid; a cell far below its frame's mean is the badge/plate/wheel drift signal. Warns, never gates. |
 
 Outputs in `renders` (besides `outputs/<id>.mp4`):
 
