@@ -142,9 +142,10 @@
             td.applyFill = true;
             td.applyStroke = false;
             if (ts.tracking !== undefined) { td.tracking = ts.tracking; }
-            // ExtendScript mis-parses nested ternaries (a ? b : c ? d : e), which
-            // silently turned "left" into right-justified text before 2026-09-11.
-            td.justification = AE.justification(ts.justify || "center");
+            var just = ts.justify || "center";
+            td.justification = just === "left" ? ParagraphJustification.LEFT_JUSTIFY :
+                               just === "right" ? ParagraphJustification.RIGHT_JUSTIFY :
+                               ParagraphJustification.CENTER_JUSTIFY;
             prop.setValue(td);
             var timing = setTiming(tl, ts, cs.duration_s);
             animate(tl, ts, timing);

@@ -27,10 +27,11 @@ from aftereffects.errors import AEError
 SCHEMA_VERSION = 1
 
 RECIPES = {
-    "text_overlay_v1": {"author": "text_overlay_v1.jsx", "revise": "revise_v1.jsx"},
+    # libs are evaluated before the recipe, in order; they are part of the revision hash.
+    "text_overlay_v1": {"libs": ["lib.jsx"], "author": "text_overlay_v1.jsx", "revise": "revise_v1.jsx"},
     # v2: ordered layers, frames, anchors, stretch/stroke, clip, mattes, effects,
     # keyframes (docs/aftereffects-text-overlay-v2.md). Revisions are new jobs.
-    "text_overlay_v2": {"author": "text_overlay_v2.jsx", "revise": None},
+    "text_overlay_v2": {"libs": ["lib.jsx", "lib_v2.jsx"], "author": "text_overlay_v2.jsx", "revise": None},
 }
 
 OUTPUT_PROFILES = {
