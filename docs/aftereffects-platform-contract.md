@@ -83,6 +83,16 @@ Field rules (all bounds enforced):
 Z-order: images at the bottom, then shapes, then texts (each list bottom-up).
 Text values are data: nothing from the request is evaluated as script.
 
+Coordinate semantics (measured on the first demo job, 2026-09-11; not a
+recipe change): a text layer is AE **point text**, so `position` is the
+layer's anchor, which sits on the **baseline** of the first line, not the
+visual centre of the glyphs. `justify` only affects the horizontal anchor
+(`center` puts the anchor mid-line). To centre a one-line text visually at
+`y`, send roughly `y + 0.35 * size`; for `N` lines the block grows downward
+by about `1.2 * size` per extra line. Shapes and images are anchored at
+their centre. Position, `slide_from` and `size` are in comp pixels; scale is
+percent; times are seconds; colours `#RRGGBB`.
+
 ## Result
 
 On success the row is `done` with `output_path = outputs/<farm_job_id>.mov`
