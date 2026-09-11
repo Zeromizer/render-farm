@@ -46,6 +46,10 @@ create table if not exists farm_engine_capabilities (
 insert into farm_engine_capabilities (engine, capability)
   values ('aftereffects', 'aftereffects')
   on conflict (engine) do nothing;
+-- Service role only: the default grants would let anon/authenticated edit the gate.
+revoke all on table public.farm_engine_capabilities from public, anon, authenticated;
+grant select, insert, update, delete on table public.farm_engine_capabilities to service_role;
+alter table public.farm_engine_capabilities enable row level security;
 
 -- Atomic claim: one worker owns the job; SKIP LOCKED makes concurrent workers safe.
 -- Priority before age so reference_extract jobs (200) never starve renders (100).

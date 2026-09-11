@@ -50,3 +50,10 @@ grant execute on function claim_farm_job(text[]) to service_role;
 --   select id, engine, status from claim_farm_job();               -- claims something else or nothing
 --   select id, engine, status from claim_farm_job('{aftereffects}'); -- claims it
 -- then cancel / delete that probe row.
+
+-- Permissions correction (found during verification on 2026-09-11: Supabase's
+-- default grants let anon INSERT/DELETE and authenticated UPDATE the gate
+-- table, and RLS was off). Service role only; nothing else needs to read it.
+revoke all on table public.farm_engine_capabilities from public, anon, authenticated;
+grant select, insert, update, delete on table public.farm_engine_capabilities to service_role;
+alter table public.farm_engine_capabilities enable row level security;
