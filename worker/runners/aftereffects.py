@@ -60,6 +60,30 @@ def make_host(log):
     return ae_host.RealHost(log=log)
 
 
+CAPABILITIES_REMOTE = "capabilities/aftereffects.json"
+
+
+def publish_capabilities(log):
+    """Upsert docs/aftereffects-capabilities.json content to the renders bucket
+    at capabilities/aftereffects.json so the platform can preflight fonts and
+    recipe features without a DB migration. Best effort, called at worker start."""
+    import json
+    import tempfile
+    from aftereffects import capabilities
+    try:
+        report = capabilities.report()
+        tmp = os.path.join(tempfile.gettempdir(), "aftereffects-capabilities.json")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=1)
+        remote = db.upload_file(CAPABILITIES_REMOTE, tmp, "application/json")
+        log(f"aftereffects capabilities -> {remote} (sha {report['capabilities_sha256'][:12]}, "
+            f"{len(report['fonts'])} fonts, recipes {sorted(report['recipes'])})")
+        return remote
+    except Exception as e:  # noqa: BLE001 - never block the worker over this
+        log(f"aftereffects capabilities publish failed (ignored): {str(e)[:200]}")
+        return None
+
+
 def fetch_row(jid):
     rows = db.sb.table("farm_render_jobs").select("status,attempts,cancel_requested").eq("id", jid).execute().data
     return rows[0] if rows else None
@@ -164,6 +188,9 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         local = result[key]
         remote = db.upload_file(f"outputs/{jid}{suffix}", local, mime)
         log(f"  sidecar {remote} ({os.path.getsize(local)} bytes)")
+    for pf in result.get("proofs") or []:
+        remote = db.upload_file(f"outputs/{jid}-proof-{pf['frame']:05d}.png", pf["path"], "image/png")
+        log(f"  proof frame {remote}")
     assert_current_claim(jid, attempt)   # the primary goes up next, in run_job
     profile = schema.OUTPUT_PROFILES[request["output_profile"]]
     return result["master"], profile["master_ext"], profile["master_mime"]

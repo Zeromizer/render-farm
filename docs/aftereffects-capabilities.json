@@ -228,7 +228,112 @@
     "max_assets": 20,
     "max_text_chars": 500
    },
-   "revision": "69d6535b68b6"
+   "revision": "940690b25272"
+  },
+  "text_overlay_v2": {
+   "layers": [
+    "text",
+    "shape",
+    "image"
+   ],
+   "time_unit": "frames (in_f/out_f, key f); seconds accepted",
+   "features": [
+    "ordered_layers",
+    "anchor",
+    "independent_scale",
+    "rotation",
+    "blend",
+    "motion_blur",
+    "clip",
+    "matte",
+    "text_stretch",
+    "text_stroke",
+    "box_text",
+    "fade_in_f",
+    "fade_out_f",
+    "keyframes",
+    "easing_presets",
+    "easing_explicit",
+    "brightness_keyframes",
+    "svg_footage",
+    "proof_frames"
+   ],
+   "effects": [
+    "bevel_highlight",
+    "choker",
+    "drop_shadow",
+    "exposure",
+    "fill",
+    "gaussian_blur",
+    "glow",
+    "roughen_edges",
+    "tint"
+   ],
+   "keyframe_properties": [
+    "position",
+    "scale",
+    "rotation",
+    "opacity",
+    "brightness",
+    "stretch",
+    "effects.<i>.<param>"
+   ],
+   "blend_modes": [
+    "add",
+    "darken",
+    "lighten",
+    "multiply",
+    "normal",
+    "overlay",
+    "screen"
+   ],
+   "matte_modes": [
+    "alpha",
+    "alpha_inverted",
+    "luma",
+    "luma_inverted"
+   ],
+   "ease": [
+    "ease_in",
+    "ease_in_out",
+    "ease_out",
+    "hold",
+    "linear",
+    "{in:[speed,influence],out:[...]}"
+   ],
+   "bounds": {
+    "max_layers": 60,
+    "max_effects_per_layer": 8,
+    "max_keys_per_property": 200,
+    "max_text_chars": 500,
+    "max_assets": 20,
+    "stretch": [
+     0.1,
+     10
+    ],
+    "stroke_width": [
+     0,
+     50
+    ],
+    "scale_percent": [
+     1,
+     1000
+    ],
+    "glow_radius": [
+     0,
+     500
+    ],
+    "max_proof_frames": 12
+   },
+   "not_supported": [
+    "third-party plugins",
+    "arbitrary expressions",
+    "cubic-bezier easing (use explicit speed/influence)",
+    "inner shadow (use bevel_highlight)",
+    "text on path",
+    "3D layers"
+   ],
+   "revision": "b5380f680915"
   }
  },
  "svg_import": true,
@@ -236,6 +341,6 @@
  "output_profiles": [
   "prores4444_alpha"
  ],
- "generated_at": "2026-09-11T03:28:28+00:00",
- "capabilities_sha256": "3895157bb3b4a8584f5fe161f314930878b30c46413408234353649c1de4625a"
+ "generated_at": "2026-09-11T03:55:22+00:00",
+ "capabilities_sha256": "7bb78a62c8920904d59b71ff21a913afc377763dcd47a4e5c19da165086e4dc9"
 }

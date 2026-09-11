@@ -75,10 +75,13 @@ the geometric centre unless `anchor` says otherwise.
 ### image
 
 `kind: "image"`, `asset: "<name from assets[]>"`. PNG/JPG/WebP/SVG/MOV/MP4
-footage. SVG imports natively (vector, rendered at comp resolution); a PNG
-raster fallback via Chrome headless is available on the host if a given SVG
-fails to import (`asset.rasterize: {"width": px, "height": px}`). `size`
-optional `[w, h]` px to fit (uniform unless `fit: "stretch"`).
+footage. **SVG never reaches After Effects**: AE 26.5 accepts SVG footage
+but crashed (heap corruption) on the second wear-texture import, so the
+worker rasterizes every SVG to a transparent PNG at the SVG's declared
+width/height (viewBox fallback) with Chrome headless before authoring, and
+records it in `provenance.inputs.<name>.rasterized_from`. The approved wear
+SVGs (1080x1400) come out as 1080x1400 RGBA PNGs in ~1.5 s. `size` optional
+`[w, h]` px to fit (uniform unless `fit: "stretch"`).
 
 ### Effects (built-in AE effects only, in the order given)
 

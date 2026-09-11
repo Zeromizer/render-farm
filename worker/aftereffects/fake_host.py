@@ -69,8 +69,35 @@ def _layer_pos(spec, t):
     return x, y
 
 
+def _v2_as_v1(settings):
+    """Flatten a v2 settings object into the v1-shaped lists the box renderer
+    draws (fades approximated from opacity keys, slides ignored)."""
+    if "layers" not in settings:
+        return settings
+    texts, shapes, images = [], [], []
+    for L in settings["layers"]:
+        spec = {"id": L["id"], "position": L["position"], "in_s": L["in_s"], "out_s": L["out_s"],
+                "opacity": L["opacity"], "scale": L["scale"][0], "fade_in_s": 0, "fade_out_s": 0}
+        ok = L["keyframes"].get("opacity")
+        if ok and len(ok) >= 2 and ok[0]["v"] == 0:
+            spec["fade_in_s"] = ok[1]["t"] - ok[0]["t"]
+        if ok and len(ok) >= 2 and ok[-1]["v"] == 0:
+            spec["fade_out_s"] = ok[-1]["t"] - ok[-2]["t"]
+        if L["kind"] == "text":
+            spec.update(text=L["text"], size=L["size"] * L["stretch"][1], color=L["color"])
+            texts.append(spec)
+        elif L["kind"] == "shape":
+            spec.update(size=L["size"], color=L["color"] or "#888888")
+            shapes.append(spec)
+        else:
+            spec.update(asset=L["asset"])
+            images.append(spec)
+    return {"composition": settings["composition"], "texts": texts, "shapes": shapes, "images": images}
+
+
 def _layer_boxes(settings):
     """Every layer as a (spec, w, h, color) box in z order bottom-up."""
+    settings = _v2_as_v1(settings)
     boxes = []
     for im in settings["images"]:
         boxes.append((im, 200, 200, "#8888FF"))
@@ -162,6 +189,8 @@ class FakeHost:
     def _comp_summary(model, name):
         s = model["settings"]
         c = s["composition"]
+        if "layers" in s:
+            return FakeHost._comp_summary_v2(model, name)
         layers = []
         idx = 1
         for tx in reversed(s["texts"]):
@@ -183,6 +212,36 @@ class FakeHost:
         return {"name": name, "width": c["width"], "height": c["height"], "fps": c["fps"],
                 "duration_s": c["duration_s"], "frames": c["frames"], "layers": layers}
 
+    @staticmethod
+    def _comp_summary_v2(model, name):
+        s = model["settings"]
+        c = s["composition"]
+        out = []
+        for idx, L in enumerate(reversed(s["layers"]), start=1):
+            keys = {k: len(v) for k, v in L["keyframes"].items()}
+            fx = [e["match_name"] for e in L["effects"]] + (["ADBE Exposure2"] if "brightness" in keys else [])
+            d = {"index": idx, "name": L["id"], "kind": {"image": "footage"}[L["kind"]] if L["kind"] == "image" else L["kind"],
+                 "in_s": L["in_s"], "out_s": L["out_s"], "enabled": True, "motion_blur": L["motion_blur"],
+                 "effects": fx, "keys": keys, "masks": 0}
+            if L["kind"] == "text":
+                d.update(text=L["text"], font=L["font"], font_size=L["size"], stretch=list(L["stretch"]),
+                         stroke={"width": L["stroke"]["width"]} if L.get("stroke") else None)
+            if L["kind"] == "image":
+                d["source"] = model["assets"].get(L["asset"])
+                d["footage_missing"] = not os.path.exists(model["assets"].get(L["asset"], ""))
+            if L.get("matte"):
+                d["matte"] = {"layer": L["matte"]["layer"], "type": 5013}
+            if L.get("clip"):
+                inner = dict(d)
+                d = {"index": idx, "name": L["id"], "kind": "precomp", "masks": 1, "inner": inner,
+                     "in_s": L["in_s"], "out_s": L["out_s"], "enabled": True, "motion_blur": L["motion_blur"],
+                     "effects": [], "keys": {}, "matte": d.get("matte")}
+            out.append(d)
+        mb = c.get("motion_blur") or {}
+        return {"name": name, "width": c["width"], "height": c["height"], "fps": c["fps"], "duration_s": c["duration_s"],
+                "frames": c["frames"], "layers": out, "motion_blur": bool(mb.get("enabled")),
+                "shutter_angle": mb.get("shutter_angle")}
+
     def run_script(self, stage, job, jsx_path, manifest_path, timeout_s, cancel_check, pid_sink):
         self.launched.append((stage, jsx_path))
         pid_sink(os.getpid(), "fake-AfterFX.exe")
@@ -199,17 +258,19 @@ class FakeHost:
                 if self.fail_author:
                     code, msg, line = self.fail_author
                     raise _Jsx(code, msg, line)
-                for im in job["settings"]["images"]:
+                imgs = job["settings"].get("images") or [L for L in job["settings"].get("layers", []) if L["kind"] == "image"]
+                for im in imgs:
                     p = job["assets"].get(im["asset"], "")
                     if not os.path.exists(p):
                         raise _Jsx("ASSET_MISSING", f"asset '{im['asset']}' not found at {p}", 121)
                 model = {"settings": job["settings"], "assets": job["assets"], "comp": job["settings"]["composition"],
                          "name": job["composition"]}
                 self._write_stub(job["project_path"], model)
+                texts = job["settings"].get("texts") or [L for L in job["settings"].get("layers", []) if L["kind"] == "text"]
                 m.update(ok=True, project_file=job["project_path"], om_templates=[self.om_template],
                          om_template=job["om_template"],
-                         fonts={t["font"]: {"available": True, "method": "fake"} for t in job["settings"]["texts"]},
-                         comp=self._comp_summary(model, job["composition"]))
+                         fonts={t["font"]: {"available": True, "method": "fake"} for t in texts},
+                         comp=self._comp_summary(model, job["composition"]), easing_resolved={}, anchors_resolved={})
             elif stage == "inspect":
                 model = self._read_stub(job["project_path"])
                 m.update(ok=True, comp=self._comp_summary(model, job["composition"]), compositions=[model["name"]])
@@ -251,7 +312,7 @@ class FakeHost:
             self._hang("render", timeout_s, cancel_check)
         model = self._read_stub(project_path)
         s = model["settings"]
-        for im in s["images"]:
+        for im in (s.get("images") or [L for L in s.get("layers", []) if L["kind"] == "image"]):
             if not os.path.exists(model["assets"].get(im["asset"], "")):
                 raise AEError("RENDER_FAILED", f"aerender ERROR: footage missing for layer {im['id']}")
         c = s["composition"]

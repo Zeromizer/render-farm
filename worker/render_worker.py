@@ -151,6 +151,8 @@ def main():
     ensure_single_instance("worker")
     caps = capabilities()
     log(f"render worker starting (cache={config.CACHE_DIR}, capabilities={caps or 'none'})")
+    if "aftereffects" in caps:
+        aftereffects.publish_capabilities(log)   # renders/capabilities/aftereffects.json for the platform
     git_cache.cleanup_old(log)
     assets.cleanup_old(log)
     venvs.cleanup_old(log)

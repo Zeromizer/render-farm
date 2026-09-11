@@ -62,11 +62,12 @@ def _summary(result):
     c = result["checks"]
     t = result["timings"]
     return {
+        "proofs": result.get("proofs"), "easing_resolved": result.get("easing_resolved"), "anchors_resolved": result.get("anchors_resolved"),
         "master": result["master"], "review": result["review"], "bundle": result["bundle"],
         "contact_sheet": result["contact_sheet"], "manifest": result["manifest"],
         "frames": c["frames"], "size": f"{c['width']}x{c['height']}", "fps": c["fps"], "pix_fmt": c["pix_fmt"],
         "alpha": c["alpha"], "timings": t, "editable_layers": [
-            {k: L.get(k) for k in ("name", "kind", "text", "font", "in_s", "out_s")} for L in result["inspect"]["editable_layers"]],
+            {k: L.get(k) for k in ("name", "kind", "text", "font", "in_s", "out_s", "stretch", "stroke", "effects", "matte", "masks", "keys", "motion_blur", "inner")} for L in result["inspect"]["editable_layers"]],
     }
 
 
@@ -76,7 +77,9 @@ def main():
     ap.add_argument("--fake", action="store_true", help="no After Effects: the fake host renders the model")
     ap.add_argument("--fake-mov", action="store_true", help="fake host writes a QuickTime Animation mov")
     ap.add_argument("--revise", action="store_true")
-    ap.add_argument("--settings", help="JSON file with a text_overlay_v1 settings object")
+    ap.add_argument("--settings", help="JSON file with a settings object for --recipe")
+    ap.add_argument("--recipe", default="text_overlay_v1", help="text_overlay_v1 | text_overlay_v2")
+    ap.add_argument("--proof", action="append", type=int, default=[], help="v2: proof frame (repeatable)")
     ap.add_argument("--timeout-minutes", type=float, default=20)
     ap.add_argument("--asset", action="append", default=[], metavar="NAME=PATH",
                     help="stage a local image as request asset NAME and add an image layer for it")
@@ -84,16 +87,22 @@ def main():
     args = ap.parse_args()
 
     req_raw = json.loads(json.dumps(DEFAULT_REQUEST))
+    req_raw["recipe"] = args.recipe
     if args.settings:
         with open(args.settings, encoding="utf-8") as f:
             req_raw["settings"] = json.load(f)
+    if args.proof:
+        req_raw["settings"].setdefault("output_extras", {})["proof_frames_f"] = args.proof
     staged_src = {}
     for i, spec in enumerate(args.asset):
         name, _, path = spec.partition("=")
         req_raw["assets"].append({"name": name, "bucket": "local", "path": os.path.basename(path), "kind": "image",
                                   "sha256": pipeline.sha256_file(path)})
-        req_raw["settings"]["images"].append({"id": f"img_{name}", "asset": name, "position": [540, 300 + 260 * i],
-                                              "scale": 40, "in_s": 0.0, "out_s": 5.0, "fade_in_s": 0.3, "fade_out_s": 0.3})
+        if "layers" in req_raw["settings"]:
+            pass  # v2 settings files reference their assets themselves
+        else:
+            req_raw["settings"]["images"].append({"id": f"img_{name}", "asset": name, "position": [540, 300 + 260 * i],
+                                                  "scale": 40, "in_s": 0.0, "out_s": 5.0, "fade_in_s": 0.3, "fade_out_s": 0.3})
         staged_src[name] = path
     request = schema.validate_request(req_raw)
     t_launch = time.monotonic()

@@ -177,9 +177,17 @@ class RealHost:
                     time.sleep(2)
                     if os.path.exists(manifest_path):
                         break
+                    last = None
+                    try:
+                        with open(manifest_path + ".step", encoding="utf-8") as sf:
+                            last = sf.read().strip()
+                    except OSError:
+                        pass
                     raise AEError("AE_NO_MANIFEST",
-                                  f"After Effects exited (code {p.returncode}) without writing {os.path.basename(manifest_path)}; "
-                                  "check that 'Allow Scripts to Write Files and Access Network' is enabled and that AE opens for this user")
+                                  f"After Effects exited (code {p.returncode}) without writing {os.path.basename(manifest_path)}"
+                                  + (f"; last step '{last}'" if last else "")
+                                  + "; check that 'Allow Scripts to Write Files and Access Network' is enabled and that AE opens for this user",
+                                  {"exit_code": p.returncode, "step": last})
                 now = time.monotonic()
                 if now - started > timeout_s:
                     proc._kill_tree(p)

@@ -40,10 +40,15 @@ def sha256_file(path):
     return h.hexdigest()
 
 
+def recipe_files(recipe):
+    r = schema.RECIPES[recipe]
+    return [fn for fn in ("lib.jsx", r["author"], r["revise"]) if fn]
+
+
 def recipe_revision(recipe):
-    """12 hex chars over lib.jsx + the recipe's author and revise scripts."""
+    """12 hex chars over lib.jsx + the recipe's author (and revise) scripts."""
     h = hashlib.sha256()
-    for fn in ("lib.jsx", schema.RECIPES[recipe]["author"], schema.RECIPES[recipe]["revise"]):
+    for fn in recipe_files(recipe):
         with open(os.path.join(RECIPES_DIR, fn), "rb") as f:
             h.update(fn.encode() + b"\0" + f.read() + b"\0")
     return h.hexdigest()[:12]
@@ -131,8 +136,9 @@ def _run_stage(ctx, stage, recipe_file, job):
         err = m.get("error") or {}
         code = err.get("code") if err.get("code") in __import__("aftereffects.errors", fromlist=["CODES"]).CODES else "JSX_ERROR"
         where = f" ({os.path.basename(str(err.get('file', recipe_file)))}:{err.get('line', '?')})" if err.get("line") is not None else ""
-        raise AEError(code, f"{stage} script failed{where}: {err.get('message', 'no message')}",
-                      {"jsx_line": err.get("line"), "jsx_file": err.get("file"), "stage": stage})
+        at = f" at step '{m['step']}'" if m.get("step") else ""
+        raise AEError(code, f"{stage} script failed{where}{at}: {err.get('message', 'no message')}",
+                      {"jsx_line": err.get("line"), "jsx_file": err.get("file"), "stage": stage, "step": m.get("step")})
     return m
 
 
@@ -148,12 +154,29 @@ def _stage_assets(ctx, request, assets_local):
         digest = sha256_file(p)
         if a.get("sha256") and digest != a["sha256"]:
             raise AEError("ASSET_HASH_MISMATCH", f"asset {a['name']!r}: sha256 {digest[:12]} != declared {a['sha256'][:12]}")
-        staged[a["name"]] = {"path": os.path.abspath(p), "sha256": digest, "size": os.path.getsize(p), "kind": a["kind"]}
+        entry = {"path": os.path.abspath(p), "sha256": digest, "size": os.path.getsize(p), "kind": a["kind"]}
+        if _is_svg(p):
+            png = os.path.splitext(os.path.abspath(p))[0] + ".rasterized.png"
+            _, (w, h) = media.rasterize_svg(p, png, ctx.remaining(), ctx.cancel_check, ctx.log)
+            ctx.log(f"  asset {a['name']}: SVG rasterized to {w}x{h} PNG for After Effects")
+            entry.update(path=png, rasterized_from={"path": os.path.abspath(p), "sha256": digest, "width": w, "height": h})
+        staged[a["name"]] = entry
     return staged
 
 
+def _is_svg(path):
+    if os.path.splitext(path)[1].lower() == ".svg":
+        return True
+    try:
+        with open(path, "rb") as f:
+            head = f.read(512).lstrip()
+        return head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in head)
+    except OSError:
+        return False
+
+
 def _preflight_fonts(request):
-    wanted = sorted({t["font"] for t in request["settings"]["texts"]})
+    wanted = sorted({t["font"] for t in schema.text_layers(request)})
     miss = fonts.missing(wanted)
     if miss:
         raise AEError("FONT_MISSING", f"font(s) not installed on this host: {', '.join(miss)}",
@@ -235,6 +258,13 @@ def _inspect(ctx, request, project_path, out_dir, expect_texts):
     layers = comp.get("layers") or []
     by_name = {L.get("name"): L for L in layers}
     problems = []
+    if request["recipe"] == "text_overlay_v2":
+        from aftereffects import schema_v2
+        problems = schema_v2.verify_inspect(request["settings"], comp)
+        if problems:
+            raise AEError("VERIFY_FAILED", "; ".join(problems)[:1500], {"inspect": comp})
+        return {"editable_layers": layers, "compositions": m.get("compositions"), "ae": m.get("ae"),
+                "motion_blur": comp.get("motion_blur"), "shutter_angle": comp.get("shutter_angle")}
     for tid, text in expect_texts.items():
         L = by_name.get(tid)
         if not L:
@@ -258,6 +288,17 @@ def _inspect(ctx, request, project_path, out_dir, expect_texts):
     return {"editable_layers": layers, "compositions": m.get("compositions"), "ae": m.get("ae")}
 
 
+def _proof_frames(ctx, request, master, out_dir, name):
+    """Single PNG stills at the requested frames (v2 output_extras.proof_frames_f)."""
+    frames = ((request["settings"].get("output_extras") or {}).get("proof_frames_f")) or []
+    out = []
+    for f in frames:
+        dst = os.path.join(out_dir, f"{name}-proof-{int(f):05d}.png")
+        media.extract_frame(master, int(f), dst, ctx.remaining(), ctx.cancel_check, ctx.log)
+        out.append({"frame": int(f), "path": dst})
+    return out
+
+
 def _bundle(ctx, out_dir, name, project_path, staged, extra_files):
     ctx.phase("bundling")
     path = os.path.join(out_dir, f"{name}-bundle.zip")
@@ -275,7 +316,9 @@ def _provenance(ctx, request, staged, author_m, rendered_from, out):
         "engine": "aftereffects", "schema_version": schema.SCHEMA_VERSION,
         "recipe": request["recipe"], "recipe_revision": recipe_revision(request["recipe"]),
         "settings_sha256": hashlib.sha256(json.dumps(request["settings"], sort_keys=True).encode()).hexdigest(),
-        "inputs": {n: {"sha256": i["sha256"], "size": i["size"], "kind": i["kind"]} for n, i in staged.items()},
+        "inputs": {n: {"sha256": i["sha256"], "size": i["size"], "kind": i["kind"],
+                       **({"rasterized_from": i["rasterized_from"]} if i.get("rasterized_from") else {})}
+                   for n, i in staged.items()},
         "host": ctx.host.info(), "ae": (author_m or {}).get("ae"),
         "ffmpeg": media.version(),
         "output_settings": {"om_template": ctx.host.om_template, "rs_template": ctx.host.rs_template,
@@ -285,7 +328,16 @@ def _provenance(ctx, request, staged, author_m, rendered_from, out):
                             "review": {"codec": "libvpx-vp9", "pix_fmt": "yuva420p"}},
         "scope": {k: request.get(k) for k in ("org_id", "job_id", "order_id", "version")},
         "fonts": (author_m or {}).get("fonts"),
+        "capabilities_sha256": _capabilities_sha(),
     }
+
+
+def _capabilities_sha():
+    try:
+        from aftereffects import capabilities
+        return capabilities.report()["capabilities_sha256"]
+    except Exception:  # noqa: BLE001 - provenance only
+        return None
 
 
 def run(request, workspace, host, assets_local, log, cancel_check, timeout_s, progress=lambda f: None,
@@ -330,17 +382,18 @@ def run(request, workspace, host, assets_local, log, cancel_check, timeout_s, pr
             ctx.remaining(), cancel_check, ctx.progress, ctx.pid_sink))
         finished = _encode_and_verify(ctx, request, rendered, out_dir, name, render_info)
         inspected = _inspect(ctx, request, project_path, out_dir,
-                             {t["id"]: t["text"] for t in request["settings"]["texts"]})
+                             {t["id"]: t["text"] for t in schema.text_layers(request)})
+        proofs = _proof_frames(ctx, request, finished["master"], out_dir, name)
         settings_copy = os.path.join(out_dir, "settings.json")
         with open(settings_copy, "w", encoding="utf-8") as f:
             json.dump(request, f, indent=1)
-        recipe_copy = {f"recipes/{fn}": os.path.join(RECIPES_DIR, fn)
-                       for fn in ("lib.jsx", schema.RECIPES[request["recipe"]]["author"], schema.RECIPES[request["recipe"]]["revise"])}
+        recipe_copy = {f"recipes/{fn}": os.path.join(RECIPES_DIR, fn) for fn in recipe_files(request["recipe"])}
         bundle = _bundle(ctx, out_dir, name, project_path, staged, dict(recipe_copy, **{"settings.json": settings_copy}))
         ctx.timings["total_s"] = round(time.monotonic() - t_start, 3)
         result.update(ok=True, project=project_path, bundle=bundle, master=finished["master"], review=finished["review"],
                       contact_sheet=finished["contact_sheet"], checks=finished["checks"], review_info=finished["review_info"],
-                      inspect=inspected, author=author_m, timings=ctx.timings, fonts=fonts_wanted,
+                      inspect=inspected, author=author_m, timings=ctx.timings, fonts=fonts_wanted, proofs=proofs,
+                      easing_resolved=author_m.get("easing_resolved"), anchors_resolved=author_m.get("anchors_resolved"),
                       provenance=_provenance(ctx, request, staged, author_m, rendered, finished))
         ctx.progress(1.0)
     except AEError as e:

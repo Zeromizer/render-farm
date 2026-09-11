@@ -221,6 +221,79 @@ def contact_sheet(master, dst, frames, timeout_s, cancel_check, log, columns=6, 
         raise AEError("VERIFY_FAILED", "contact sheet was not written")
 
 
+def chrome_headless():
+    """chrome-headless-shell.exe: CHROME_HEADLESS_EXE, else the copy HyperFrames
+    keeps under ~/.cache/hyperframes/chrome (newest version)."""
+    env_exe = os.environ.get("CHROME_HEADLESS_EXE")
+    if env_exe and os.path.exists(env_exe):
+        return env_exe
+    root = os.path.join(os.path.expanduser("~"), ".cache", "hyperframes", "chrome", "chrome-headless-shell")
+    hits = sorted(glob.glob(os.path.join(root, "*", "*", "chrome-headless-shell.exe")), reverse=True)
+    return hits[0] if hits else None
+
+
+def svg_size(path, default=(1080, 1080)):
+    """(width, height) from the SVG root's width/height or viewBox attributes."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            head = f.read(4096)
+    except OSError:
+        return default
+    m = re.search(r"<svg[^>]*>", head, re.IGNORECASE | re.DOTALL)
+    if not m:
+        return default
+    tag = m.group(0)
+
+    def attr(name):
+        a = re.search(name + r'\s*=\s*"([^"]+)"', tag)
+        return a.group(1) if a else None
+    w, h = attr("width"), attr("height")
+    try:
+        if w and h:
+            return int(round(float(re.sub(r"[a-z%]+$", "", w)))), int(round(float(re.sub(r"[a-z%]+$", "", h))))
+        vb = attr("viewBox")
+        if vb:
+            parts = [float(x) for x in re.split(r"[ ,]+", vb.strip())]
+            return int(round(parts[2])), int(round(parts[3]))
+    except (ValueError, IndexError):
+        pass
+    return default
+
+
+def rasterize_svg(src, dst, timeout_s, cancel_check, log, size=None):
+    """SVG -> transparent RGBA PNG at its declared size via Chrome headless.
+
+    AE 26.5 accepts SVG footage (ImportOptions.canImportAs is true) but crashed
+    with a heap corruption on the second wear-texture import (2026-09-11), so
+    SVGs never reach AE: they are rasterized here, deterministically, and the
+    PNG is what the project references."""
+    exe = chrome_headless()
+    if not exe:
+        raise AEError("ASSET_MISSING", f"SVG asset {os.path.basename(src)} needs a rasterizer: no chrome-headless-shell "
+                      "(set CHROME_HEADLESS_EXE or run one hyperframes job to fetch it)")
+    w, h = size or svg_size(src)
+    w, h = max(1, min(w, 8192)), max(1, min(h, 8192))
+    url = "file:///" + os.path.abspath(src).replace("\\", "/")
+    cmd = [exe, "--headless", "--disable-gpu", "--hide-scrollbars", "--default-background-color=00000000",
+           f"--window-size={w},{h}", f"--screenshot={dst}", url]
+    _run(cmd, timeout_s, cancel_check, log)
+    if not os.path.exists(dst) or os.path.getsize(dst) == 0:
+        raise AEError("ASSET_MISSING", f"rasterizing {os.path.basename(src)} produced no PNG")
+    _, v = probe(dst)
+    if (int(v.get("width", 0)), int(v.get("height", 0))) != (w, h):
+        raise AEError("ASSET_MISSING", f"rasterized {os.path.basename(src)} is {v.get('width')}x{v.get('height')}, expected {w}x{h}")
+    return dst, (w, h)
+
+
+def extract_frame(master, frame, dst, timeout_s, cancel_check, log):
+    """One RGBA PNG of `frame` from the master (transparent background kept)."""
+    cmd = [tool("ffmpeg"), "-y", "-hide_banner", "-loglevel", "error", "-i", master,
+           "-vf", f"select=eq(n\\,{int(frame)}),format=rgba", "-frames:v", "1", "-update", "1", dst]
+    _run(cmd, timeout_s, cancel_check, log)
+    if not os.path.exists(dst):
+        raise AEError("VERIFY_FAILED", f"proof frame {frame} was not written")
+
+
 def verify_master(path, comp, work_dir, timeout_s, cancel_check, log):
     """Dimensions, fps, frame count/duration and real alpha content of the master."""
     data, v = probe(path)

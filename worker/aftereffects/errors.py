@@ -21,6 +21,10 @@ CODES = (
     "CANCELED",
     "TIMEOUT",
     "CLAIM_SUPERSEDED",      # the row was reclaimed by another attempt
+    # text_overlay_v2
+    "MATTE_TARGET_MISSING",  # matte.layer is not another layer of the request
+    "KEYFRAME_INVALID",      # key outside the layer's frames / unknown property
+    "ANCHOR_UNRESOLVED",     # layer has no bounds at its in frame (empty text)
 )
 
 

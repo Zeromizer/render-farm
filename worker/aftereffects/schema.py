@@ -28,6 +28,9 @@ SCHEMA_VERSION = 1
 
 RECIPES = {
     "text_overlay_v1": {"author": "text_overlay_v1.jsx", "revise": "revise_v1.jsx"},
+    # v2: ordered layers, frames, anchors, stretch/stroke, clip, mattes, effects,
+    # keyframes (docs/aftereffects-text-overlay-v2.md). Revisions are new jobs.
+    "text_overlay_v2": {"author": "text_overlay_v2.jsx", "revise": None},
 }
 
 OUTPUT_PROFILES = {
@@ -277,11 +280,31 @@ def validate_request(params):
     names = {a["name"] for a in req["assets"]}
     if recipe == "text_overlay_v1":
         req["settings"] = validate_settings_text_overlay_v1(params.get("settings"), names)
+    elif recipe == "text_overlay_v2":
+        from aftereffects import schema_v2
+        req["settings"] = schema_v2.validate_settings(params.get("settings"), names)
     return req
+
+
+def text_layers(request):
+    """[{id, text, font}] for either recipe."""
+    st = request["settings"]
+    if request["recipe"] == "text_overlay_v2":
+        return [{"id": L["id"], "text": L["text"], "font": L["font"]} for L in st["layers"] if L["kind"] == "text"]
+    return [{"id": t["id"], "text": t["text"], "font": t["font"]} for t in st["texts"]]
+
+
+def layer_ids(request):
+    st = request["settings"]
+    if request["recipe"] == "text_overlay_v2":
+        return [L["id"] for L in st["layers"]]
+    return [x["id"] for group in ("texts", "shapes", "images") for x in st[group]]
 
 
 def validate_changes(changes, request):
     """Revision changes for revise_v1.jsx: [{id, text?, in_s?, out_s?}]."""
+    if RECIPES[request["recipe"]]["revise"] is None:
+        _bad(f"recipe {request['recipe']} has no revision script; submit changed settings as a new job")
     if not isinstance(changes, list) or not changes or len(changes) > MAX_LAYERS:
         _bad("changes must be a non-empty list")
     ids = {t["id"]: "text" for t in request["settings"]["texts"]}
