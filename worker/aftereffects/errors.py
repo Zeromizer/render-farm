@@ -10,6 +10,7 @@ CODES = (
     "RECIPE_REVISION_MISMATCH",
     "ASSET_MISSING",
     "ASSET_HASH_MISMATCH",
+    "ASSET_INVALID",         # downloaded bytes are not a decodable file of the declared kind
     "FONT_MISSING",
     "EFFECT_MISSING",
     "OM_TEMPLATE_MISSING",

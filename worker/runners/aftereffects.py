@@ -15,6 +15,8 @@ Outputs in the 'renders' bucket, all uploaded before the row turns done:
   outputs/<jid>-bundle.zip      project.aep + assets/ + settings.json + recipes/
   outputs/<jid>-contact.png     sampled frames over light and dark backgrounds
   outputs/<jid>-manifest.json   checks, timings, provenance, editable layers
+  outputs/<jid>-proof-<fffff>.png  one PNG per requested proof frame, frame
+                                number zero-padded to 5 digits (-proof-00042.png)
 
 Isolation and retries: each attempt works in <work_dir>/attempt-<n>; a retry
 first kills only the AfterFX/aerender pids the stale attempt recorded, then
@@ -32,7 +34,7 @@ import time
 import db
 import proc
 from runners import gate_common
-from aftereffects import ae_host, pipeline, schema
+from aftereffects import ae_host, pipeline, schema, staging
 from aftereffects.errors import AEError
 
 SIDE_CARS = (("review", "-review.webm", "video/webm"),
@@ -40,9 +42,6 @@ SIDE_CARS = (("review", "-review.webm", "video/webm"),
              ("contact_sheet", "-contact.png", "image/png"),
              ("manifest", "-manifest.json", "application/json"))
 SLOT_WAIT_SECONDS = int(os.environ.get("AE_SLOT_WAIT_SECONDS", "900"))
-
-_ASSET_KINDS = {"image": ("image",), "video": ("video",), "audio": ("audio",)}
-
 
 def host_available():
     """True when this worker may advertise the 'aftereffects' capability."""
@@ -133,12 +132,9 @@ def cleanup_stale_attempts(work_dir, current_attempt, log):
 
 
 def stage_assets(request, inputs_dir, log, download=None):
-    from videogen import media_type
-    local = {}
-    for a in request["assets"]:
-        p = (download or gate_common.download)(a["bucket"], a["path"], inputs_dir, a["name"], log)
-        local[a["name"]] = media_type.ensure_extension(p, _ASSET_KINDS[a["kind"]], name=a["name"])
-    return local
+    """Content-sniffed staging (aftereffects/staging.py): SVG by document
+    prolog, everything else by magic + ffprobe. Storage names carry no suffix."""
+    return staging.stage_assets(request, inputs_dir, log, download or gate_common.download)
 
 
 def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):

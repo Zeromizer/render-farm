@@ -232,6 +232,58 @@ def chrome_headless():
     return hits[0] if hits else None
 
 
+SVG_SNIFF_BYTES = 8192
+
+
+def is_svg(path):
+    """True when the file's content is an SVG document, whatever its name:
+    optional UTF-8 BOM, then any mix of whitespace, XML prolog, comments and a
+    DOCTYPE (internal subset allowed), then an <svg root element - all within
+    the first 8 KB. Storage objects are content-addressed and carry no suffix,
+    so this is the only way an SVG can be told apart from a corrupt file."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(SVG_SNIFF_BYTES)
+    except OSError:
+        return False
+    if head.startswith(b"\xef\xbb\xbf"):
+        head = head[3:]
+    if head[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return False   # UTF-16 SVGs are not accepted (Chrome would, AE tooling would not)
+    text = head.decode("utf-8", errors="replace")
+    pos, n = 0, len(text)
+    while True:
+        while pos < n and text[pos].isspace():
+            pos += 1
+        if text.startswith("<?", pos):
+            end = text.find("?>", pos)
+            if end < 0:
+                return False
+            pos = end + 2
+        elif text.startswith("<!--", pos):
+            end = text.find("-->", pos)
+            if end < 0:
+                return False
+            pos = end + 3
+        elif text[pos:pos + 9].upper() == "<!DOCTYPE":
+            depth, i = 0, pos
+            while i < n:
+                c = text[i]
+                if c == "[":
+                    depth += 1
+                elif c == "]":
+                    depth -= 1
+                elif c == ">" and depth <= 0:
+                    break
+                i += 1
+            if i >= n:
+                return False
+            pos = i + 1
+        else:
+            break
+    return re.match(r"<svg(?=[\s>/])", text[pos:]) is not None
+
+
 def svg_size(path, default=(1080, 1080)):
     """(width, height) from the SVG root's width/height or viewBox attributes."""
     try:

@@ -10,12 +10,13 @@ import shutil
 import sys
 import tempfile
 import unittest
+import zipfile
 
 os.environ.setdefault("SUPABASE_URL", "https://example.invalid")
 os.environ.setdefault("SUPABASE_SERVICE_KEY", "test-key")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from aftereffects import media, pipeline, schema, schema_v2  # noqa: E402
+from aftereffects import media, pipeline, schema, schema_v2, staging  # noqa: E402
 from aftereffects.errors import AEError  # noqa: E402
 from aftereffects.fake_host import FakeHost  # noqa: E402
 
@@ -144,6 +145,107 @@ class VerifyInspect(unittest.TestCase):
         self.assertTrue(any("brightness has None keys" in p for p in probs))
         broken["motion_blur"] = False
         self.assertIn("comp motion blur off", schema_v2.verify_inspect(r["settings"], broken))
+
+
+SVG_MIN = (b"\xef\xbb\xbf<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- wear -->\n"
+           b"<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n"
+           b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"6\" viewBox=\"0 0 4 6\">"
+           b"<rect width=\"4\" height=\"6\" fill=\"#fff\" fill-opacity=\"0.5\"/></svg>\n")
+
+
+class Staging(unittest.TestCase):
+    """Content-addressed objects carry no suffix: SVG must be told from a
+    corrupt file by content, and every loader failure must carry an AE code."""
+
+    def setUp(self):
+        self.td = tempfile.mkdtemp(prefix="ae2s-")
+
+    def tearDown(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def _put(self, name, data):
+        p = os.path.join(self.td, name)
+        with open(p, "wb") as f:
+            f.write(data)
+        return p
+
+    def test_is_svg_by_content(self):
+        self.assertTrue(media.is_svg(self._put("a", SVG_MIN)))
+        self.assertTrue(media.is_svg(self._put("b", b"  <svg xmlns='x'/>")))
+        self.assertTrue(media.is_svg(self._put("c", b"<svg>\n</svg>")))
+        self.assertFalse(media.is_svg(self._put("d", b"<svgx/>")))
+        self.assertFalse(media.is_svg(self._put("e", b"<?xml version='1.0'?><html><svg/></html>")))
+        self.assertFalse(media.is_svg(self._put("f", PNG_1x1)))
+        self.assertFalse(media.is_svg(self._put("g", b"")))
+        self.assertFalse(media.is_svg(self._put("h", b"\xff\xfe<\x00s\x00v\x00g\x00")))
+
+    def test_svg_without_suffix_gets_one_and_skips_ffprobe(self):
+        p = self._put("wear_light", SVG_MIN)
+        out = staging.typed_asset(p, "image", "wear_light")
+        self.assertEqual(os.path.basename(out), "wear_light.svg")
+        self.assertTrue(os.path.exists(out) and not os.path.exists(p))
+        self.assertEqual(staging.typed_asset(out, "image", "wear_light"), out)
+
+    def test_raster_without_suffix_still_sniffed(self):
+        out = staging.typed_asset(self._put("logo", PNG_1x1), "image", "logo")
+        self.assertEqual(os.path.basename(out), "logo.png")
+
+    def test_failures_carry_codes(self):
+        with self.assertRaises(AEError) as cm:
+            staging.typed_asset(self._put("junk", b"not a file of any kind"), "image", "junk")
+        self.assertEqual(cm.exception.code, "ASSET_INVALID")
+        self.assertIn("junk", str(cm.exception))
+        with self.assertRaises(AEError) as cm:
+            staging.typed_asset(self._put("wear", SVG_MIN), "video", "wear")
+        self.assertEqual(cm.exception.code, "ASSET_INVALID")
+        with self.assertRaises(AEError) as cm:
+            staging.typed_asset(self._put("nosize", b"<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>"), "image", "nosize")
+        self.assertEqual(cm.exception.code, "ASSET_INVALID")
+        with self.assertRaises(AEError) as cm:
+            staging.typed_asset(self._put("png_as_audio", PNG_1x1), "audio", "png_as_audio")
+        self.assertEqual(cm.exception.code, "ASSET_INVALID")
+
+    def test_stage_assets_end_to_end(self):
+        req = {"assets": [{"name": "wear_light", "bucket": "assets", "path": "sha256/10bad32a", "kind": "image"},
+                          {"name": "logo", "bucket": "assets", "path": "sha256/aa", "kind": "image"}]}
+        blobs = {"sha256/10bad32a": SVG_MIN, "sha256/aa": PNG_1x1}
+
+        def download(bucket, path, inputs_dir, name, log):
+            return self._put(name, blobs[path])   # bare name, like gate_common.download on a suffix-less path
+        out = staging.stage_assets(req, self.td, quiet, download)
+        self.assertEqual({k: os.path.basename(v) for k, v in out.items()}, {"wear_light": "wear_light.svg", "logo": "logo.png"})
+
+        def failing(bucket, path, inputs_dir, name, log):
+            raise RuntimeError("download failed: HTTP 404 for assets/sha256/aa")
+        with self.assertRaises(AEError) as cm:
+            staging.stage_assets(req, self.td, quiet, failing)
+        self.assertEqual(cm.exception.code, "ASSET_MISSING")
+        self.assertIn("HTTP 404", str(cm.exception))
+
+    def test_runner_uses_staging(self):
+        from runners import aftereffects as runner
+        p = self._put("wear", SVG_MIN)
+        out = runner.stage_assets({"assets": [{"name": "wear", "bucket": "assets", "path": "sha256/x", "kind": "image"}]},
+                                  self.td, quiet, download=lambda *a: p)
+        self.assertEqual(os.path.basename(out["wear"]), "wear.svg")
+
+    @unittest.skipUnless(media.chrome_headless(), "no chrome-headless-shell for SVG rasterization")
+    def test_suffixless_svg_reaches_rasterizer(self):
+        os.makedirs(os.path.join(self.td, "inputs"))
+        req = v2_request(assets=[{"name": "wear", "bucket": "assets", "path": "sha256/x", "kind": "image"}])
+        req["settings"]["layers"].append({"id": "wear_l", "kind": "image", "asset": "wear", "position": [160, 60],
+                                          "in_f": 3, "out_f": 30, "matte": {"layer": "word", "mode": "alpha"}})
+        r = schema.validate_request(req)
+        staged = staging.stage_assets(r, os.path.join(self.td, "inputs"), quiet,
+                                      lambda b, path, d, name, log: self._put(os.path.join("inputs", name), SVG_MIN))
+        res = pipeline.run(r, self.td, FakeHost(log=quiet, ffmpeg=media.tool("ffmpeg")), staged, quiet,
+                           lambda: False, 120)
+        self.assertTrue(res["ok"])
+        rf = res["provenance"]["inputs"]["wear"]["rasterized_from"]
+        self.assertEqual((rf["width"], rf["height"]), (4, 6))
+        self.assertEqual(rf["sha256"], pipeline.sha256_file(staged["wear"]))
+        with zipfile.ZipFile(res["bundle"]) as z:
+            self.assertIn("assets/wear.png", z.namelist())   # the AEP references the rasterized PNG
 
 
 class PipelineV2Fake(unittest.TestCase):

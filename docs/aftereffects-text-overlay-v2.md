@@ -61,7 +61,7 @@ bottom. Every layer:
 | `size` | px, 4..2000 |
 | `color` | `#RRGGBB` fill; `fill: false` for stroke-only text |
 | `stretch` | `[hx, vy]` factors applied as TextDocument horizontal/vertical scale (1 = none, 0.1..10): the glyphs themselves are stretched, the text stays editable; the approved 1.38 x 4.8 words are this, not `scale` |
-| `stroke` | `{"color": "#RRGGBB", "width": px 0..50, "over_fill": false}` |
+| `stroke` | `{"color": "#RRGGBB", "width": px 0..50, "over_fill": false}`. Width 0 is accepted but After Effects stores its own minimum, 0.01 px, and the manifest reports that value; omit `stroke` entirely for no stroke |
 | `justify` | `left` \| `center` \| `right` (horizontal anchor of a point-text line) |
 | `tracking`, `leading`, `baseline_shift` | numbers (AE units) |
 | `box` | optional `{"width": px, "height": px}` turns the layer into box text (wrapping) |
@@ -82,6 +82,17 @@ width/height (viewBox fallback) with Chrome headless before authoring, and
 records it in `provenance.inputs.<name>.rasterized_from`. The approved wear
 SVGs (1080x1400) come out as 1080x1400 RGBA PNGs in ~1.5 s. `size` optional
 `[w, h]` px to fit (uniform unless `fit: "stretch"`).
+
+Assets arrive from content-addressed storage (`assets/sha256/<hex>`, no
+suffix), so the worker types every asset by content, never by name
+(`worker/aftereffects/staging.py`): an SVG is recognised by its document
+prolog + `<svg` root (UTF-8, optional BOM/XML prolog/comments/DOCTYPE,
+within the first 8 KB) and must declare a width/height or viewBox; PNG /
+JPEG / WebP / video / audio by magic bytes plus an ffprobe decode. Bytes that
+match neither, or that match a different kind than declared, fail with
+`ASSET_INVALID` before After Effects launches (job 8ed3206f failed here on
+2026-09-11 because SVG went through the raster sniffer; fixed in the
+worker, storage contract unchanged).
 
 ### Effects (built-in AE effects only, in the order given)
 
@@ -189,10 +200,13 @@ order, keyframe count per property, motion-blur switch, comp shutter
 settings. The manifest carries all of it under `inspect.layers[]`, plus
 `easing_resolved` (the AE speed/influence per key). A contact sheet at the
 proof frame times can be requested with `output_extras.proof_frames_f: [...]`
-(max 12; each also uploaded as `outputs/<id>-proof-<f>.png`).
+(max 12; each also uploaded as `outputs/<id>-proof-<fffff>.png`, the frame
+number zero-padded to five digits: frame 42 is `<id>-proof-00042.png`).
 
 ## New error codes
 
+`ASSET_INVALID` (downloaded bytes are not a decodable file of the declared
+kind; `ASSET_MISSING` now also covers a failed fetch from storage),
 `MATTE_TARGET_MISSING` (matte.layer not in `layers`), `EFFECT_MISSING`
 (reused), `KEYFRAME_INVALID` (frame outside the layer, unknown property),
 `ANCHOR_UNRESOLVED` (empty bounds at `in_f`, e.g. empty text).

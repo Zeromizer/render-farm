@@ -170,7 +170,7 @@ The row's `error` is `"<CODE>: message"`; branch on the prefix.
 | --- | --- |
 | `INVALID_REQUEST` | schema violation (message names the field) |
 | `RECIPE_REVISION_MISMATCH` | pinned revision ≠ worker's recipe |
-| `ASSET_MISSING` / `ASSET_HASH_MISMATCH` | input not in the bucket / not staged / wrong bytes |
+| `ASSET_MISSING` / `ASSET_HASH_MISMATCH` / `ASSET_INVALID` | input not in the bucket or fetch failed / wrong bytes / bytes are not a decodable file of the declared kind (typed by content, never by name: SVG by document prolog, raster/video/audio by magic + ffprobe) |
 | `FONT_MISSING` | PostScript name not installed on the host (checked before AE launches, and again by AE) |
 | `EFFECT_MISSING` / `OM_TEMPLATE_MISSING` | built-in effect or output template absent in this AE |
 | `AE_NOT_INSTALLED` / `AE_SLOT_TIMEOUT` / `AE_NOT_ISOLATED` / `AE_NO_MANIFEST` | host problems: no AE, slot held > `AE_SLOT_WAIT_SECONDS`, script landed in a foreign instance (refused, nothing touched), AE exited without its manifest (file-access preference) |

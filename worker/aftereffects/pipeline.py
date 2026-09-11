@@ -171,14 +171,9 @@ def _stage_assets(ctx, request, assets_local):
 
 
 def _is_svg(path):
-    if os.path.splitext(path)[1].lower() == ".svg":
-        return True
-    try:
-        with open(path, "rb") as f:
-            head = f.read(512).lstrip()
-        return head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in head)
-    except OSError:
-        return False
+    """Content decides (media.is_svg); a .svg suffix - which staging.typed_asset
+    gives every SVG it recognises - is honoured too."""
+    return os.path.splitext(path)[1].lower() == ".svg" or media.is_svg(path)
 
 
 def _preflight_fonts(request):

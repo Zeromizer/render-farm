@@ -82,7 +82,11 @@ def main():
     ap.add_argument("--proof", action="append", type=int, default=[], help="v2: proof frame (repeatable)")
     ap.add_argument("--timeout-minutes", type=float, default=20)
     ap.add_argument("--asset", action="append", default=[], metavar="NAME=PATH",
-                    help="stage a local image as request asset NAME and add an image layer for it")
+                    help="stage a local image as request asset NAME (copied WITHOUT a suffix and sniffed, "
+                         "exactly like a content-addressed storage object) and add an image layer for it")
+    ap.add_argument("--storage-asset", action="append", default=[], metavar="NAME=BUCKET/PATH[@SHA256]",
+                    help="fetch request asset NAME from Supabase storage through the worker's own downloader "
+                         "(needs the worker .env); the real farm staging path end to end")
     ap.add_argument("--cancel-after-s", type=float, help="report cancel_requested after this many seconds")
     args = ap.parse_args()
 
@@ -104,6 +108,16 @@ def main():
             req_raw["settings"]["images"].append({"id": f"img_{name}", "asset": name, "position": [540, 300 + 260 * i],
                                                   "scale": 40, "in_s": 0.0, "out_s": 5.0, "fade_in_s": 0.3, "fade_out_s": 0.3})
         staged_src[name] = path
+    storage_src = {}
+    for spec in args.storage_asset:
+        name, _, rest = spec.partition("=")
+        loc, _, digest = rest.partition("@")
+        bucket, _, path = loc.partition("/")
+        entry = {"name": name, "bucket": bucket, "path": path, "kind": "image"}
+        if digest:
+            entry["sha256"] = digest
+        req_raw["assets"].append(entry)
+        storage_src[name] = entry
     request = schema.validate_request(req_raw)
     t_launch = time.monotonic()
 
@@ -121,11 +135,23 @@ def main():
     stamp = time.strftime("%Y%m%d-%H%M%S")
     ws = os.path.join(args.workspace, f"attempt-{stamp}")
     os.makedirs(os.path.join(ws, "inputs"), exist_ok=True)
-    assets_local = {}
-    for name, path in staged_src.items():
-        dst = os.path.join(ws, "inputs", name + os.path.splitext(path)[1].lower())
-        shutil.copy2(path, dst)
-        assets_local[name] = dst
+    # Stage through aftereffects/staging.py, the runner's path: local files are
+    # copied under their bare asset name (no suffix) so the content sniffer,
+    # not the filename, decides what they are.
+    from aftereffects import staging
+
+    def local_download(bucket, path, inputs_dir, name, log):
+        if bucket == "local":
+            dst = os.path.join(inputs_dir, name)
+            shutil.copy2(staged_src[name], dst)
+            log(f"copied {staged_src[name]} -> {dst} (no suffix)")
+            return dst
+        from runners import gate_common   # imports db: needs the worker .env
+        return gate_common.download(bucket, path, inputs_dir, name, log)
+
+    assets_local = staging.stage_assets(request, os.path.join(ws, "inputs"), _log, local_download)
+    for name, p in assets_local.items():
+        _log(f"staged asset {name}: {os.path.basename(p)}")
     timeout = args.timeout_minutes * 60
     t0 = time.monotonic()
     try:
