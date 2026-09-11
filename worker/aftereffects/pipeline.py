@@ -75,6 +75,8 @@ class _Ctx:
         return left
 
     def phase(self, name):
+        if self.cancel_check():
+            raise proc.Canceled()
         self.current = name
         self.log(f"phase {name}")
         self._phase(name)

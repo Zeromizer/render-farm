@@ -78,13 +78,28 @@ def main():
     ap.add_argument("--revise", action="store_true")
     ap.add_argument("--settings", help="JSON file with a text_overlay_v1 settings object")
     ap.add_argument("--timeout-minutes", type=float, default=20)
+    ap.add_argument("--asset", action="append", default=[], metavar="NAME=PATH",
+                    help="stage a local image as request asset NAME and add an image layer for it")
+    ap.add_argument("--cancel-after-s", type=float, help="report cancel_requested after this many seconds")
     args = ap.parse_args()
 
     req_raw = json.loads(json.dumps(DEFAULT_REQUEST))
     if args.settings:
         with open(args.settings, encoding="utf-8") as f:
             req_raw["settings"] = json.load(f)
+    staged_src = {}
+    for i, spec in enumerate(args.asset):
+        name, _, path = spec.partition("=")
+        req_raw["assets"].append({"name": name, "bucket": "local", "path": os.path.basename(path), "kind": "image",
+                                  "sha256": pipeline.sha256_file(path)})
+        req_raw["settings"]["images"].append({"id": f"img_{name}", "asset": name, "position": [540, 300 + 260 * i],
+                                              "scale": 40, "in_s": 0.0, "out_s": 5.0, "fade_in_s": 0.3, "fade_out_s": 0.3})
+        staged_src[name] = path
     request = schema.validate_request(req_raw)
+    t_launch = time.monotonic()
+
+    def cancel_check():
+        return args.cancel_after_s is not None and time.monotonic() - t_launch > args.cancel_after_s
 
     if args.fake or args.fake_mov:
         from aftereffects.fake_host import FakeHost
@@ -97,10 +112,23 @@ def main():
     stamp = time.strftime("%Y%m%d-%H%M%S")
     ws = os.path.join(args.workspace, f"attempt-{stamp}")
     os.makedirs(os.path.join(ws, "inputs"), exist_ok=True)
+    assets_local = {}
+    for name, path in staged_src.items():
+        dst = os.path.join(ws, "inputs", name + os.path.splitext(path)[1].lower())
+        shutil.copy2(path, dst)
+        assets_local[name] = dst
     timeout = args.timeout_minutes * 60
     t0 = time.monotonic()
-    result = pipeline.run(request, ws, host, {}, _log, lambda: False, timeout,
-                          progress=lambda f: None, phase=lambda p: None, name="smoke")
+    try:
+        result = pipeline.run(request, ws, host, assets_local, _log, cancel_check, timeout,
+                              progress=lambda f: _log(f"progress {f:.2f}") if int(f * 100) % 10 == 0 else None,
+                              phase=lambda p: None, name="smoke")
+    except BaseException as e:  # noqa: BLE001 - report exactly what the farm row would see
+        _log(f"FAILED after {time.monotonic() - t0:.1f}s: {type(e).__name__}: {e}")
+        with open(os.path.join(ws, "out", "manifest.json"), encoding="utf-8") as f:
+            _log(f"manifest error: {json.load(f).get('error')}")
+        _log(f"pids recorded: {open(os.path.join(ws, 'pids.json')).read() if os.path.exists(os.path.join(ws, 'pids.json')) else 'none'}")
+        raise SystemExit(2)
     _log(f"AUTHOR+RENDER OK in {time.monotonic() - t0:.1f}s")
     print(json.dumps(_summary(result), indent=1, default=str))
 
@@ -110,8 +138,13 @@ def main():
         os.makedirs(os.path.join(ws2, "project"), exist_ok=True)
         src = os.path.join(ws2, "project", "source.aep")
         shutil.copy2(result["project"], src)
+        assets2 = {}
+        for name, path in assets_local.items():
+            dst = os.path.join(ws2, "inputs", os.path.basename(path))
+            shutil.copy2(path, dst)
+            assets2[name] = dst
         t1 = time.monotonic()
-        rev = pipeline.revise(request, DEFAULT_CHANGES, src, {}, ws2, host, _log, lambda: False, timeout, name="smoke-v2")
+        rev = pipeline.revise(request, DEFAULT_CHANGES, src, assets2, ws2, host, _log, cancel_check, timeout, name="smoke-v2")
         _log(f"REVISE+RENDER OK in {time.monotonic() - t1:.1f}s; applied {rev['revise'].get('applied')}")
         print(json.dumps(_summary(rev), indent=1, default=str))
 

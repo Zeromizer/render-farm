@@ -51,9 +51,12 @@ def version():
 
 
 def _run(cmd, timeout_s, cancel_check, log, on_line=None):
+    from aftereffects.clocked import run_clocked
     log(f"  $ {' '.join(os.path.basename(cmd[0]) if i == 0 else c for i, c in enumerate(cmd))}"[:600])
-    proc.run_streaming(cmd, cwd=None, on_line=on_line or (lambda l: None),
-                       cancel_check=cancel_check, timeout_seconds=max(1, timeout_s))
+    rc, tail = run_clocked(cmd, None, on_line or (lambda l: None), cancel_check, max(1, timeout_s))
+    if rc != 0:
+        raise AEError("RENDER_FAILED", f"{os.path.basename(cmd[0])} exit code {rc}: " + " | ".join(tail[-6:]),
+                      {"exit_code": rc, "tail": tail[-15:]})
 
 
 def probe(path):

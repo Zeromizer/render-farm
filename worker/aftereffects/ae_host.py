@@ -243,32 +243,8 @@ class RealHost:
 
 
 def _run_streaming_with_pid(cmd, cwd, on_line, cancel_check, timeout_seconds, pid_sink, errors):
-    p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                         encoding="utf-8", errors="replace", creationflags=subprocess.CREATE_NO_WINDOW)
-    pid_sink(p.pid, os.path.basename(cmd[0]))
-    tail = []
-    started = time.monotonic()
-    last_cancel = started
-    try:
-        for line in p.stdout:
-            line = line.rstrip("\r\n")
-            tail.append(line)
-            if len(tail) > 60:
-                tail.pop(0)
-            on_line(line)
-            now = time.monotonic()
-            if now - started > timeout_seconds:
-                proc._kill_tree(p)
-                raise proc.TimedOut(f"exceeded {timeout_seconds:.0f}s")
-            if now - last_cancel >= 5:
-                last_cancel = now
-                if cancel_check():
-                    proc._kill_tree(p)
-                    raise proc.Canceled()
-        rc = p.wait(timeout=60)
-    finally:
-        if p.poll() is None:
-            proc._kill_tree(p)
+    from aftereffects.clocked import run_clocked
+    rc, tail = run_clocked(cmd, cwd, on_line, cancel_check, timeout_seconds, pid_sink=pid_sink)
     if rc != 0 or errors:
         raise AEError("RENDER_FAILED", f"aerender exit code {rc}: " + " | ".join((errors or tail[-8:])[:8]),
                       {"exit_code": rc, "tail": tail[-15:]})
