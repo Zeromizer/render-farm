@@ -37,21 +37,43 @@ alter table farm_render_jobs add column if not exists priority int not null defa
 drop index if exists farm_render_jobs_status_idx;
 create index if not exists farm_render_jobs_status_idx on farm_render_jobs (status, priority, created_at);
 
+-- Engines a worker may only claim when it advertises the capability of the
+-- same name (2026-09-11: aftereffects needs a native After Effects install).
+create table if not exists farm_engine_capabilities (
+  engine     text primary key,
+  capability text not null
+);
+insert into farm_engine_capabilities (engine, capability)
+  values ('aftereffects', 'aftereffects')
+  on conflict (engine) do nothing;
+
 -- Atomic claim: one worker owns the job; SKIP LOCKED makes concurrent workers safe.
 -- Priority before age so reference_extract jobs (200) never starve renders (100).
-create or replace function claim_farm_job()
+-- p_capabilities: the worker's capability list; a worker that passes nothing
+-- (every worker deployed before 2026-09-11) never claims a gated engine.
+-- The signature changed, so the old zero-argument function is dropped first
+-- (docs/aftereffects-claiming.sql is the standalone migration).
+drop function if exists claim_farm_job();
+create or replace function claim_farm_job(p_capabilities text[] default '{}')
 returns setof farm_render_jobs language sql as $$
   update farm_render_jobs
   set status = 'processing', claimed_at = now(), heartbeat_at = now(),
       attempts = attempts + 1, progress = 0, phase = 'cloning', error = null
   where id = (
-    select id from farm_render_jobs
-    where status = 'pending' and cancel_requested = false
-    order by priority, created_at
+    select j.id from farm_render_jobs j
+    where j.status = 'pending' and j.cancel_requested = false
+      and not exists (
+        select 1 from farm_engine_capabilities c
+        where c.engine = j.engine
+          and not (c.capability = any (coalesce(p_capabilities, '{}')))
+      )
+    order by j.priority, j.created_at
     for update skip locked
     limit 1)
   returning *;
 $$;
+revoke all on function claim_farm_job(text[]) from public, anon, authenticated;
+grant execute on function claim_farm_job(text[]) to service_role;
 
 -- Requeue processing jobs whose worker died (stale heartbeat); fail after max_attempts.
 create or replace function reclaim_stale_farm_jobs(p_stale_minutes int default 5)

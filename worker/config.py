@@ -44,6 +44,19 @@ VIDEO_GEN_PAUSE_TTS = os.environ.get("VIDEO_GEN_PAUSE_TTS", "1") not in ("0", "f
 TTS_STUDIO_DIR = os.environ.get("TTS_STUDIO_DIR", r"C:\Coding\Voice Output")
 VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES = int(os.environ.get("VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES", "60"))
 
+# --- aftereffects (native Windows After Effects, worker/aftereffects/) ---
+# AE_DIR            folder holding AfterFX.exe + aerender.exe (default: newest under Program Files\Adobe)
+# AE_OM_TEMPLATE    output-module template the recipe requires and aerender uses (default "Lossless with Alpha")
+# AE_OM_KIND        what that template writes: mov | sequence (default mov)
+# AE_OM_EXT         file extension of that output (default mov / png)
+# AE_RS_TEMPLATE    render-settings template (default "Best Settings")
+# AE_SLOT_WAIT_SECONDS  how long a job waits for the single AE slot (default 900)
+# AE_FAKE_HOST=1    tests/dev only: fake host, no AE; outputs are labelled fake and are never deliverables
+AE_DIR = os.environ.get("AE_DIR")
+AE_OM_TEMPLATE = os.environ.get("AE_OM_TEMPLATE", "Lossless with Alpha")
+AE_OM_KIND = os.environ.get("AE_OM_KIND", "mov")
+AE_FAKE_HOST = os.environ.get("AE_FAKE_HOST") == "1"
+
 for _d in (REPOS_DIR, WORK_DIR, ASSETS_DIR):
     os.makedirs(_d, exist_ok=True)
 

@@ -50,8 +50,8 @@ import proc
 import venvs
 from heartbeat import Heartbeat
 import queue_status
-from runners import (asset_check, blender, frame_extract, hyperframes, matte,
-                     python_script, reference_extract, remotion, video_gen,
+from runners import (aftereffects, asset_check, blender, frame_extract, hyperframes,
+                     matte, python_script, reference_extract, remotion, video_gen,
                      video_split)
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
@@ -72,12 +72,24 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # MiniMax H3 text/image/reference-to-video with native audio, via
            # the headless ComfyUI at C:\ComfyUI. Replaces the remote Seedance
            # credits for b-roll. Minutes per clip on a 16 GB card.
-           "video_gen": video_gen.run}
+           "video_gen": video_gen.run,
+           # Trusted After Effects recipes on the native Windows host (AfterFX.exe
+           # + aerender). Gated: only a worker advertising the "aftereffects"
+           # capability claims these rows (docs/aftereffects-claiming.sql).
+           "aftereffects": aftereffects.run}
+
+# Engines a worker only claims when it advertises the capability of the same
+# name; claim_farm_job(p_capabilities) enforces it server-side.
+GATED_ENGINES = {"aftereffects": aftereffects.host_available}
+
+
+def capabilities():
+    return sorted(name for name, probe in GATED_ENGINES.items() if probe())
 
 # Engines that work on a storage object, not a repo — the clone is skipped and
 # repo_url is a "-" placeholder (the column is NOT NULL).
 NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split",
-            "matte", "video_gen"}
+            "matte", "video_gen", "aftereffects"}
 
 
 def log(msg):
@@ -137,7 +149,8 @@ def run_job(job):
 def main():
     from singleton import ensure_single_instance
     ensure_single_instance("worker")
-    log(f"render worker starting (cache={config.CACHE_DIR})")
+    caps = capabilities()
+    log(f"render worker starting (cache={config.CACHE_DIR}, capabilities={caps or 'none'})")
     git_cache.cleanup_old(log)
     assets.cleanup_old(log)
     venvs.cleanup_old(log)
@@ -163,7 +176,7 @@ def main():
             except Exception as e:
                 log(f"queue annotate error (ignored): {str(e)[:120]}")
         try:
-            job = db.claim_job()
+            job = db.claim_job(caps)
             claim_err_logged = False
         except Exception as e:
             if not claim_err_logged:

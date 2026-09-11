@@ -23,13 +23,14 @@ const fail = (e) => ({ content: [{ type: "text", text: `Error: ${e.message}` }],
 server.tool(
   "submit_render_job",
   "Submit a GPU job (Remotion render, HyperFrames HTML render, Blender render, a Python script — e.g. " +
-    "rembg matting, upscaling — or video_gen: MiniMax H3 AI video with native audio) to the home render farm. " +
+    "rembg matting, upscaling — video_gen: MiniMax H3 AI video with native audio — or aftereffects: a trusted " +
+    "After Effects recipe rendered to a ProRes 4444 alpha master) to the home render farm. " +
     "For code engines the repo+ref must be pushed first; the farm clones it and runs on an RTX 4080. " +
     "video_gen needs no repo: pass `video_gen` (prompt required); inputs are {bucket, path} storage objects " +
     "(sync_assets puts files in the 'assets' bucket at sha256/<hex>). Expect several minutes per clip. " +
     "Returns a job_id — poll with get_job_status, then download_result.",
   {
-    engine: z.enum(["remotion", "blender", "python", "hyperframes", "video_gen"]),
+    engine: z.enum(["remotion", "blender", "python", "hyperframes", "video_gen", "aftereffects"]),
     repo_url: z.string().optional().describe("Git URL, e.g. https://github.com/user/repo (not used by video_gen)"),
     ref: z.string().default("main").describe("Branch, tag, or commit SHA (must be pushed)"),
     composition: z.string().optional().describe("Remotion: composition id (required for remotion)"),
@@ -112,6 +113,8 @@ server.tool(
       ref_audios: z.array(z.object({ bucket: z.string(), path: z.string() })).max(3).optional().describe("r2v: reference audio"),
       ref_image_size: z.enum(["match", "max"]).optional(),
     }).optional().describe("video_gen engine parameters (required for video_gen)"),
+    aftereffects: z.record(z.any()).optional()
+      .describe("aftereffects engine request (schema_version 1: recipe, composition, settings, assets, output_profile, org_id, job_id) - see docs/aftereffects-platform-contract.md. Needs no repo. Only a worker advertising the aftereffects capability claims it."),
     priority: z.number().int().optional().describe("Lower runs first; a video_gen job blocks the farm for minutes"),
     timeout_minutes: z.number().int().optional().describe("Kill the job after this long (default 120; video_gen default 60, turntable 150)"),
   },
@@ -133,7 +136,9 @@ server.tool(
         if (missing.length) throw new Error(`turntable: generating ${(t.segments || seq).join(", ")} needs the ${missing.join(", ")} photo(s)`);
         if (need.size && !t.car) throw new Error("turntable.car (one line describing the car) is required when segments are generated");
       }
-      if (args.engine !== "video_gen" && !args.repo_url)
+      if (args.engine === "aftereffects" && !args.aftereffects?.recipe)
+        throw new Error("aftereffects jobs require 'aftereffects' with at least recipe, settings, org_id and job_id");
+      if (args.engine !== "video_gen" && args.engine !== "aftereffects" && !args.repo_url)
         throw new Error("repo_url is required for this engine");
       if (args.engine === "remotion" && !args.composition)
         throw new Error("remotion jobs require 'composition'");
@@ -148,7 +153,7 @@ server.tool(
         "props", "quality", "assets", "output_kind", "image_format", "frame",
         "blend_file", "frame_start", "frame_end", "single_frame", "output_format",
         "script", "args", "requirements", "output",
-        "format", "fps", "variables", "workers", "gpu", "at", "video_gen"]) {
+        "format", "fps", "variables", "workers", "gpu", "at", "video_gen", "aftereffects"]) {
         if (args[k] !== undefined) params[k] = args[k];
       }
       const job = await insertJob({
