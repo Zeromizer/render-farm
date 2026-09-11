@@ -228,7 +228,7 @@
     "max_assets": 20,
     "max_text_chars": 500
    },
-   "revision": "c40f22469a6c"
+   "revision": "69d6535b68b6"
   },
   "text_overlay_v2": {
    "layers": [
@@ -333,7 +333,7 @@
     "text on path",
     "3D layers"
    ],
-   "revision": "157829c465ab"
+   "revision": "47ed4650a7c6"
   }
  },
  "svg_import": true,
@@ -341,6 +341,6 @@
  "output_profiles": [
   "prores4444_alpha"
  ],
- "generated_at": "2026-09-11T04:00:22+00:00",
- "capabilities_sha256": "f3a49800c62d57ce2341767bd0d4407a86b59aa26e22865d40580b63be996426"
+ "generated_at": "2026-09-11T04:01:42+00:00",
+ "capabilities_sha256": "a13764640caf8b7043c38debb677f0c3575527468cba2043ba43e86960886eeb"
 }

@@ -46,11 +46,17 @@ def recipe_files(recipe):
 
 
 def recipe_revision(recipe):
-    """12 hex chars over lib.jsx + the recipe's author (and revise) scripts."""
+    """12 hex chars over the recipe's libs + author (+ revise) scripts.
+
+    Line-ending independent: the live worker's checkout is CRLF (git autocrlf)
+    and the platform pinned the value computed there, so CRLF is the canonical
+    form and an LF worktree hashes the same."""
     h = hashlib.sha256()
     for fn in recipe_files(recipe):
         with open(os.path.join(RECIPES_DIR, fn), "rb") as f:
-            h.update(fn.encode() + b"\0" + f.read() + b"\0")
+            data = f.read()
+        data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        h.update(fn.encode() + b"\0" + data + b"\0")
     return h.hexdigest()[:12]
 
 
