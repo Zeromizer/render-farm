@@ -190,42 +190,6 @@ requirements bump (torch + easyocr) must be pre-built by hand:
 run `easyocr.Reader(['en'])` once to pre-download models — a cold build blows
 the 15-minute job timeout.
 
-## aftereffects engine (added 2026-09-11)
-
-`engine: "aftereffects"` authors a **trusted recipe** in a fresh, isolated
-After Effects instance on this Windows host (`AfterFX.exe -m -noui -r`, with a
-per-launch `AE_JOB_TOKEN` the recipe must see in its environment before it
-touches anything), renders it with `aerender`, and delivers a ProRes 4444
-RGB+A master (`outputs/<id>.mov`) plus sidecars: `-review.webm` (VP9 alpha),
-`-bundle.zip` (the .aep + assets + settings + recipe copy), `-contact.png`
-(sampled frames over light and dark) and `-manifest.json` (checks, timings,
-provenance). No repo (`repo_url` is `-`); the request is
-`params.aftereffects` (schema_version 1, see
-`docs/aftereffects-platform-contract.md`). Only recipes in
-`worker/aftereffects/recipes/` ever run; today that is `text_overlay_v1`
-(editable text layers, shapes, imported images, position/opacity/scale
-keyframes, built-in Drop Shadow). Missing fonts, assets, effects or output
-templates fail explicitly; frame count, dimensions, fps and real alpha
-content are verified before anything is uploaded; the saved project is
-reopened to confirm the editable layers.
-
-Gated engine: only a worker that advertises the `aftereffects` capability
-claims these rows (`claim_farm_job(p_capabilities)`, table
-`farm_engine_capabilities`; migration `docs/aftereffects-claiming.sql`). A
-worker without After Effects passes no capability and never sees them; the
-preview lane is untouched. AE work is serialized through one named-mutex
-slot; a retry kills only the stale attempt's AfterFX/aerender pids and works
-in a fresh `attempt-<n>` directory; the row is re-read before publishing so a
-reclaimed job never gets two publishers.
-
-Measured on AE 26.5 / this PC for a 5 s 1080x1920 30 fps overlay: author 5 s,
-aerender 9.5 s (incl. launch), ProRes 2.3 s, VP9 3.2 s, verify 2.5 s, reopen
-5 s; ~29 s end to end, revision the same. Local checks without Supabase:
-`..\.venv\Scripts\python.exe -m aftereffects.preflight` and
-`python -m aftereffects.smoke --workspace C:\Coding\ae-smoke --revise`
-(`--fake` exercises everything but AE). Tests: `python -m unittest
-tests.test_aftereffects`.
-
 ## Notes
 
 - Private repos work if the PC's Git Credential Manager has credentials

@@ -38,14 +38,13 @@ drop index if exists farm_render_jobs_status_idx;
 create index if not exists farm_render_jobs_status_idx on farm_render_jobs (status, priority, created_at);
 
 -- Engines a worker may only claim when it advertises the capability of the
--- same name (2026-09-11: aftereffects needs a native After Effects install).
+-- same name. Added 2026-09-11 for the aftereffects engine, which was retired
+-- on 2026-09-12; the table and the p_capabilities parameter stay (harmless,
+-- already applied on the shared project) but no engine is gated any more.
 create table if not exists farm_engine_capabilities (
   engine     text primary key,
   capability text not null
 );
-insert into farm_engine_capabilities (engine, capability)
-  values ('aftereffects', 'aftereffects')
-  on conflict (engine) do nothing;
 -- Service role only: the default grants would let anon/authenticated edit the gate.
 revoke all on table public.farm_engine_capabilities from public, anon, authenticated;
 grant select, insert, update, delete on table public.farm_engine_capabilities to service_role;
@@ -54,9 +53,7 @@ alter table public.farm_engine_capabilities enable row level security;
 -- Atomic claim: one worker owns the job; SKIP LOCKED makes concurrent workers safe.
 -- Priority before age so reference_extract jobs (200) never starve renders (100).
 -- p_capabilities: the worker's capability list; a worker that passes nothing
--- (every worker deployed before 2026-09-11) never claims a gated engine.
--- The signature changed, so the old zero-argument function is dropped first
--- (docs/aftereffects-claiming.sql is the standalone migration).
+-- never claims a gated engine (none are gated since 2026-09-12).
 drop function if exists claim_farm_job();
 create or replace function claim_farm_job(p_capabilities text[] default '{}')
 returns setof farm_render_jobs language sql as $$

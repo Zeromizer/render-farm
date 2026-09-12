@@ -12,28 +12,7 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-_caps_supported = True
-
-
-def claim_job(capabilities=None):
-    """Claim the next job. `capabilities` (e.g. ["aftereffects"]) is passed to
-    claim_farm_job(p_capabilities) so gated engines are only claimed by a worker
-    that can run them. Until docs/aftereffects-claiming.sql is applied the RPC
-    has no parameter: that case is detected once and the plain call is used,
-    which the gated engines' rows then never match either way."""
-    global _caps_supported
-    if capabilities and _caps_supported:
-        try:
-            rows = sb.rpc("claim_farm_job", {"p_capabilities": list(capabilities)}).execute().data or []
-            return rows[0] if rows else None
-        except Exception as e:  # noqa: BLE001
-            msg = str(e)
-            if "p_capabilities" in msg or "PGRST202" in msg:
-                _caps_supported = False
-                print(f"[{now_iso()}] claim_farm_job(p_capabilities) not deployed yet; claiming without "
-                      f"capabilities (gated engines stay unclaimed)", flush=True)
-            else:
-                raise
+def claim_job():
     rows = sb.rpc("claim_farm_job").execute().data or []
     return rows[0] if rows else None
 
