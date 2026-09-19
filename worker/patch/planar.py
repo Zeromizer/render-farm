@@ -12,7 +12,9 @@ spec.json
        "template": "gray" | "edges" | "none", "min_score": 0.35,
        "refine": true, "smooth": 2, "win": 1.0,
        "clear": 0.0, "clear_grow": 2.0, "clear_radius": 5, "clear_shape": "auto" | "alpha" | "rect",
-       "blur": 1.2, "feather": 2.0, "match": true,
+       "blur": 1.2, "feather": 2.0, "match": true | false | "black" (black-level only, keeps the
+       artwork's own contrast), "prescale": 1.0 (artwork is area-resampled to occupied size x this
+       before the warp), "sharpen": 0.0 (unsharp amount on the warped artwork, 0.3-0.8 for crisp text),
        "frames": null | [first, last] (inclusive; the element is only tracked and pasted inside this
        range, for a turntable where a face is toward the camera for part of the clip; list the same
        artwork twice with two ranges when it comes round twice), "fade": 0 (frames of linear blend
@@ -56,7 +58,7 @@ from common import find_ffmpeg_tool  # noqa: E402
 DEFAULTS = {"alpha": None, "key_frame": -1, "key_box": None, "template": "gray", "min_score": 0.35,
             "refine": True, "smooth": 2, "win": 1.0, "clear": 0.0, "clear_grow": 2.0, "clear_radius": 5,
             "clear_shape": "auto", "blur": 1.2, "feather": 2.0, "match": True,
-            "frames": None, "fade": 0}
+            "prescale": 1.0, "sharpen": 0.0, "frames": None, "fade": 0}
 
 
 def emit(kind, text):
@@ -250,25 +252,45 @@ def composite(frame, art, alpha, quad, p, has_alpha=False):
     """Paste `art` (with `alpha`) onto `quad` of `frame` in place; returns the new frame."""
     H, W = frame.shape[:2]
     ph_, pw_ = art.shape[:2]
+    # Resample the artwork to about the size it will occupy BEFORE warping: warpPerspective only
+    # interpolates, so a 566 px plate landing on 170 px aliases and reads soft. `prescale` > 1
+    # keeps that much extra detail (1.0 = exactly the occupied size); the warp itself is cubic.
+    tw, th = float(np.ptp(quad[:, 0])), float(np.ptp(quad[:, 1]))
+    s = min(1.0, max(tw / pw_, th / ph_) * float(p.get("prescale", 1.0)))
+    if s < 1.0:
+        sw, sh = max(8, int(round(pw_ * s))), max(4, int(round(ph_ * s)))
+        art = cv2.resize(art, (sw, sh), interpolation=cv2.INTER_AREA)
+        alpha = cv2.resize(alpha, (sw, sh), interpolation=cv2.INTER_AREA)
+        ph_, pw_ = sh, sw
     src = np.array([[0, 0], [pw_, 0], [pw_, ph_], [0, ph_]], np.float32)
     Hm = cv2.getPerspectiveTransform(src, quad.astype(np.float32))
     f = frame
     if p["clear"] > 0:
         cm = clear_mask(alpha, has_alpha, Hm, W, H, p)
         f = cv2.inpaint(f, cm, max(1, int(p.get("clear_radius", 5))), cv2.INPAINT_TELEA)
-    warped = cv2.warpPerspective(art, Hm, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    warped = cv2.warpPerspective(art, Hm, (W, H), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT)
     wa = cv2.warpPerspective(alpha, Hm, (W, H), flags=cv2.INTER_LINEAR)
     m = wa > 0.99
-    if p["match"] and m.sum() > 50:
+    match = p["match"]
+    if match and m.sum() > 50:
         fv = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)[m].astype(np.float32)
         av = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)[m].astype(np.float32)
         fb, ab = np.percentile(fv, 30), max(np.percentile(av, 30), 1.0)
-        fw, aw = np.percentile(fv, 97), max(np.percentile(av, 97), 1.0)
-        gain = float(np.clip((fw - fb) / max(aw - ab, 1.0), 0.5, 1.5))
-        off = fb - ab * gain
+        if match == "black":
+            # Sit the artwork's blacks on the footage's blacks and keep its own contrast: the
+            # footage's text is soft and grey, so a full levels match would dim the lettering.
+            gain, off = 1.0, fb - ab
+        else:
+            fw, aw = np.percentile(fv, 97), max(np.percentile(av, 97), 1.0)
+            gain = float(np.clip((fw - fb) / max(aw - ab, 1.0), 0.5, 1.5))
+            off = fb - ab * gain
         warped = np.clip(warped.astype(np.float32) * gain + off, 0, 255).astype(np.uint8)
     if p["blur"] > 0:
         warped = cv2.GaussianBlur(warped, (0, 0), p["blur"])
+    sharpen = float(p.get("sharpen", 0.0))
+    if sharpen > 0:
+        soft = cv2.GaussianBlur(warped, (0, 0), 1.0)
+        warped = cv2.addWeighted(warped, 1.0 + sharpen, soft, -sharpen, 0.0)
     if p["feather"] > 0:
         wa = cv2.GaussianBlur(wa, (0, 0), p["feather"])
     wa3 = wa[..., None]

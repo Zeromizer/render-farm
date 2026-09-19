@@ -13,12 +13,15 @@
     "template": "gray",
     "refine": true,
     "clear": 0.0,
-    "blur": 1.2,
+    "blur": 0.3,
     "feather": 2.0,
     "win": 1.0,
-    "notes": "Rear number plate 'BYD ATTO 3 / 2026', 566x168, cut from the press render. Template match finds it (score ~0.77 on H3 1080p rear renders).",
+    "notes": "Rear number plate 'BYD ATTO 3 / 2026', 566x168, cut from the press render. Template match finds it (score ~0.77 on H3 1080p rear renders). Sharp preset (area prescale 1.5, unsharp 0.8, black-level match, blur 0.3) chosen on the Atto 3 turntable 2026-09-19: levels match + blur 1.2 read grey and soft.",
     "view": "rear",
-    "element": "number plate"
+    "element": "number plate",
+    "match": "black",
+    "prescale": 1.5,
+    "sharpen": 0.8
   },
   "plate_front": {
     "artwork": "plate_front.png",
@@ -26,12 +29,15 @@
     "template": "gray",
     "refine": true,
     "clear": 0.0,
-    "blur": 1.2,
+    "blur": 0.3,
     "feather": 2.0,
     "win": 1.0,
     "view": "front",
     "element": "number plate",
-    "notes": "Front number plate 'BYD ATTO 3 / 2026', 662x185, cut from front_white_crop0. On turntables give key_box + frames per pass (template match at ~180 px plate width picks false positives)."
+    "notes": "Front number plate 'BYD ATTO 3 / 2026', 662x185, cut from front_white_crop0. On turntables give key_box + frames per pass (template match at ~180 px plate width picks false positives). Sharp preset (area prescale 1.5, unsharp 0.8, black-level match, blur 0.3) chosen on the Atto 3 turntable 2026-09-19: levels match + blur 1.2 read grey and soft.",
+    "match": "black",
+    "prescale": 1.5,
+    "sharpen": 0.8
   },
   "badge": {
     "artwork": "badge.png",
@@ -47,6 +53,8 @@
     "element": "tailgate model badge",
     "clear_grow": 2,
     "clear_radius": 3,
-    "clear_shape": "rect"
+    "clear_shape": "rect",
+    "prescale": 1.5,
+    "sharpen": 0.4
   }
 }

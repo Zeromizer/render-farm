@@ -25,7 +25,11 @@ params (jsonb):
                           forces one (lettering that swells vs the artwork needs rect, a round badge
                           against a body crease needs alpha). `clear_radius` = inpaint radius (5)
         blur / feather    artwork softness (1.2) and alpha edge feather (2.0), px
-        match             brightness-match the artwork to the footage inside the quad (true)
+        match             brightness-match the artwork to the footage inside the quad: true (levels),
+                          "black" (black level only, keeps the artwork's contrast: crisper text),
+                          false
+        prescale / sharpen  artwork is area-resampled to (occupied size x prescale) before the
+                          warp (1.0); unsharp amount after it (0; 0.3-0.8 for crisp lettering)
         frames / fade     [first, last] inclusive frame range to track and paste in (turntables:
                           a face is toward the camera for part of the clip; list the artwork twice
                           with two ranges when it comes round twice) and a linear blend of that many
@@ -69,7 +73,7 @@ LIBRARY_DIR = os.path.join(PATCH_DIR, "library")
 # Keys the platform may set per patch and forward verbatim to planar.py.
 TUNABLE = ("key_frame", "key_box", "template", "min_score", "refine", "smooth", "win",
            "clear", "clear_grow", "clear_radius", "clear_shape", "blur", "feather", "match",
-           "frames", "fade")
+           "prescale", "sharpen", "frames", "fade")
 
 
 def resolve_library(ref):
