@@ -267,3 +267,37 @@ Contract for the platform: `docs/video_gen-platform-brief.md`.
 PC-side checks without Supabase: `worker\videogen\smoke.py` (t2v/i2v/r2v
 flags, prints VRAM before/after and wall time). Queue path:
 `worker\insert_test_job.py --engine video_gen --params "{\"prompt\": \"...\"}"`.
+
+## planar_patch engine (added 2026-09-19)
+
+Tracked corner-pin of clean artwork onto a flat element of a finished clip:
+number plates, tailgate badges, labels. H3 renders of a specific car get
+that text wrong in some frames ("2026" drifts, "ATTO 3" becomes "ATTO 5")
+even with a subject LoRA, reference images and a RefMod, and regenerating
+rolls the dice again; a planar track plus corner pin (what Mocha / After
+Effects do by hand) fixes it deterministically in seconds, CPU only.
+`engine: "planar_patch"`, no repo (`repo_url` is `-`), everything in
+`params.planar_patch` (see `worker/runners/planar_patch.py` docstring):
+`org_id`, `job_id`, `source {bucket, path}` (the clip, typically an earlier
+`video_gen` output) and `patches[]`, applied in order. A patch is either a
+worker-side library entry `library: "<subject>/<element>"`
+(`worker/patch/library/<subject>/library.json`, artwork + optional
+letters-only alpha + tuned defaults; shipped: `atto3evo/plate`,
+`atto3evo/badge`) or storage objects `artwork {bucket, path}` with optional
+`alpha {bucket, path}` (grayscale, the artwork's own size). Per-patch knobs:
+`key_frame` (default middle), `key_box [x0, y0, x1, y1]` of the whole
+artwork rectangle on the key frame (skips template match; the only reliable
+way for small chrome lettering), `template` gray|edges|none, `min_score`,
+`refine` (re-detect the dark rectangle per frame: plates yes, lettering no),
+`smooth`, `win`, `clear` (inpaint the rectangle before pasting so generated
+letters do not ghost under a letters-only alpha), `blur`, `feather`, `match`.
+Output is `outputs/<job_id>.mp4` with the source audio copied, plus a
+sibling proof sheet `outputs/<job_id>-proof.png` (original over patched,
+zoomed on each element at five frames) for the caller to check before
+accepting. Tracking is optical flow + RANSAC homography from the key frame
+in both directions; the job fails if the track is lost on more than 10% of
+frames (element leaves frame). The compute is `worker/patch/planar.py` in
+its own cached venv (`opencv-python-headless`), the runner owns downloads,
+params and rows, same split as matte. Measured: 1080p 124-frame clip, plate
++ badge, ~20 s. Pure tests in `worker/tests/test_planar_patch.py`; the
+tracking tests run when cv2 is importable.

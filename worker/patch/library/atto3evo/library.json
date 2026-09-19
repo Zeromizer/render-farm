@@ -1,0 +1,24 @@
+{
+  "plate": {
+    "artwork": "plate.png",
+    "alpha": null,
+    "template": "gray",
+    "refine": true,
+    "clear": 0.0,
+    "blur": 1.2,
+    "feather": 2.0,
+    "win": 1.0,
+    "notes": "Rear number plate 'BYD ATTO 3 / 2026', 566x168, cut from the press render. Template match finds it (score ~0.77 on H3 1080p rear renders)."
+  },
+  "badge": {
+    "artwork": "badge.png",
+    "alpha": "badge_alpha.png",
+    "template": "edges",
+    "refine": false,
+    "clear": 0.03,
+    "blur": 0.8,
+    "feather": 1.0,
+    "win": 1.5,
+    "notes": "Chrome 'ATTO 3' tailgate lettering, 565x120 with letters-only alpha. Gray template match locks onto the wrong thing; edges mode or a key_box of the whole artwork rectangle."
+  }
+}

@@ -50,7 +50,7 @@ import proc
 import venvs
 from heartbeat import Heartbeat
 import queue_status
-from runners import (asset_check, blender, frame_extract, hyperframes, matte,
+from runners import (asset_check, blender, frame_extract, hyperframes, matte, planar_patch,
                      python_script, reference_extract, remotion, video_gen,
                      video_split)
 
@@ -72,12 +72,15 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # MiniMax H3 text/image/reference-to-video with native audio, via
            # the headless ComfyUI at C:\ComfyUI. Replaces the remote Seedance
            # credits for b-roll. Minutes per clip on a 16 GB card.
-           "video_gen": video_gen.run}
+           "video_gen": video_gen.run,
+           # Tracked corner-pin of clean artwork (plate, badge) onto a finished
+           # clip: fixes the text H3 gets wrong without regenerating. CPU only.
+           "planar_patch": planar_patch.run}
 
 # Engines that work on a storage object, not a repo — the clone is skipped and
 # repo_url is a "-" placeholder (the column is NOT NULL).
 NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split",
-            "matte", "video_gen"}
+            "matte", "video_gen", "planar_patch"}
 
 
 def log(msg):

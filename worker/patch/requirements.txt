@@ -1,0 +1,4 @@
+# Planar patch engine: OpenCV tracking + corner pin, CPU only, no GPU needed.
+# Headless build: the worker has no display and the full opencv-python drags Qt.
+opencv-python-headless>=4.10,<5
+numpy>=1.26,<3

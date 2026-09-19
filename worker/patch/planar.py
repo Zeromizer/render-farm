@@ -1,0 +1,381 @@
+"""Planar patch: tracked replacement of flat elements (number plates, badges, labels) in a clip.
+
+    python planar.py spec.json
+
+spec.json
+  {
+    "clip": "in.mp4", "out": "out.mp4", "proof": "out-proof.png" (optional), "debug_dir": null,
+    "patches": [
+      {"name": "plate", "artwork": "plate.png", "alpha": null,
+       "key_frame": -1 (middle), "key_box": null | [x0, y0, x1, y1],
+       "template": "gray" | "edges" | "none", "min_score": 0.35,
+       "refine": true, "smooth": 2, "win": 1.0,
+       "clear": 0.0, "blur": 1.2, "feather": 2.0, "match": true}
+    ]
+  }
+
+Every patch is a corner pin driven by a planar track:
+  1. key frame: the element is located either from `key_box` or by multi-scale template match of
+     the artwork (`gray` for high-contrast artwork such as a plate, `edges` = Canny maps for chrome
+     lettering whose brightness depends on the lighting). Optionally refined to the dark rounded
+     rectangle found inside that window (`refine`, plates only).
+  2. track: both directions from the key frame. Per frame the dark quad is re-detected inside a
+     window around the previous corners; when that fails (always, for letters-only elements), LK
+     optical flow on features in the window gives a RANSAC homography that carries the corners.
+     Corner tracks are smoothed with a short moving average.
+  3. composite: `clear` > 0 first inpaints the artwork rectangle (shrunk by that fraction) with the
+     surrounding footage, so generated lettering does not ghost under a letters-only alpha. The
+     artwork is warped onto the quad, alpha = supplied mask or a rounded rectangle, feathered,
+     brightness-matched to the footage inside the quad (`match`), and blurred slightly so it takes
+     the footage's softness. Audio is copied from the source.
+Deterministic: the text is never generated, so it reads correctly in every frame.
+
+Prints PHASE <text>, PROGRESS <0-100> and MEASURED ... lines for runners/planar_patch.py.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+import cv2
+import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "extract"))
+from common import find_ffmpeg_tool  # noqa: E402
+
+DEFAULTS = {"alpha": None, "key_frame": -1, "key_box": None, "template": "gray", "min_score": 0.35,
+            "refine": True, "smooth": 2, "win": 1.0, "clear": 0.0, "blur": 1.2, "feather": 2.0, "match": True}
+
+
+def emit(kind, text):
+    print(f"{kind} {text}", flush=True)
+
+
+def order_quad(pts):
+    pts = np.asarray(pts, dtype=np.float32).reshape(4, 2)
+    s = pts.sum(1)
+    d = np.diff(pts, axis=1).ravel()
+    return np.array([pts[np.argmin(s)], pts[np.argmin(d)], pts[np.argmax(s)], pts[np.argmax(d)]], np.float32)
+
+
+def dark_quad(gray, x0, y0, x1, y1, min_area, aspect=None, area_ref=None):
+    """Dark quadrilateral inside the window that looks like the element (aspect within 25% of
+    `aspect`, area 0.5-2x `area_ref`), in full-frame coords, or None. A plate's black is no darker
+    than the bumper recess around it, so several thresholds are tried and the best-fitting
+    rectangle wins rather than the largest."""
+    win = gray[y0:y1, x0:x1]
+    if win.size == 0:
+        return None
+    best = None
+    blur = cv2.GaussianBlur(win, (3, 3), 0)
+    for t in (28, 40, 55, 70):
+        thr = cv2.threshold(blur, t, 255, cv2.THRESH_BINARY_INV)[1]
+        thr = cv2.morphologyEx(thr, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        cnts, _ = cv2.findContours(thr, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in cnts:
+            a = cv2.contourArea(c)
+            if a < min_area:
+                continue
+            rect = cv2.minAreaRect(c)
+            (w, h) = rect[1]
+            if min(w, h) < 4 or a / max(w * h, 1) < 0.8:
+                continue
+            asp = max(w, h) / max(min(w, h), 1)
+            score = 0.0
+            if aspect:
+                if abs(asp - aspect) / aspect > 0.25:
+                    continue
+                score += abs(asp - aspect) / aspect
+            if area_ref:
+                if not (0.5 * area_ref <= w * h <= 2.0 * area_ref):
+                    continue
+                score += abs(w * h - area_ref) / area_ref
+            if best is None or score < best[0]:
+                best = (score, cv2.boxPoints(rect))
+    if best is None:
+        return None
+    q = order_quad(best[1])
+    q[:, 0] += x0
+    q[:, 1] += y0
+    return q
+
+
+def _edges(gray):
+    return cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 60, 160).astype(np.float32) / 255.0
+
+
+def find_element(gray, tmpl_gray, mode):
+    """Multi-scale template match; returns ((x0, y0, x1, y1), score). `edges` matches Canny maps,
+    which is what works for chrome lettering: the artwork's brightness never matches the footage,
+    its outlines do."""
+    scene_edges = cv2.GaussianBlur(_edges(gray), (0, 0), 1.0) if mode == "edges" else None
+    best = (None, -1.0)
+    th, tw = tmpl_gray.shape
+    # Edge maps of a tiny template are almost empty and correlate "perfectly" with any empty patch
+    # of sky, so edges mode needs a real minimum size and a density check: the matched window must
+    # carry a comparable amount of edge to the template, or the score is discounted.
+    min_w = 48 if mode == "edges" else 12
+    for s in np.linspace(0.06, 0.6, 40):
+        w, h = int(tw * s), int(th * s)
+        if w < min_w or h < 6 or w >= gray.shape[1] or h >= gray.shape[0]:
+            continue
+        t = cv2.resize(tmpl_gray, (w, h), interpolation=cv2.INTER_AREA)
+        if mode == "edges":
+            t = cv2.GaussianBlur(_edges(t), (0, 0), 1.0)
+            sc = scene_edges
+            if t.mean() < 0.02:
+                continue
+        else:
+            sc = gray
+        r = cv2.matchTemplate(sc, t, cv2.TM_CCOEFF_NORMED)
+        if mode == "edges":
+            # A near-constant window makes the normalised correlation degenerate (it reports 1.0
+            # on empty sky), so windows carrying under 30% of the template's edge density are out.
+            dens = cv2.boxFilter(sc, -1, (w, h), anchor=(0, 0), normalize=True, borderType=cv2.BORDER_CONSTANT)
+            r[dens[:r.shape[0], :r.shape[1]] < 0.3 * t.mean()] = -1.0
+        _, mx, _, loc = cv2.minMaxLoc(r)
+        score = float(mx)
+        if score > best[1]:
+            best = ((loc[0], loc[1], loc[0] + w, loc[1] + h), score)
+    return best
+
+
+def track(grays, key, q, aspect, refine, win_scale):
+    """Corner quads for every frame, tracked both ways from the key frame."""
+    n = len(grays)
+    H, W = grays[0].shape
+    quads = [None] * n
+    quads[key] = q
+    lk = dict(winSize=(21, 21), maxLevel=3, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
+    misses = 0
+    lost = 0
+    for direction in (1, -1):
+        i = key
+        while 0 <= i + direction < n:
+            j = i + direction
+            prev = quads[i]
+            cx, cy = prev.mean(0)
+            pw = float(np.ptp(prev[:, 0]))
+            ph = float(np.ptp(prev[:, 1]))
+            half_h = max(ph * 1.2, pw * 0.5 * win_scale)
+            win = (int(max(0, cx - pw * win_scale)), int(max(0, cy - half_h)),
+                   int(min(W, cx + pw * win_scale)), int(min(H, cy + half_h)))
+            q2 = dark_quad(grays[j], *win, 0.4 * pw * ph, aspect=aspect, area_ref=pw * ph) if refine else None
+            if q2 is not None and np.abs(q2 - prev).max() < 0.35 * pw:
+                quads[j] = q2
+            else:
+                mask = np.zeros_like(grays[i])
+                cv2.rectangle(mask, (win[0], win[1]), (win[2], win[3]), 255, -1)
+                p0 = cv2.goodFeaturesToTrack(grays[i], 200, 0.01, 4, mask=mask)
+                quads[j] = prev.copy()
+                misses += 1
+                moved = False
+                if p0 is not None and len(p0) >= 8:
+                    p1, st, _ = cv2.calcOpticalFlowPyrLK(grays[i], grays[j], p0, None, **lk)
+                    good = st.ravel() == 1
+                    if good.sum() >= 8:
+                        Hm, _ = cv2.findHomography(p0[good], p1[good], cv2.RANSAC, 3.0)
+                        if Hm is not None:
+                            quads[j] = cv2.perspectiveTransform(prev.reshape(1, 4, 2), Hm).reshape(4, 2).astype(np.float32)
+                            moved = True
+                if not moved:
+                    lost += 1
+            i = j
+    return quads, misses, lost
+
+
+def smooth_quads(quads, k):
+    arr = np.stack(quads)
+    return np.stack([arr[max(0, i - k):i + k + 1].mean(0) for i in range(len(quads))])
+
+
+def rounded_alpha(h, w):
+    alpha = np.zeros((h, w), np.float32)
+    r = int(0.06 * h)
+    cv2.rectangle(alpha, (r, 0), (w - r, h), 1.0, -1)
+    cv2.rectangle(alpha, (0, r), (w, h - r), 1.0, -1)
+    for c in ((r, r), (w - r, r), (r, h - r), (w - r, h - r)):
+        cv2.circle(alpha, c, r, 1.0, -1)
+    return alpha
+
+
+def composite(frame, art, alpha, quad, p):
+    """Paste `art` (with `alpha`) onto `quad` of `frame` in place; returns the new frame."""
+    H, W = frame.shape[:2]
+    ph_, pw_ = art.shape[:2]
+    src = np.array([[0, 0], [pw_, 0], [pw_, ph_], [0, ph_]], np.float32)
+    Hm = cv2.getPerspectiveTransform(src, quad.astype(np.float32))
+    f = frame
+    if p["clear"] > 0:
+        cr = np.zeros((ph_, pw_), np.uint8)
+        mx, my = int(pw_ * p["clear"]), int(ph_ * p["clear"])
+        cv2.rectangle(cr, (mx, my), (pw_ - mx, ph_ - my), 255, -1)
+        cm = cv2.dilate(cv2.warpPerspective(cr, Hm, (W, H), flags=cv2.INTER_NEAREST), np.ones((3, 3), np.uint8))
+        f = cv2.inpaint(f, cm, 5, cv2.INPAINT_TELEA)
+    warped = cv2.warpPerspective(art, Hm, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    wa = cv2.warpPerspective(alpha, Hm, (W, H), flags=cv2.INTER_LINEAR)
+    m = wa > 0.99
+    if p["match"] and m.sum() > 50:
+        fv = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)[m].astype(np.float32)
+        av = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)[m].astype(np.float32)
+        fb, ab = np.percentile(fv, 30), max(np.percentile(av, 30), 1.0)
+        fw, aw = np.percentile(fv, 97), max(np.percentile(av, 97), 1.0)
+        gain = float(np.clip((fw - fb) / max(aw - ab, 1.0), 0.5, 1.5))
+        off = fb - ab * gain
+        warped = np.clip(warped.astype(np.float32) * gain + off, 0, 255).astype(np.uint8)
+    if p["blur"] > 0:
+        warped = cv2.GaussianBlur(warped, (0, 0), p["blur"])
+    if p["feather"] > 0:
+        wa = cv2.GaussianBlur(wa, (0, 0), p["feather"])
+    wa3 = wa[..., None]
+    return (f.astype(np.float32) * (1 - wa3) + warped.astype(np.float32) * wa3).astype(np.uint8)
+
+
+def read_clip(path):
+    cap = cv2.VideoCapture(path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
+    frames = []
+    while True:
+        ok, f = cap.read()
+        if not ok:
+            break
+        frames.append(f)
+    cap.release()
+    if not frames:
+        raise RuntimeError(f"no frames decoded from {path}")
+    return frames, fps
+
+
+def proof_sheet(before, after, quads_by_patch, path, samples=5):
+    """Zoom strip per patch: original row over patched row at evenly spaced frames."""
+    n = len(before)
+    idx = [int(round(i * (n - 1) / (samples - 1))) for i in range(samples)] if n > 1 else [0]
+    blocks = []
+    for name, sm in quads_by_patch:
+        rows = []
+        for src in (before, after):
+            tiles = []
+            for i in idx:
+                q = sm[i]
+                cx, cy = q.mean(0)
+                w = max(float(np.ptp(q[:, 0])) * 1.6, 64)
+                h = max(w * 0.4, float(np.ptp(q[:, 1])) * 2.5)
+                H, W = src[i].shape[:2]
+                x0, x1 = int(max(0, cx - w / 2)), int(min(W, cx + w / 2))
+                y0, y1 = int(max(0, cy - h / 2)), int(min(H, cy + h / 2))
+                c = cv2.resize(src[i][y0:y1, x0:x1], (300, int(300 * (y1 - y0) / max(x1 - x0, 1))),
+                               interpolation=cv2.INTER_CUBIC)
+                cv2.putText(c, f"{name} f{i}", (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                tiles.append(c)
+            hh = min(t.shape[0] for t in tiles)
+            rows.append(np.hstack([t[:hh] for t in tiles]))
+        blocks.append(np.vstack(rows))
+    ww = max(b.shape[1] for b in blocks)
+    blocks = [np.pad(b, ((0, 4), (0, ww - b.shape[1]), (0, 0))) for b in blocks]
+    cv2.imwrite(path, np.vstack(blocks))
+
+
+def main(spec_path):
+    with open(spec_path, encoding="utf-8") as f:
+        spec = json.load(f)
+    emit("PHASE", "decoding")
+    frames, fps = read_clip(spec["clip"])
+    n = len(frames)
+    H, W = frames[0].shape[:2]
+    print(f"{n} frames {W}x{H} @ {fps:.3f}", flush=True)
+    grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
+    before = [f.copy() for f in frames] if spec.get("proof") else None
+    debug = spec.get("debug_dir")
+    if debug:
+        os.makedirs(debug, exist_ok=True)
+
+    tracks = []
+    patches = spec["patches"]
+    for pi, raw in enumerate(patches):
+        p = dict(DEFAULTS, **raw)
+        name = p.get("name") or f"patch{pi}"
+        emit("PHASE", f"locating {name}")
+        art = cv2.imread(p["artwork"], cv2.IMREAD_COLOR)
+        if art is None:
+            raise RuntimeError(f"{name}: cannot read artwork {p['artwork']}")
+        tmpl_gray = cv2.cvtColor(art, cv2.COLOR_BGR2GRAY)
+        ah, aw = art.shape[:2]
+        if p["alpha"]:
+            alpha = cv2.imread(p["alpha"], cv2.IMREAD_GRAYSCALE)
+            if alpha is None or alpha.shape != (ah, aw):
+                raise RuntimeError(f"{name}: alpha must be a grayscale image of the artwork's size")
+            alpha = alpha.astype(np.float32) / 255.0
+        else:
+            alpha = rounded_alpha(ah, aw)
+        key = int(p["key_frame"]) if int(p["key_frame"]) >= 0 else n // 2
+        key = min(max(key, 0), n - 1)
+        if p["key_box"]:
+            box, score = tuple(int(v) for v in p["key_box"]), 1.0
+        elif p["template"] in ("gray", "edges"):
+            box, score = find_element(grays[key], tmpl_gray, p["template"])
+            if box is None or score < float(p["min_score"]):
+                raise RuntimeError(f"{name}: template match too weak ({score:.2f} < {p['min_score']}); "
+                                   f"pass key_box for this clip")
+        else:
+            raise RuntimeError(f"{name}: needs key_box when template is 'none'")
+        x0, y0, x1, y1 = box
+        pad = int(0.35 * (x1 - x0))
+        aspect = aw / ah
+        box_area = (x1 - x0) * (y1 - y0)
+        q = None
+        if p["refine"]:
+            q = dark_quad(grays[key], max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad),
+                          0.3 * box_area, aspect=aspect, area_ref=box_area)
+        refined = q is not None
+        if q is None:
+            q = order_quad([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+        emit("MEASURED", f"{name} key_frame={key} score={score:.2f} box={list(box)} refined={refined}")
+
+        emit("PHASE", f"tracking {name}")
+        quads, misses, lost = track(grays, key, q, aspect, bool(p["refine"]), float(p["win"]))
+        sm = smooth_quads(quads, int(p["smooth"]))
+        emit("MEASURED", f"{name} detections={n - misses} flow={misses - lost} held={lost}")
+        if lost > 0.1 * n:
+            raise RuntimeError(f"{name}: track lost on {lost} of {n} frames (element leaves frame or too few "
+                               f"features); crop the clip or give a larger win")
+        tracks.append((name, p, art, alpha, sm))
+
+    emit("PHASE", "compositing")
+    for i in range(n):
+        f = frames[i]
+        for name, p, art, alpha, sm in tracks:
+            f = composite(f, art, alpha, sm[i], p)
+        frames[i] = f
+        if debug and i % 12 == 0:
+            dbg = frames[i].copy()
+            for name, p, art, alpha, sm in tracks:
+                cv2.polylines(dbg, [sm[i].astype(np.int32)], True, (0, 255, 0), 1)
+            cv2.imwrite(os.path.join(debug, f"track_{i:06d}.png"), dbg)
+        if i % 10 == 0:
+            emit("PROGRESS", str(int(100 * (i + 1) / n)))
+
+    emit("PHASE", "encoding")
+    ffmpeg = find_ffmpeg_tool("ffmpeg")
+    out = spec["out"]
+    tmp = tempfile.mkdtemp(prefix="planar_", dir=os.path.dirname(os.path.abspath(out)) or None)
+    try:
+        for i, f in enumerate(frames):
+            cv2.imwrite(os.path.join(tmp, f"{i:06d}.png"), f)
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-framerate", f"{fps:.3f}",
+               "-i", os.path.join(tmp, "%06d.png"), "-i", spec["clip"], "-map", "0:v:0", "-map", "1:a?",
+               "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy", "-shortest", out]
+        subprocess.run(cmd, check=True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if spec.get("proof"):
+        proof_sheet(before, frames, [(t[0], t[4]) for t in tracks], spec["proof"])
+    emit("PROGRESS", "100")
+    print(f"wrote {out}", flush=True)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit(__doc__)
+    main(sys.argv[1])
