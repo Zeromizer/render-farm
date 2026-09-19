@@ -26,6 +26,10 @@ params (jsonb):
                           against a body crease needs alpha). `clear_radius` = inpaint radius (5)
         blur / feather    artwork softness (1.2) and alpha edge feather (2.0), px
         match             brightness-match the artwork to the footage inside the quad (true)
+        frames / fade     [first, last] inclusive frame range to track and paste in (turntables:
+                          a face is toward the camera for part of the clip; list the artwork twice
+                          with two ranges when it comes round twice) and a linear blend of that many
+                          frames at each end of the range (0)
       }
     ]
     debug                 true keeps per-12th-frame overlay PNGs in the work dir (worker-side only)
@@ -64,7 +68,8 @@ LIBRARY_DIR = os.path.join(PATCH_DIR, "library")
 
 # Keys the platform may set per patch and forward verbatim to planar.py.
 TUNABLE = ("key_frame", "key_box", "template", "min_score", "refine", "smooth", "win",
-           "clear", "clear_grow", "clear_radius", "clear_shape", "blur", "feather", "match")
+           "clear", "clear_grow", "clear_radius", "clear_shape", "blur", "feather", "match",
+           "frames", "fade")
 
 
 def resolve_library(ref):

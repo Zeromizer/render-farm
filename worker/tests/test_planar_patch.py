@@ -37,7 +37,7 @@ def fetch_stub(obj, name):
 @needs_runner
 class Library(unittest.TestCase):
     def test_atto3evo_entries_resolve_to_files(self):
-        for element in ("plate", "badge"):
+        for element in ("plate", "badge", "plate_front"):
             e = pp.resolve_library(f"atto3evo/{element}")
             self.assertTrue(os.path.exists(e["artwork"]), e["artwork"])
             if e.get("alpha"):
@@ -59,8 +59,9 @@ class Library(unittest.TestCase):
         self.assertIn("atto3evo", idx)
         s = idx["atto3evo"]
         self.assertEqual(s["label"], "BYD Atto 3 EVO")
-        self.assertEqual(s["views"], ["rear"])
-        self.assertEqual(sorted(s["elements"]), ["badge", "plate"])
+        self.assertEqual(s["views"], ["rear", "front"])
+        self.assertEqual(sorted(s["elements"]), ["badge", "plate", "plate_front"])
+        self.assertEqual(s["elements"]["plate_front"]["view"], "front")
         self.assertEqual(s["elements"]["plate"]["artwork_size"], [566, 168])
         self.assertTrue(s["elements"]["badge"]["letters_only"])
         self.assertFalse(s["elements"]["plate"]["letters_only"])
@@ -184,6 +185,22 @@ class Tracking(unittest.TestCase):
         self.assertEqual(none[20, 33], 0)          # no growth
         forced = planar.clear_mask(alpha, True, Hm, 80, 80, {"clear": 0.03, "clear_shape": "rect"})
         self.assertEqual(forced[2, 2], 255)        # lettering: rectangle even with an alpha
+
+    def test_range_weights(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "patch"))
+        import planar
+        w = planar.range_weights(100, 20, 60, 4)
+        self.assertEqual(w[19], 0.0)
+        self.assertAlmostEqual(w[20], 0.2, places=5)      # ramp in
+        self.assertEqual(w[40], 1.0)
+        self.assertAlmostEqual(w[60], 0.2, places=5)      # ramp out
+        self.assertEqual(w[61], 0.0)
+        w = planar.range_weights(100, 0, 99, 4)
+        self.assertEqual(w[0], 1.0)                        # no ramp at the clip's own ends
+        self.assertEqual(w[99], 1.0)
+        w = planar.range_weights(100, 0, 30, 0)
+        self.assertEqual(w[30], 1.0)
+        self.assertEqual(w[31], 0.0)
 
     def test_end_to_end_repaints(self):
         import cv2

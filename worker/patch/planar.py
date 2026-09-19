@@ -12,7 +12,11 @@ spec.json
        "template": "gray" | "edges" | "none", "min_score": 0.35,
        "refine": true, "smooth": 2, "win": 1.0,
        "clear": 0.0, "clear_grow": 2.0, "clear_radius": 5, "clear_shape": "auto" | "alpha" | "rect",
-       "blur": 1.2, "feather": 2.0, "match": true}
+       "blur": 1.2, "feather": 2.0, "match": true,
+       "frames": null | [first, last] (inclusive; the element is only tracked and pasted inside this
+       range, for a turntable where a face is toward the camera for part of the clip; list the same
+       artwork twice with two ranges when it comes round twice), "fade": 0 (frames of linear blend
+       from the generated element at each end of the range)}
     ]
   }
 
@@ -51,7 +55,8 @@ from common import find_ffmpeg_tool  # noqa: E402
 
 DEFAULTS = {"alpha": None, "key_frame": -1, "key_box": None, "template": "gray", "min_score": 0.35,
             "refine": True, "smooth": 2, "win": 1.0, "clear": 0.0, "clear_grow": 2.0, "clear_radius": 5,
-            "clear_shape": "auto", "blur": 1.2, "feather": 2.0, "match": True}
+            "clear_shape": "auto", "blur": 1.2, "feather": 2.0, "match": True,
+            "frames": None, "fade": 0}
 
 
 def emit(kind, text):
@@ -196,6 +201,19 @@ def smooth_quads(quads, k):
     return np.stack([arr[max(0, i - k):i + k + 1].mean(0) for i in range(len(quads))])
 
 
+def range_weights(n, lo, hi, fade):
+    """Per-frame blend weight of a patch: 0 outside [lo, hi], a linear ramp of `fade` frames inside
+    each end, 1 elsewhere. No ramp at the clip's own ends: a loop that opens and closes on the
+    element wants it fully patched on frame 0 and on the last frame."""
+    fade = max(0, int(fade))
+    weight = np.zeros(n, np.float32)
+    for i in range(lo, hi + 1):
+        w_in = (i - lo + 1) / (fade + 1) if (fade > 0 and lo > 0) else 1.0
+        w_out = (hi - i + 1) / (fade + 1) if (fade > 0 and hi < n - 1) else 1.0
+        weight[i] = min(1.0, w_in, w_out)
+    return weight
+
+
 def rounded_alpha(h, w):
     alpha = np.zeros((h, w), np.float32)
     r = int(0.06 * h)
@@ -283,9 +301,8 @@ def proof_sheet(before, after, quads_by_patch, path):
     """Zoom strip per patch: original row over patched row at the sampled frames, with the patch's
     MEASURED lines burned in so track quality can be judged without the log. `before` and `after`
     are dicts frame index -> image (only the sampled frames are kept, not the whole clip)."""
-    idx = sorted(before)
     blocks = []
-    for name, sm, stats in quads_by_patch:
+    for name, sm, stats, idx in quads_by_patch:
         rows = []
         banner = np.full((22, 1500, 3), 32, np.uint8)
         cv2.putText(banner, " | ".join(stats), (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
@@ -325,7 +342,7 @@ def main(spec_path):
         raise RuntimeError(f"clip has {n} frames, over the {max_frames}-frame cap (whole clip is held in RAM); "
                            f"split it or raise max_frames")
     grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
-    before = {i: frames[i].copy() for i in proof_indices(n)} if spec.get("proof") else None
+    before = {} if spec.get("proof") else None   # sampled originals, filled per patch range
     debug = spec.get("debug_dir")
     if debug:
         os.makedirs(debug, exist_ok=True)
@@ -348,8 +365,12 @@ def main(spec_path):
             alpha = alpha.astype(np.float32) / 255.0
         else:
             alpha = rounded_alpha(ah, aw)
-        key = int(p["key_frame"]) if int(p["key_frame"]) >= 0 else n // 2
-        key = min(max(key, 0), n - 1)
+        lo, hi = (0, n - 1) if not p["frames"] else (int(p["frames"][0]), int(p["frames"][1]))
+        lo, hi = max(0, lo), min(n - 1, hi)
+        if hi < lo:
+            raise RuntimeError(f"{name}: frames {p['frames']} is outside the clip ({n} frames)")
+        key = int(p["key_frame"]) if int(p["key_frame"]) >= 0 else (lo + hi) // 2
+        key = min(max(key, lo), hi)
         if p["key_box"]:
             box, score = tuple(int(v) for v in p["key_box"]), 1.0
         elif p["template"] in ("gray", "edges"):
@@ -374,25 +395,40 @@ def main(spec_path):
         emit("MEASURED", stats[0])
 
         emit("PHASE", f"tracking {name}")
-        quads, misses, lost = track(grays, key, q, aspect, bool(p["refine"]), float(p["win"]))
-        sm = smooth_quads(quads, int(p["smooth"]))
-        stats.append(f"detections={n - misses} flow={misses - lost} held={lost}")
+        span = hi - lo + 1
+        quads, misses, lost = track(grays[lo:hi + 1], key - lo, q, aspect, bool(p["refine"]), float(p["win"]))
+        sm_span = smooth_quads(quads, int(p["smooth"]))
+        sm = [None] * n
+        for k in range(span):
+            sm[lo + k] = sm_span[k]
+        rng = f" frames={lo}-{hi}" if p["frames"] else ""
+        stats.append(f"detections={span - misses} flow={misses - lost} held={lost}{rng}")
         emit("MEASURED", f"{name} {stats[1]}")
-        if lost > 0.1 * n:
-            raise RuntimeError(f"{name}: track lost on {lost} of {n} frames (element leaves frame or too few "
-                               f"features); crop the clip or give a larger win")
-        tracks.append((name, p, art, alpha, sm, bool(p["alpha"]), stats))
+        if lost > 0.1 * span:
+            raise RuntimeError(f"{name}: track lost on {lost} of {span} frames (element leaves frame or too few "
+                               f"features); crop the clip, narrow frames, or give a larger win")
+        weight = range_weights(n, lo, hi, int(p["fade"]))
+        idx = [lo + k for k in proof_indices(span)]
+        if before is not None:
+            for i in idx:
+                before.setdefault(i, frames[i].copy())
+        tracks.append((name, p, art, alpha, sm, bool(p["alpha"]), stats, weight, idx))
 
     emit("PHASE", "compositing")
     for i in range(n):
         f = frames[i]
-        for name, p, art, alpha, sm, has_alpha, _ in tracks:
-            f = composite(f, art, alpha, sm[i], p, has_alpha)
+        for name, p, art, alpha, sm, has_alpha, _, weight, _ in tracks:
+            w = float(weight[i])
+            if w <= 0.0:
+                continue
+            g = composite(f, art, alpha, sm[i], p, has_alpha)
+            f = g if w >= 1.0 else cv2.addWeighted(g, w, f, 1.0 - w, 0.0)
         frames[i] = f
         if debug and i % 12 == 0:
             dbg = frames[i].copy()
-            for name, p, art, alpha, sm, _, _ in tracks:
-                cv2.polylines(dbg, [sm[i].astype(np.int32)], True, (0, 255, 0), 1)
+            for name, p, art, alpha, sm, _, _, weight, _ in tracks:
+                if weight[i] > 0:
+                    cv2.polylines(dbg, [sm[i].astype(np.int32)], True, (0, 255, 0), 1)
             cv2.imwrite(os.path.join(debug, f"track_{i:06d}.png"), dbg)
         if i % 10 == 0:
             emit("PROGRESS", str(int(100 * (i + 1) / n)))
@@ -412,7 +448,7 @@ def main(spec_path):
         shutil.rmtree(tmp, ignore_errors=True)
     if spec.get("proof"):
         after = {i: frames[i] for i in before}
-        proof_sheet(before, after, [(t[0], t[4], t[6]) for t in tracks], spec["proof"])
+        proof_sheet(before, after, [(t[0], t[4], t[6], t[8]) for t in tracks], spec["proof"])
     emit("PROGRESS", "100")
     print(f"wrote {out}", flush=True)
 
