@@ -12,9 +12,9 @@ spec.json
        "template": "gray" | "edges" | "none", "min_score": 0.35,
        "refine": true, "smooth": 2, "win": 1.0,
        "clear": 0.0, "clear_grow": 2.0, "clear_radius": 5, "clear_shape": "auto" | "alpha" | "rect",
-       "blur": 1.2, "feather": 2.0, "match": true | false | "black" (black-level only, keeps the
-       artwork's own contrast), "prescale": 1.0 (artwork is area-resampled to occupied size x this
-       before the warp), "sharpen": 0.0 (unsharp amount on the warped artwork, 0.3-0.8 for crisp text),
+       "blur": 0.5, "feather": 2.0, "match": "black" (black-level only, keeps the artwork's own
+       contrast) | true (full levels) | false, "prescale": 1.2 (artwork is area-resampled to occupied
+       size x this before the warp), "sharpen": 0.35 (unsharp amount on the warped artwork),
        "frames": null | [first, last] (inclusive; the element is only tracked and pasted inside this
        range, for a turntable where a face is toward the camera for part of the clip; list the same
        artwork twice with two ranges when it comes round twice), "fade": 0 (frames of linear blend
@@ -57,8 +57,10 @@ from common import find_ffmpeg_tool  # noqa: E402
 
 DEFAULTS = {"alpha": None, "key_frame": -1, "key_box": None, "template": "gray", "min_score": 0.35,
             "refine": True, "smooth": 2, "win": 1.0, "clear": 0.0, "clear_grow": 2.0, "clear_radius": 5,
-            "clear_shape": "auto", "blur": 1.2, "feather": 2.0, "match": True,
-            "prescale": 1.0, "sharpen": 0.0, "frames": None, "fade": 0}
+            # Look defaults settled on the Atto 3 EVO 360 master (2026-09-19): levels match + blur 1.2
+            # read grey and soft, prescale 1.5 / sharpen 0.8 too crisp against H3 footage.
+            "clear_shape": "auto", "blur": 0.5, "feather": 2.0, "match": "black",
+            "prescale": 1.2, "sharpen": 0.35, "frames": None, "fade": 0}
 
 
 def emit(kind, text):

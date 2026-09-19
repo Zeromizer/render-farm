@@ -290,7 +290,13 @@ artwork rectangle on the key frame (skips template match; the only reliable
 way for small chrome lettering), `template` gray|edges|none, `min_score`,
 `refine` (re-detect the dark rectangle per frame: plates yes, lettering no),
 `smooth`, `win`, `clear` (inpaint the rectangle before pasting so generated
-letters do not ghost under a letters-only alpha), `blur`, `feather`, `match`.
+letters do not ghost under a letters-only alpha), `blur`, `feather`, `match`,
+`prescale`, `sharpen`, and `frames` / `fade` (per-pass frame range with a
+blend at each end, for turntables where a face comes round more than
+once). Look defaults, settled on the Atto 3 EVO 360 master: artwork
+area-resampled at 1.2x its on-screen size before a cubic warp, unsharp
+0.35, blur 0.5, black-level match (full levels match dims white lettering
+to the footage's grey; 1.5 / 0.8 / 0.3 read too crisp).
 Output is `outputs/<job_id>.mp4` with the source audio copied, plus a
 sibling proof sheet `outputs/<job_id>-proof.png` (original over patched,
 zoomed on each element at five frames) for the caller to check before

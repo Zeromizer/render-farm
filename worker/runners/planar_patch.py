@@ -24,12 +24,13 @@ params (jsonb):
                           the artwork rect shrunk by `clear` per side; `clear_shape` auto|alpha|rect
                           forces one (lettering that swells vs the artwork needs rect, a round badge
                           against a body crease needs alpha). `clear_radius` = inpaint radius (5)
-        blur / feather    artwork softness (1.2) and alpha edge feather (2.0), px
-        match             brightness-match the artwork to the footage inside the quad: true (levels),
-                          "black" (black level only, keeps the artwork's contrast: crisper text),
-                          false
+        blur / feather    artwork softness (0.5) and alpha edge feather (2.0), px
+        match             brightness-match the artwork to the footage inside the quad: "black"
+                          (default: black level only, keeps the artwork's contrast), true (full
+                          levels: dims white lettering to the footage's grey), false
         prescale / sharpen  artwork is area-resampled to (occupied size x prescale) before the
-                          warp (1.0); unsharp amount after it (0; 0.3-0.8 for crisp lettering)
+                          warp (1.2); unsharp amount after it (0.35). These plus blur 0.5 are the
+                          look settled on the Atto 3 EVO 360 master; 1.5 / 0.8 / 0.3 read too crisp
         frames / fade     [first, last] inclusive frame range to track and paste in (turntables:
                           a face is toward the camera for part of the clip; list the artwork twice
                           with two ranges when it comes round twice) and a linear blend of that many
