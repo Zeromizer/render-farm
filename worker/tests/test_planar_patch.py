@@ -50,9 +50,44 @@ class Library(unittest.TestCase):
         self.assertGreater(e["clear"], 0)
 
     def test_bad_refs(self):
-        for ref in ("atto3evo", "atto3evo/plate/x", "../x/y", "nosuch/plate", "atto3evo/wing"):
+        for ref in ("atto3evo", "atto3evo/plate/x", "../x/y", "nosuch/plate", "atto3evo/wing", "atto3evo/_subject"):
             with self.assertRaises(RuntimeError):
                 pp.resolve_library(ref)
+
+    def test_index_lists_subjects_and_views(self):
+        idx = pp.library_index()
+        self.assertIn("atto3evo", idx)
+        s = idx["atto3evo"]
+        self.assertEqual(s["label"], "BYD Atto 3 EVO")
+        self.assertEqual(s["views"], ["rear"])
+        self.assertEqual(sorted(s["elements"]), ["badge", "plate"])
+        self.assertEqual(s["elements"]["plate"]["artwork_size"], [566, 168])
+        self.assertTrue(s["elements"]["badge"]["letters_only"])
+        self.assertFalse(s["elements"]["plate"]["letters_only"])
+        json.dumps(idx)  # must be serialisable as-is
+
+
+@needs_runner
+class Localize(unittest.TestCase):
+    PNG = bytes.fromhex("89504e470d0a1a0a" "0000000d49484452" "0000001000000008" "0802000000" + "00" * 8)
+
+    def test_extensionless_png_gets_suffix(self):
+        with tempfile.TemporaryDirectory() as d:
+            raw = os.path.join(d, "plate-artwork")
+            with open(raw, "wb") as f:
+                f.write(self.PNG)
+            got = pp.localize_image(raw, "plate artwork")
+            self.assertTrue(got.endswith(".png"), got)
+            self.assertTrue(os.path.exists(got))
+            self.assertFalse(os.path.exists(raw))
+
+    def test_non_image_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            raw = os.path.join(d, "plate-artwork")
+            with open(raw, "wb") as f:
+                f.write(bytes.fromhex("0000001866747970" "69736f6d") + bytes(32))  # an mp4 header
+            with self.assertRaises(RuntimeError):
+                pp.localize_image(raw, "plate artwork")
 
 
 @needs_runner

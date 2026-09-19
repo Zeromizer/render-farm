@@ -5,6 +5,7 @@
 spec.json
   {
     "clip": "in.mp4", "out": "out.mp4", "proof": "out-proof.png" (optional), "debug_dir": null,
+    "max_frames": 720 (optional; the clip is held in RAM, ~6 MB per 1080p frame),
     "patches": [
       {"name": "plate", "artwork": "plate.png", "alpha": null,
        "key_frame": -1 (middle), "key_box": null | [x0, y0, x1, y1],
@@ -248,10 +249,17 @@ def read_clip(path):
     return frames, fps
 
 
-def proof_sheet(before, after, quads_by_patch, path, samples=5):
-    """Zoom strip per patch: original row over patched row at evenly spaced frames."""
-    n = len(before)
-    idx = [int(round(i * (n - 1) / (samples - 1))) for i in range(samples)] if n > 1 else [0]
+PROOF_SAMPLES = 5
+
+
+def proof_indices(n, samples=PROOF_SAMPLES):
+    return [int(round(i * (n - 1) / (samples - 1))) for i in range(samples)] if n > 1 else [0]
+
+
+def proof_sheet(before, after, quads_by_patch, path):
+    """Zoom strip per patch: original row over patched row at the sampled frames. `before` and
+    `after` are dicts frame index -> image (only the sampled frames are kept, not the whole clip)."""
+    idx = sorted(before)
     blocks = []
     for name, sm in quads_by_patch:
         rows = []
@@ -285,8 +293,12 @@ def main(spec_path):
     n = len(frames)
     H, W = frames[0].shape[:2]
     print(f"{n} frames {W}x{H} @ {fps:.3f}", flush=True)
+    max_frames = int(spec.get("max_frames") or 720)
+    if n > max_frames:
+        raise RuntimeError(f"clip has {n} frames, over the {max_frames}-frame cap (whole clip is held in RAM); "
+                           f"split it or raise max_frames")
     grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
-    before = [f.copy() for f in frames] if spec.get("proof") else None
+    before = {i: frames[i].copy() for i in proof_indices(n)} if spec.get("proof") else None
     debug = spec.get("debug_dir")
     if debug:
         os.makedirs(debug, exist_ok=True)
@@ -370,7 +382,8 @@ def main(spec_path):
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if spec.get("proof"):
-        proof_sheet(before, frames, [(t[0], t[4]) for t in tracks], spec["proof"])
+        after = {i: frames[i] for i in before}
+        proof_sheet(before, after, [(t[0], t[4]) for t in tracks], spec["proof"])
     emit("PROGRESS", "100")
     print(f"wrote {out}", flush=True)
 

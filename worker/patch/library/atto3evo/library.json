@@ -1,4 +1,11 @@
 {
+  "_subject": {
+    "label": "BYD Atto 3 EVO",
+    "views": [
+      "rear"
+    ],
+    "notes": "Rear elements only; front plate and side badges not yet cut."
+  },
   "plate": {
     "artwork": "plate.png",
     "alpha": null,
@@ -8,7 +15,9 @@
     "blur": 1.2,
     "feather": 2.0,
     "win": 1.0,
-    "notes": "Rear number plate 'BYD ATTO 3 / 2026', 566x168, cut from the press render. Template match finds it (score ~0.77 on H3 1080p rear renders)."
+    "notes": "Rear number plate 'BYD ATTO 3 / 2026', 566x168, cut from the press render. Template match finds it (score ~0.77 on H3 1080p rear renders).",
+    "view": "rear",
+    "element": "number plate"
   },
   "badge": {
     "artwork": "badge.png",
@@ -19,6 +28,8 @@
     "blur": 0.8,
     "feather": 1.0,
     "win": 1.5,
-    "notes": "Chrome 'ATTO 3' tailgate lettering, 565x120 with letters-only alpha. Gray template match locks onto the wrong thing; edges mode or a key_box of the whole artwork rectangle."
+    "notes": "Chrome 'ATTO 3' tailgate lettering, 565x120 with letters-only alpha. Gray template match locks onto the wrong thing; edges mode or a key_box of the whole artwork rectangle.",
+    "view": "rear",
+    "element": "tailgate model badge"
   }
 }

@@ -150,6 +150,11 @@ def main():
             log(f"reclaimed {n} stale job(s)")
     except Exception as e:
         log(f"reclaim error (continuing): {str(e)[:160]}")
+    try:
+        # Tells the platform which subjects have planar_patch artwork on this box.
+        planar_patch.publish_library_index(log)
+    except Exception as e:
+        log(f"patch library index not published (continuing): {str(e)[:160]}")
 
     claim_err_logged = False
     polls = 0
