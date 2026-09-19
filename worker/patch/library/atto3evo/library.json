@@ -30,6 +30,9 @@
     "win": 1.5,
     "notes": "Chrome 'ATTO 3' tailgate lettering, 565x120 with letters-only alpha. Gray template match locks onto the wrong thing; edges mode or a key_box of the whole artwork rectangle.",
     "view": "rear",
-    "element": "tailgate model badge"
+    "element": "tailgate model badge",
+    "clear_grow": 2,
+    "clear_radius": 3,
+    "clear_shape": "rect"
   }
 }

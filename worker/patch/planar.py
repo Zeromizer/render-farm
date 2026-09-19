@@ -11,7 +11,8 @@ spec.json
        "key_frame": -1 (middle), "key_box": null | [x0, y0, x1, y1],
        "template": "gray" | "edges" | "none", "min_score": 0.35,
        "refine": true, "smooth": 2, "win": 1.0,
-       "clear": 0.0, "blur": 1.2, "feather": 2.0, "match": true}
+       "clear": 0.0, "clear_grow": 2.0, "clear_radius": 5, "clear_shape": "auto" | "alpha" | "rect",
+       "blur": 1.2, "feather": 2.0, "match": true}
     ]
   }
 
@@ -24,8 +25,10 @@ Every patch is a corner pin driven by a planar track:
      window around the previous corners; when that fails (always, for letters-only elements), LK
      optical flow on features in the window gives a RANSAC homography that carries the corners.
      Corner tracks are smoothed with a short moving average.
-  3. composite: `clear` > 0 first inpaints the artwork rectangle (shrunk by that fraction) with the
-     surrounding footage, so generated lettering does not ghost under a letters-only alpha. The
+  3. composite: `clear` > 0 first inpaints the footage under the element so generated lettering does
+     not ghost under a letters-only alpha: with an alpha the cleared area is the alpha's own shape
+     grown by `clear_grow` px (frame scale), without one it is the rectangle shrunk by `clear`
+     (`clear_shape` forces either); `clear_radius` is the Telea inpaint radius. The
      artwork is warped onto the quad, alpha = supplied mask or a rounded rectangle, feathered,
      brightness-matched to the footage inside the quad (`match`), and blurred slightly so it takes
      the footage's softness. Audio is copied from the source.
@@ -47,7 +50,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from common import find_ffmpeg_tool  # noqa: E402
 
 DEFAULTS = {"alpha": None, "key_frame": -1, "key_box": None, "template": "gray", "min_score": 0.35,
-            "refine": True, "smooth": 2, "win": 1.0, "clear": 0.0, "blur": 1.2, "feather": 2.0, "match": True}
+            "refine": True, "smooth": 2, "win": 1.0, "clear": 0.0, "clear_grow": 2.0, "clear_radius": 5,
+            "clear_shape": "auto", "blur": 1.2, "feather": 2.0, "match": True}
 
 
 def emit(kind, text):
@@ -202,7 +206,29 @@ def rounded_alpha(h, w):
     return alpha
 
 
-def composite(frame, art, alpha, quad, p):
+def clear_mask(alpha, has_alpha, Hm, W, H, p):
+    """Footage area to inpaint before pasting, as a uint8 mask in frame coords. With a supplied
+    alpha the mask is the alpha's own shape grown by `clear_grow` px, so a round badge does not
+    take a rectangle's corners (and the crease above it) with it; without one, the artwork
+    rectangle shrunk by `clear` on each side. `clear_shape` picks explicitly: "alpha" | "rect" |
+    "auto" (alpha when one is supplied). Lettering whose generated glyphs are bigger or differently
+    shaped than the artwork needs "rect": a tight alpha-shaped clear leaves their edges to ghost."""
+    ph_, pw_ = alpha.shape[:2]
+    mode = p.get("clear_shape", "auto")
+    if mode == "alpha" or (mode == "auto" and has_alpha):
+        shape = (alpha > 0.5).astype(np.uint8) * 255
+        cm = cv2.warpPerspective(shape, Hm, (W, H), flags=cv2.INTER_NEAREST)
+        grow = int(round(float(p.get("clear_grow", 2.0))))
+        if grow > 0:
+            cm = cv2.dilate(cm, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1)))
+        return cm
+    cr = np.zeros((ph_, pw_), np.uint8)
+    mx, my = int(pw_ * p["clear"]), int(ph_ * p["clear"])
+    cv2.rectangle(cr, (mx, my), (pw_ - mx, ph_ - my), 255, -1)
+    return cv2.dilate(cv2.warpPerspective(cr, Hm, (W, H), flags=cv2.INTER_NEAREST), np.ones((3, 3), np.uint8))
+
+
+def composite(frame, art, alpha, quad, p, has_alpha=False):
     """Paste `art` (with `alpha`) onto `quad` of `frame` in place; returns the new frame."""
     H, W = frame.shape[:2]
     ph_, pw_ = art.shape[:2]
@@ -210,11 +236,8 @@ def composite(frame, art, alpha, quad, p):
     Hm = cv2.getPerspectiveTransform(src, quad.astype(np.float32))
     f = frame
     if p["clear"] > 0:
-        cr = np.zeros((ph_, pw_), np.uint8)
-        mx, my = int(pw_ * p["clear"]), int(ph_ * p["clear"])
-        cv2.rectangle(cr, (mx, my), (pw_ - mx, ph_ - my), 255, -1)
-        cm = cv2.dilate(cv2.warpPerspective(cr, Hm, (W, H), flags=cv2.INTER_NEAREST), np.ones((3, 3), np.uint8))
-        f = cv2.inpaint(f, cm, 5, cv2.INPAINT_TELEA)
+        cm = clear_mask(alpha, has_alpha, Hm, W, H, p)
+        f = cv2.inpaint(f, cm, max(1, int(p.get("clear_radius", 5))), cv2.INPAINT_TELEA)
     warped = cv2.warpPerspective(art, Hm, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
     wa = cv2.warpPerspective(alpha, Hm, (W, H), flags=cv2.INTER_LINEAR)
     m = wa > 0.99
@@ -257,12 +280,16 @@ def proof_indices(n, samples=PROOF_SAMPLES):
 
 
 def proof_sheet(before, after, quads_by_patch, path):
-    """Zoom strip per patch: original row over patched row at the sampled frames. `before` and
-    `after` are dicts frame index -> image (only the sampled frames are kept, not the whole clip)."""
+    """Zoom strip per patch: original row over patched row at the sampled frames, with the patch's
+    MEASURED lines burned in so track quality can be judged without the log. `before` and `after`
+    are dicts frame index -> image (only the sampled frames are kept, not the whole clip)."""
     idx = sorted(before)
     blocks = []
-    for name, sm in quads_by_patch:
+    for name, sm, stats in quads_by_patch:
         rows = []
+        banner = np.full((22, 1500, 3), 32, np.uint8)
+        cv2.putText(banner, " | ".join(stats), (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        rows.append(banner)
         for src in (before, after):
             tiles = []
             for i in idx:
@@ -343,26 +370,28 @@ def main(spec_path):
         refined = q is not None
         if q is None:
             q = order_quad([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
-        emit("MEASURED", f"{name} key_frame={key} score={score:.2f} box={list(box)} refined={refined}")
+        stats = [f"{name} key_frame={key} score={score:.2f} box={list(box)} refined={refined}"]
+        emit("MEASURED", stats[0])
 
         emit("PHASE", f"tracking {name}")
         quads, misses, lost = track(grays, key, q, aspect, bool(p["refine"]), float(p["win"]))
         sm = smooth_quads(quads, int(p["smooth"]))
-        emit("MEASURED", f"{name} detections={n - misses} flow={misses - lost} held={lost}")
+        stats.append(f"detections={n - misses} flow={misses - lost} held={lost}")
+        emit("MEASURED", f"{name} {stats[1]}")
         if lost > 0.1 * n:
             raise RuntimeError(f"{name}: track lost on {lost} of {n} frames (element leaves frame or too few "
                                f"features); crop the clip or give a larger win")
-        tracks.append((name, p, art, alpha, sm))
+        tracks.append((name, p, art, alpha, sm, bool(p["alpha"]), stats))
 
     emit("PHASE", "compositing")
     for i in range(n):
         f = frames[i]
-        for name, p, art, alpha, sm in tracks:
-            f = composite(f, art, alpha, sm[i], p)
+        for name, p, art, alpha, sm, has_alpha, _ in tracks:
+            f = composite(f, art, alpha, sm[i], p, has_alpha)
         frames[i] = f
         if debug and i % 12 == 0:
             dbg = frames[i].copy()
-            for name, p, art, alpha, sm in tracks:
+            for name, p, art, alpha, sm, _, _ in tracks:
                 cv2.polylines(dbg, [sm[i].astype(np.int32)], True, (0, 255, 0), 1)
             cv2.imwrite(os.path.join(debug, f"track_{i:06d}.png"), dbg)
         if i % 10 == 0:
@@ -383,7 +412,7 @@ def main(spec_path):
         shutil.rmtree(tmp, ignore_errors=True)
     if spec.get("proof"):
         after = {i: frames[i] for i in before}
-        proof_sheet(before, after, [(t[0], t[4]) for t in tracks], spec["proof"])
+        proof_sheet(before, after, [(t[0], t[4], t[6]) for t in tracks], spec["proof"])
     emit("PROGRESS", "100")
     print(f"wrote {out}", flush=True)
 

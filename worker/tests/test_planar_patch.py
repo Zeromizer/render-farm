@@ -164,6 +164,27 @@ class Tracking(unittest.TestCase):
             self.assertLess(abs(got[:, 0].min() - bx0), 2.5, f"frame {i} x0 {got[:, 0].min()} vs {bx0}")
             self.assertLess(abs(got[:, 1].min() - by0), 2.5, f"frame {i} y0 {got[:, 1].min()} vs {by0}")
 
+    def test_clear_mask_follows_alpha(self):
+        import cv2
+        import numpy as np
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "patch"))
+        import planar
+        alpha = np.zeros((40, 40), np.float32)
+        cv2.circle(alpha, (20, 20), 12, 1.0, -1)
+        Hm = np.eye(3, dtype=np.float32)           # identity: artwork pixels are frame pixels
+        p = {"clear": 0.03, "clear_grow": 2.0}
+        disc = planar.clear_mask(alpha, True, Hm, 80, 80, p)
+        rect = planar.clear_mask(alpha, False, Hm, 80, 80, p)
+        self.assertEqual(disc[2, 2], 0)            # rectangle corner NOT cleared with an alpha
+        self.assertEqual(rect[2, 2], 255)          # but it is in rectangle mode
+        self.assertEqual(disc[20, 20], 255)
+        self.assertEqual(disc[20, 34], 255)        # grown by ~2 px beyond radius 12
+        self.assertEqual(disc[20, 37], 0)
+        none = planar.clear_mask(alpha, True, Hm, 80, 80, {"clear": 0.03, "clear_grow": 0})
+        self.assertEqual(none[20, 33], 0)          # no growth
+        forced = planar.clear_mask(alpha, True, Hm, 80, 80, {"clear": 0.03, "clear_shape": "rect"})
+        self.assertEqual(forced[2, 2], 255)        # lettering: rectangle even with an alpha
+
     def test_end_to_end_repaints(self):
         import cv2
         import numpy as np

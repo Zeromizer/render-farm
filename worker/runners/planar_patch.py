@@ -18,8 +18,12 @@ params (jsonb):
         min_score         reject a template match weaker than this (0.35)
         refine            re-detect the dark rectangle per frame (plates: true; lettering: false)
         smooth / win      corner smoothing half-window (2) and tracking window scale (1.0)
-        clear             inpaint the artwork rect (shrunk by this fraction) before pasting, so
-                          generated letters do not ghost under a letters-only alpha (0.03 for badges)
+        clear             inpaint the footage under the element before pasting, so generated letters
+                          do not ghost under a letters-only alpha (0.03 for badges). With an alpha the
+                          cleared area is the alpha's shape grown by `clear_grow` px (2); without one,
+                          the artwork rect shrunk by `clear` per side; `clear_shape` auto|alpha|rect
+                          forces one (lettering that swells vs the artwork needs rect, a round badge
+                          against a body crease needs alpha). `clear_radius` = inpaint radius (5)
         blur / feather    artwork softness (1.2) and alpha edge feather (2.0), px
         match             brightness-match the artwork to the footage inside the quad (true)
       }
@@ -60,7 +64,7 @@ LIBRARY_DIR = os.path.join(PATCH_DIR, "library")
 
 # Keys the platform may set per patch and forward verbatim to planar.py.
 TUNABLE = ("key_frame", "key_box", "template", "min_score", "refine", "smooth", "win",
-           "clear", "blur", "feather", "match")
+           "clear", "clear_grow", "clear_radius", "clear_shape", "blur", "feather", "match")
 
 
 def resolve_library(ref):
