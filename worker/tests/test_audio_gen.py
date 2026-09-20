@@ -154,6 +154,25 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(progress.parse("\r" + MUSIC)[0], "music")
         self.assertEqual(progress.parse("\r" + DIFF)[0], "diffusion")
 
+    def test_the_exact_bytes_comfyui_logged_on_the_first_live_job(self):
+        # /internal/logs/raw, job cd8a0075: leading "\r", block glyphs, no space before the unit,
+        # and the KSampler line carries no description at all.
+        raw = {
+            "\rYuE2 ABC sampling:  50%|\u2588\u2588\u2588\u2588\u2588     | 1514/3000 [01:16<01:14, 19.93token/s]":
+                ("abc", 1514, 3000, 1 / 19.93),
+            "\rYuE2 music sampling: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2589| 423/425 [00:21<00:00, 20.13token/s]":
+                ("music", 423, 425, 1 / 20.13),
+            "\r 97%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u258b| 31/32 [00:05<00:00,  5.00it/s]":
+                ("diffusion", 31, 32, 1 / 5.0),
+        }
+        for line, (stage, i, n, rate) in raw.items():
+            got = progress.parse(line)
+            self.assertEqual(got[:3], (stage, i, n), repr(line))
+            self.assertAlmostEqual(got[3], rate, places=6)
+        label, left = progress.estimate(*progress.parse(next(iter(raw))), duration_s=15)
+        self.assertEqual(label, "writing the score (1514 tokens)")
+        self.assertTrue(50 < left < 80, left)          # it had 40 s to go; a normal score is assumed
+
     def test_time_left_is_minutes_not_days(self):
         # That job reported ~2828 min left here and ~91 min left with 20 s to go.
         label, left = progress.estimate(*progress.parse(ABC.replace("2280", "1000")), duration_s=15)
