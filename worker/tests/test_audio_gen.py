@@ -30,7 +30,8 @@ EXPORT = {
                                                  "strength_model": 0.0, "strength_clip": 1.0,
                                                  "model": ["4", 0], "clip": ["4", 1]}},
     "21": {"class_type": "YuE2GenerateABC", "inputs": {"clip": ["9", 1], "style": "old", "lyrics": "old",
-                                                       "seed": 1, "mode": "melody", "temperature": 0.7}},
+                                                       "seed": 1, "mode": "melody", "temperature": 0.7,
+                                                       "max_abc_tokens": 8192}},
     "22": {"class_type": "YuE2GenerateMusic", "inputs": {"clip": ["9", 1], "style": "old", "lyrics": "old",
                                                          "seed": 1, "mode": "melody", "max_duration": 360.0,
                                                          "abc": ["21", 0]}},
@@ -87,6 +88,22 @@ class GraphTests(unittest.TestCase):
                      "3/8 [01:30<02:30, 30.1s/it]", "5/9 [00:10<00:08, 2.0s/token]"):
             self.assertIsNotNone(comfy_client._TQDM.search(line), line)
 
+    def test_the_score_is_capped_so_a_runaway_seed_cannot_cost_five_minutes(self):
+        # 3 of 7 measured seeds never emitted the score's end token and ran to 8192.
+        self.assertEqual([graphs.abc_token_cap(s) for s in (15, 30, 45, 120, 180)],
+                         [3000, 3000, 3300, 6300, 8192])
+        g, _ = graphs.build("yue2_inst", "s", "t", 45, 1, "p")
+        self.assertEqual(g["21"]["inputs"]["max_abc_tokens"], 3300)
+
+    def test_the_committed_export_is_flattened_and_fills(self):
+        graphs._HERE = self._here          # the real file, not the fixture
+        if not os.path.exists(os.path.join(self._here, "yue2_inst.api.json")):
+            self.skipTest("no committed export yet")
+        g, meta = graphs.build("yue2_inst", "warm lo-fi", "[intro 0:00-0:03]", 30, 5, "audio_gen/x")
+        self.assertEqual((meta["text"], meta["music"], meta["save"], meta["sampler"]), (2, 1, 1, 1))
+        music = next(n for n in g.values() if n["class_type"] == "YuE2GenerateMusic")
+        self.assertEqual((music["inputs"]["style"], music["inputs"]["max_duration"]), ("warm lo-fi", 32.0))
+
     def test_leaves_wires_and_the_template_alone(self):
         g, _ = graphs.build("yue2_inst", "s", "t", 15, 1, "p")
         self.assertEqual(g["22"]["inputs"]["abc"], ["21", 0])
@@ -141,6 +158,9 @@ class FinishTests(unittest.TestCase):
         self.assertAlmostEqual(length, 10.0, places=2)
         self.assertAlmostEqual(audio_gen._duration(out), 10.0, delta=0.02)
         self.assertGreater(have, 12)
+
+    def test_the_fade_scales_with_the_bed(self):
+        self.assertEqual([audio_gen.fade_seconds(s) for s in (8, 15, 30, 45, 120)], [0.8, 0.8, 1.5, 2.0, 2.0])
 
     def test_a_slightly_short_take_keeps_its_own_length(self):
         out = os.path.join(self.dir, "out.wav")

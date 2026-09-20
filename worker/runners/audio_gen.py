@@ -16,7 +16,8 @@ params (jsonb):
     cfg_scale            optional; applied only when the exported graph has the input
                          (ComfyUI v0.36.0, the tag this box runs, does not), ignored otherwise
 
-Output: 48 kHz stereo 16-bit WAV, trimmed to duration_s with a short fade-out, uploaded as
+Output: 48 kHz stereo 16-bit WAV, trimmed to duration_s with a fade-out (see fade_seconds:
+the model never ends on its own, so the fade is the ending), uploaded as
 outputs/<jid>.wav like every other engine. The measured length is written back onto the row
 as params.audio_gen_result so the platform does not have to claim a length it did not check.
 
@@ -24,7 +25,7 @@ WHY THIS ENGINE EXISTS: the platform's music library could only hold audio that 
 existed somewhere (an upload, a post, a reference video). This is the one source that starts
 from a sentence, and like video_gen and matte it lives here because nothing else has a GPU.
 
-VRAM: ~9-12 GB peak for the int8 checkpoint, so the TTS workers are paused for the duration
+VRAM: 5-10 GB peak measured (grows with length), so the TTS workers are paused for the duration
 exactly as for H3, and ComfyUI is told to drop the model afterwards. The ComfyUI queue is
 serial: a bed waits behind an H3 clip that is already sampling, and vice versa.
 """
@@ -53,7 +54,6 @@ comfy_client._TQDM = re.compile(
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _AUDIO_EXT = (".flac", ".wav", ".mp3", ".opus", ".ogg", ".m4a")
-_FADE = 0.4
 # Shorter than this share of the request and it is not the bed that was asked for.
 _MIN_SHARE = 0.7
 
@@ -96,20 +96,31 @@ def _fetch_audio(outputs, dest_stem):
     raise comfy_client.ComfyError(f"no audio in comfyui outputs: {json.dumps(outputs)[:800]}")
 
 
+def fade_seconds(duration_s):
+    """How long the closing fade is: 5% of the bed, between 0.8 and 2 s.
+
+    Every measured take ran to its token budget instead of ending on its last section
+    tag, so the delivered ending is always a cut, and a cut needs a fade long enough to
+    read as one: 0.4 s (the first guess, sized for tidying a composed ending) is a
+    click with manners. 0.8 s keeps a 15 s ad bed from losing its last beat; 2 s is the
+    usual tail under a longer piece."""
+    return min(2.0, max(0.8, float(duration_s) * 0.05))
+
+
 def finish(src, dest, duration_s, log):
     """Trim to duration_s, fade the tail, write 48 kHz stereo s16 WAV. Returns the length written.
 
-    The model ends near its last section tag, not on it, and a bed that is 31.7 s under a
-    30 s video is a bed somebody has to cut by hand. A take that ends EARLY keeps its own
-    ending (it was composed) and only gets the fade if it was cut off by the cap."""
+    A bed that is 32 s under a 30 s video is a bed somebody has to cut by hand, so the
+    cut is made here, to the length asked for, with fade_seconds() over the end."""
     have = _duration(src)
     if have < duration_s * _MIN_SHARE:
         raise RuntimeError(f"the model stopped at {have:.1f} s of the {duration_s:g} s asked for; "
                            f"try again (a retry uses a new seed)")
     length = min(have, float(duration_s))
-    fade_at = max(0.0, length - _FADE)
+    fade = fade_seconds(length)
+    fade_at = max(0.0, length - fade)
     _ff(["ffmpeg", "-v", "error", "-y", "-i", src, "-t", f"{length:.3f}",
-         "-af", f"afade=t=out:st={fade_at:.3f}:d={_FADE}",
+         "-af", f"afade=t=out:st={fade_at:.3f}:d={fade:.3f}",
          "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", dest])
     log(f"audio_gen: {have:.2f} s generated -> {length:.2f} s delivered")
     return length, have

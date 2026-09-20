@@ -33,17 +33,31 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 MODELS = {
     "yue2_inst": {
         "file": "yue2_inst.api.json",
-        # Seconds of wall clock per second of audio on the 4080 SUPER, for the
-        # ETA before ComfyUI logs a step. Measured value goes here after Step 0.
-        "realtime_factor": 0.5,
-        "load_seconds": 50.0,
-        # The model stops on its own near the last tag; the cap only has to be
-        # past it. The runner trims to the exact length afterwards.
+        # Measured on the 4080 SUPER, 2026-09-20, 15/30/45 s beds: wall = 55 + 2.8 x
+        # duration. The two token stages dominate (~21 token/s: a score of 1300-2150
+        # tokens, then 25 music tokens per audio second); the 32 diffusion steps are
+        # 5-10 s. Peak VRAM 5-10 GB, growing with length and score size.
+        "realtime_factor": 2.8,
+        "load_seconds": 55.0,
+        # The model does NOT end on its last section tag: 8 of 8 measured takes ran to
+        # the token budget, so max_duration IS the length and the runner's trim + fade
+        # IS the ending. The headroom only keeps the cut off the final beat.
         "duration_headroom": 2.0,
     },
 }
 
 _TEXT_NODES = ("YuE2GenerateABC", "YuE2GenerateMusic")
+
+
+def abc_token_cap(duration_s):
+    """max_abc_tokens for a bed of this length.
+
+    The node's default is 8192 and 3 of 7 measured seeds ran away to it: the score
+    never emitted its end token, which cost ~300 s and changed nothing audible (the
+    truncated score still produced music). A finished score was 1300-1500 tokens at
+    15 s and ~2150 at 30-45 s, so this leaves real scores room and bounds a runaway
+    at under a minute of extra sampling."""
+    return int(min(8192, max(3000, 1500 + 40 * float(duration_s))))
 
 
 def load(model):
@@ -80,6 +94,8 @@ def build(model, style, lyrics, duration_s, seed, prefix, cfg_scale=None):
                     inputs[key] = value
             if "mode" in inputs and not isinstance(inputs["mode"], list):
                 inputs["mode"] = "full"
+        if cls == "YuE2GenerateABC":
+            inputs["max_abc_tokens"] = abc_token_cap(duration_s)
         if cls == "YuE2GenerateMusic":
             touched["music"] += 1
             # 0.04 s grid (the node's own step); never below what was asked for.
