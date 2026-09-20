@@ -146,6 +146,14 @@ class ProgressTests(unittest.TestCase):
         self.assertAlmostEqual(progress.parse("3/8 [01:30<02:30, 30.1s/it]")[3], 30.1)
         self.assertIsNone(progress.parse("got prompt"))
 
+    def test_the_stage_is_found_however_the_line_is_dressed(self):
+        # tqdm redraws with a carriage return; ComfyUI may prefix a time or a level. The
+        # first live job read its score stage as "rendering audio 311/3000" because of "\r".
+        for dressed in ("\r" + ABC, "[2026-09-20 21:44:31] " + ABC, "\r\x1b[A" + ABC, "  " + ABC):
+            self.assertEqual(progress.parse(dressed)[:3], ("abc", 2280, 8192), repr(dressed))
+        self.assertEqual(progress.parse("\r" + MUSIC)[0], "music")
+        self.assertEqual(progress.parse("\r" + DIFF)[0], "diffusion")
+
     def test_time_left_is_minutes_not_days(self):
         # That job reported ~2828 min left here and ~91 min left with 20 s to go.
         label, left = progress.estimate(*progress.parse(ABC.replace("2280", "1000")), duration_s=15)

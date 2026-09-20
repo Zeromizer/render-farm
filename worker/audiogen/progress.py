@@ -26,8 +26,12 @@ import re
 import time
 
 _LINE = re.compile(
-    r"(?:YuE2\s+(?P<desc>[A-Za-z]+)\s+sampling:?)?[^\[\]]*?"
     r"(?P<i>\d+)/(?P<n>\d+)\s*\[[^\]<]*<[^,\]]*,\s*(?P<rate>[\d.]+)\s*(?P<unit>s/it|it/s|s/token|token/s)\]")
+# Looked for on its own, anywhere in the line. As an optional prefix of _LINE it never
+# matched on the real server: tqdm redraws with a leading "\r", so the search began one
+# character early, took the prefix as absent and labelled the score stage "rendering
+# audio 311/3000" (first live job after the merge, cd8a0075).
+_STAGE = re.compile(r"YuE2\s+(ABC|music)\s+sampling", re.IGNORECASE)
 
 # A score that finishes does so by about here; past it the seed is probably a runaway
 # heading for the cap (audiogen/graphs.abc_token_cap), which is what bounds the damage.
@@ -45,8 +49,8 @@ def parse(line):
     rate = float(m.group("rate"))
     if m.group("unit") in ("it/s", "token/s"):
         rate = 1.0 / rate if rate else 0.0
-    desc = (m.group("desc") or "").lower()
-    stage = "abc" if desc == "abc" else "music" if desc == "music" else "diffusion"
+    named = _STAGE.search(line)
+    stage = named.group(1).lower() if named else "diffusion"
     return stage, int(m.group("i")), int(m.group("n")), rate
 
 
