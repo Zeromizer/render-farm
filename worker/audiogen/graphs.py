@@ -66,7 +66,7 @@ def build(model, style, lyrics, duration_s, seed, prefix, cfg_scale=None):
     """Return (graph, meta). Raises if the export has no generate or save node."""
     base, spec = load(model)
     graph = copy.deepcopy(base)
-    touched = {"text": 0, "music": 0, "save": 0, "sampler": 0}
+    touched = {"text": 0, "music": 0, "save": 0, "sampler": 0, "cfg": 0}
     unset = []
     for node in graph.values():
         cls = node.get("class_type", "")
@@ -85,8 +85,12 @@ def build(model, style, lyrics, duration_s, seed, prefix, cfg_scale=None):
             # 0.04 s grid (the node's own step); never below what was asked for.
             cap = round((float(duration_s) + spec["duration_headroom"]) / 0.04) * 0.04
             inputs["max_duration"] = round(cap, 2)
-            if cfg_scale is not None:
+            # Only where the export has the input. The v0.36.0 release tag this box runs has no
+            # cfg_scale on the node (it arrived after the tag), and ComfyUI rejects a prompt
+            # carrying an input the node does not declare. Newer ComfyUI: re-export with it.
+            if cfg_scale is not None and "cfg_scale" in inputs:
                 inputs["cfg_scale"] = float(cfg_scale)
+                touched["cfg"] = 1
             if not isinstance(inputs.get("abc"), list):
                 unset.append("YuE2GenerateMusic.abc (must be wired from YuE2GenerateABC)")
         if cls in ("KSampler", "KSamplerAdvanced"):

@@ -94,11 +94,20 @@ class GraphTests(unittest.TestCase):
         again, _ = graphs.load("yue2_inst")
         self.assertEqual(again["22"]["inputs"]["style"], "old")
 
-    def test_cfg_is_only_set_when_asked(self):
-        g, _ = graphs.build("yue2_inst", "s", "t", 15, 1, "p")
+    def test_cfg_is_set_only_when_asked_and_only_where_the_export_has_it(self):
+        # ComfyUI v0.36.0 has no cfg_scale on the node; sending one fails validation.
+        g, meta = graphs.build("yue2_inst", "s", "t", 15, 1, "p", cfg_scale=1.01)
         self.assertNotIn("cfg_scale", g["22"]["inputs"])
-        g, _ = graphs.build("yue2_inst", "s", "t", 15, 1, "p", cfg_scale=1.01)
-        self.assertEqual(g["22"]["inputs"]["cfg_scale"], 1.01)
+        self.assertEqual(meta["cfg"], 0)
+
+        newer = json.loads(json.dumps(EXPORT))
+        newer["22"]["inputs"]["cfg_scale"] = 1.0
+        with open(os.path.join(self.dir, "yue2_inst.api.json"), "w", encoding="utf-8") as f:
+            json.dump(newer, f)
+        g, _ = graphs.build("yue2_inst", "s", "t", 15, 1, "p")
+        self.assertEqual(g["22"]["inputs"]["cfg_scale"], 1.0)
+        g, meta = graphs.build("yue2_inst", "s", "t", 15, 1, "p", cfg_scale=1.01)
+        self.assertEqual((g["22"]["inputs"]["cfg_scale"], meta["cfg"]), (1.01, 1))
 
     def test_names_the_fix_when_the_export_is_missing_or_wrong(self):
         os.remove(os.path.join(self.dir, "yue2_inst.api.json"))

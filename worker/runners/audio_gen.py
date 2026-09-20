@@ -13,7 +13,8 @@ params (jsonb):
                          (intro | verse | pre-chorus | chorus | bridge | outro only)
     duration_s           4-180, the length to deliver (default 30)
     seed                 int (default 0)
-    cfg_scale            optional, passed through when the graph has the input
+    cfg_scale            optional; applied only when the exported graph has the input
+                         (ComfyUI v0.36.0, the tag this box runs, does not), ignored otherwise
 
 Output: 48 kHz stereo 16-bit WAV, trimmed to duration_s with a short fade-out, uploaded as
 outputs/<jid>.wav like every other engine. The measured length is written back onto the row
