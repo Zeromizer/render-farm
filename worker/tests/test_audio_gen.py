@@ -14,7 +14,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from audiogen import graphs  # noqa: E402
+from audiogen import graphs, progress  # noqa: E402
 
 try:
     from runners import audio_gen  # noqa: E402  (needs the worker venv: db -> supabase)
@@ -80,14 +80,6 @@ class GraphTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not flattened.*YuE2GenerateMusic.style.*abc.*KSampler.seed"):
             graphs.build("yue2_inst", "s", "t", 15, 1, "p")
 
-    def test_the_progress_pattern_reads_token_units_and_still_reads_steps(self):
-        if audio_gen is None:
-            self.skipTest("runner imports need the worker venv")
-        from videogen import comfy_client
-        for line in ("412/750 [00:31<00:25, 13.2token/s]", " 12/32 [00:04<00:07,  2.61it/s]",
-                     "3/8 [01:30<02:30, 30.1s/it]", "5/9 [00:10<00:08, 2.0s/token]"):
-            self.assertIsNotNone(comfy_client._TQDM.search(line), line)
-
     def test_the_score_is_capped_so_a_runaway_seed_cannot_cost_five_minutes(self):
         # 3 of 7 measured seeds never emitted the score's end token and ran to 8192.
         self.assertEqual([graphs.abc_token_cap(s) for s in (15, 30, 45, 120, 180)],
@@ -136,6 +128,56 @@ class GraphTests(unittest.TestCase):
             json.dump({k: v for k, v in EXPORT.items() if k != "30"}, f)
         with self.assertRaisesRegex(RuntimeError, "no SaveAudio"):
             graphs.build("yue2_inst", "s", "t", 15, 1, "p")
+
+
+# Lines as ComfyUI logged them on the first queue job (258fccdf: 15 s bed, 151 s wall).
+ABC = "YuE2 ABC sampling:  28%|##8       | 2280/8192 [01:43<04:28, 22.0token/s]"
+MUSIC = "YuE2 music sampling:  38%|###7      | 161/425 [00:07<00:12, 21.0token/s]"
+DIFF = " 78%|#######8  | 25/32 [00:06<00:01,  4.10it/s]"
+
+
+class ProgressTests(unittest.TestCase):
+    def test_reads_the_stage_from_the_description_and_tokens_per_second_as_a_rate(self):
+        stage, i, n, rate = progress.parse(ABC)
+        self.assertEqual((stage, i, n), ("abc", 2280, 8192))
+        self.assertAlmostEqual(rate, 1 / 22.0)        # was read as 22 SECONDS per token
+        self.assertEqual(progress.parse(MUSIC)[:3], ("music", 161, 425))
+        self.assertEqual(progress.parse(DIFF)[:3], ("diffusion", 25, 32))
+        self.assertAlmostEqual(progress.parse("3/8 [01:30<02:30, 30.1s/it]")[3], 30.1)
+        self.assertIsNone(progress.parse("got prompt"))
+
+    def test_time_left_is_minutes_not_days(self):
+        # That job reported ~2828 min left here and ~91 min left with 20 s to go.
+        label, left = progress.estimate(*progress.parse(ABC.replace("2280", "1000")), duration_s=15)
+        self.assertEqual(label, "writing the score (1000 tokens)")
+        self.assertTrue(60 < left < 110, left)         # ~55 s of score + ~19 s of music + diffusion
+        label, left = progress.estimate(*progress.parse(MUSIC), duration_s=15)
+        self.assertEqual(label, "writing the music 161/425")
+        self.assertTrue(20 < left < 25, left)
+        label, left = progress.estimate(*progress.parse(DIFF), duration_s=15)
+        self.assertEqual(label, "rendering audio 25/32")
+        self.assertTrue(left < 5, left)
+
+    def test_a_runaway_score_is_costed_to_the_cap_not_to_a_normal_ending(self):
+        _, normal = progress.estimate("abc", 2100, 3000, 1 / 21, duration_s=15)
+        _, runaway = progress.estimate("abc", 2300, 3000, 1 / 21, duration_s=15)
+        self.assertGreater(runaway, normal)            # it now expects 3000, not 2200
+        self.assertLess(runaway, 70)
+
+    def test_the_reader_makes_wait_print_the_honest_numbers(self):
+        now = [100.0]
+        entries = []
+        reader = progress.Reader(15, lambda: entries, clock=lambda: now[0])
+        self.assertIsNone(reader("2026-09-20T00:00:00"))        # nothing logged yet: "loading model"
+        entries.append({"t": "2026-09-20T00:00:30", "m": MUSIC})
+        now[0] = 200.0                                           # 100 s in
+        step, total, rate = reader("2026-09-20T00:00:00")
+        _, left = progress.estimate(*progress.parse(MUSIC), duration_s=15)
+        self.assertAlmostEqual((total - step) * rate, left, places=6)   # wait(): eta = (n-i)*rate + tail
+        self.assertAlmostEqual(step / total, 100 / (100 + left), delta=0.002)
+        self.assertEqual(reader.label, "writing the music 161/425")
+        # Lines from before this prompt belong to the previous job.
+        self.assertIsNone(progress.Reader(15, lambda: entries)("2026-09-20T00:01:00"))
 
 
 @needs_runner

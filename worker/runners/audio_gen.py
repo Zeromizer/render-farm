@@ -31,7 +31,6 @@ serial: a bed waits behind an H3 clip that is already sampling, and vice versa.
 """
 import json
 import os
-import re
 import subprocess
 import time
 from datetime import datetime
@@ -40,17 +39,9 @@ import httpx
 
 import db
 import proc
-from audiogen import graphs
+from audiogen import graphs, progress
 from videogen import comfy_client, estimate, tts_guard
 from videogen.segments import _tool   # the ffmpeg resolver that survives the Startup-shortcut PATH
-
-# The two long YuE2 stages log tqdm with unit="token" ("412/750 [00:31<00:25, 13.2token/s]"),
-# which the pattern in comfy_client (it/s only) reads as "no progress yet": the row would sit
-# on "loading model" for the whole generation. This is a superset, so video_gen lines parse
-# exactly as before. Set here rather than edited in comfy_client.py because that file carries
-# uncommitted work on the render PC; fold it in there once that lands.
-comfy_client._TQDM = re.compile(
-    r"(\d+)/(\d+) \[(\d+):(\d+)<[^,]*,\s*([\d.]+)\s*(s/it|it/s|s/token|token/s)\]")
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _AUDIO_EXT = (".flac", ".wav", ".mp3", ".opus", ".ogg", ".m4a")
@@ -126,6 +117,13 @@ def finish(src, dest, duration_s, log):
     return length, have
 
 
+def _log_entries():
+    try:
+        return httpx.get(comfy_client._url("/internal/logs/raw"), timeout=5).json().get("entries") or []
+    except (httpx.HTTPError, ValueError):
+        return []
+
+
 def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     jid = job["id"]
     params = job.get("params") or {}
@@ -156,20 +154,37 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     comfy_client.ensure_server(log)
     with tts_guard.paused(log):
         try:
+            # See audiogen/progress.py: wait() was built for one run of diffusion steps and
+            # reported "~2828 min left" on the first real job. The reader is swapped in for
+            # this prompt only; video_gen runs in this same process next.
+            reader = progress.Reader(duration_s, _log_entries,
+                                     headroom=graphs.MODELS[model]["duration_headroom"])
+            wrote = {"at": 0.0, "text": None}
+
             def on_status(phase, frac, eta):
                 heartbeat.progress = int(5 + 85 * max(0.0, min(1.0, frac)))
-                db.set_phase(jid, f"music: {phase} - ~{estimate.fmt_eta(eta)} left"[:120], heartbeat.progress)
+                # wait()'s "sampling N/M" would be the reader's synthetic numbers.
+                what = reader.label if phase.startswith("sampling") and reader.label else phase
+                text = f"music: {what} - ~{estimate.fmt_eta(eta)} left"[:120]
+                # The synthetic step moves every poll; the row does not need a write every 2 s.
+                if text != wrote["text"] and time.monotonic() - wrote["at"] >= 5:
+                    db.set_phase(jid, text, heartbeat.progress)
+                    wrote.update(at=time.monotonic(), text=text)
 
             since = datetime.now().isoformat()
             db.set_phase(jid, "music: queued", 5)
             prompt_id = comfy_client.submit(graph)
             log(f"comfyui prompt {prompt_id} (audio_gen)")
+            original = comfy_client.sampling_progress
+            comfy_client.sampling_progress = reader
             try:
                 outputs = comfy_client.wait(prompt_id, on_status, cancel_check,
                                             max(30, int(deadline - time.monotonic())),
                                             hint=graphs.hint(model, duration_s), since_iso=since)
             except comfy_client._CanceledSignal:
                 raise proc.Canceled()
+            finally:
+                comfy_client.sampling_progress = original
             db.set_phase(jid, "music: fetching", 92)
             raw = _fetch_audio(outputs, os.path.join(work_dir, "audio_gen-raw"))
         finally:
