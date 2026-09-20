@@ -23,7 +23,7 @@ except ImportError:
 
 needs_runner = unittest.skipUnless(audio_gen, "runner imports need the worker venv")
 
-# The shape of a "Save (API format)" export, with ids no code should depend on.
+# The shape of a flattened "Save (API format)" export, with ids no code should depend on.
 EXPORT = {
     "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "yue2_3b_int8_convrot.safetensors"}},
     "9": {"class_type": "LoraLoader", "inputs": {"lora_name": "ar_lora_inst_v3abc_comfyui.safetensors",
@@ -34,7 +34,13 @@ EXPORT = {
     "22": {"class_type": "YuE2GenerateMusic", "inputs": {"clip": ["9", 1], "style": "old", "lyrics": "old",
                                                          "seed": 1, "mode": "melody", "max_duration": 360.0,
                                                          "abc": ["21", 0]}},
-    "30": {"class_type": "SaveAudio", "inputs": {"audio": ["22", 0], "filename_prefix": "audio/ComfyUI"}},
+    "23": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["22", 0]}},
+    "24": {"class_type": "EmptyYuE2LatentAudio", "inputs": {"seconds": ["22", 1], "batch_size": 1}},
+    "25": {"class_type": "KSampler", "inputs": {"model": ["9", 0], "positive": ["22", 0], "negative": ["23", 0],
+                                                "latent_image": ["24", 0], "seed": 42, "steps": 32, "cfg": 1.0,
+                                                "sampler_name": "dpm_2", "scheduler": "sgm_uniform", "denoise": 1.0}},
+    "26": {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["25", 0], "vae": ["4", 2]}},
+    "30": {"class_type": "SaveAudio", "inputs": {"audio": ["26", 0], "filename_prefix": "audio/ComfyUI"}},
 }
 
 
@@ -59,7 +65,27 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(g[nid]["inputs"]["mode"], "full")
         self.assertEqual(g["22"]["inputs"]["max_duration"], 32.0)
         self.assertEqual(g["30"]["inputs"]["filename_prefix"], "audio_gen/job1")
-        self.assertEqual((meta["text"], meta["music"], meta["save"]), (2, 1, 1))
+        self.assertEqual(g["25"]["inputs"]["seed"], 77)   # one seed drives all three stages
+        self.assertEqual(g["25"]["inputs"]["steps"], 32)
+        self.assertEqual((meta["text"], meta["music"], meta["save"], meta["sampler"]), (2, 1, 1, 1))
+
+    def test_refuses_the_stock_template_whose_text_and_seed_arrive_by_wire(self):
+        raw = json.loads(json.dumps(EXPORT))
+        raw["22"]["inputs"]["style"] = ["40", 0]      # PrimitiveStringMultiline "Text (Style)"
+        raw["25"]["inputs"]["seed"] = ["41", 0]       # SeedNode
+        raw["22"]["inputs"]["abc"] = ""               # the template switch, defaulting to off
+        with open(os.path.join(self.dir, "yue2_inst.api.json"), "w", encoding="utf-8") as f:
+            json.dump(raw, f)
+        with self.assertRaisesRegex(RuntimeError, "not flattened.*YuE2GenerateMusic.style.*abc.*KSampler.seed"):
+            graphs.build("yue2_inst", "s", "t", 15, 1, "p")
+
+    def test_the_progress_pattern_reads_token_units_and_still_reads_steps(self):
+        if audio_gen is None:
+            self.skipTest("runner imports need the worker venv")
+        from videogen import comfy_client
+        for line in ("412/750 [00:31<00:25, 13.2token/s]", " 12/32 [00:04<00:07,  2.61it/s]",
+                     "3/8 [01:30<02:30, 30.1s/it]", "5/9 [00:10<00:08, 2.0s/token]"):
+            self.assertIsNotNone(comfy_client._TQDM.search(line), line)
 
     def test_leaves_wires_and_the_template_alone(self):
         g, _ = graphs.build("yue2_inst", "s", "t", 15, 1, "p")

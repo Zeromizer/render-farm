@@ -29,6 +29,7 @@ serial: a bed waits behind an H3 clip that is already sampling, and vice versa.
 """
 import json
 import os
+import re
 import subprocess
 import time
 from datetime import datetime
@@ -40,6 +41,14 @@ import proc
 from audiogen import graphs
 from videogen import comfy_client, estimate, tts_guard
 from videogen.segments import _tool   # the ffmpeg resolver that survives the Startup-shortcut PATH
+
+# The two long YuE2 stages log tqdm with unit="token" ("412/750 [00:31<00:25, 13.2token/s]"),
+# which the pattern in comfy_client (it/s only) reads as "no progress yet": the row would sit
+# on "loading model" for the whole generation. This is a superset, so video_gen lines parse
+# exactly as before. Set here rather than edited in comfy_client.py because that file carries
+# uncommitted work on the render PC; fold it in there once that lands.
+comfy_client._TQDM = re.compile(
+    r"(\d+)/(\d+) \[(\d+):(\d+)<[^,]*,\s*([\d.]+)\s*(s/it|it/s|s/token|token/s)\]")
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _AUDIO_EXT = (".flac", ".wav", ".mp3", ".opus", ".ogg", ".m4a")

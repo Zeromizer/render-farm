@@ -7,10 +7,21 @@ than by node id, so re-exporting the workflow after rearranging it in the UI
 needs no code change here. Anything a model does not have (no ABC node, no cfg
 input) is simply not set.
 
-yue2_inst: YuE2 3B (int8) + the instrumental LoRA on the CLIP slot. The model
-writes an ABC score first (mode "full") and then the audio conditioned on it.
-It takes no lyrics: the `lyrics` input carries timed section tags such as
-"[intro 0:00-0:03]" which are also the only handle on length and structure.
+yue2_inst: YuE2 3B (int8) + the instrumental LoRA on the CLIP slot (ComfyUI maps
+the YuE2 language model to CLIP, so that is strength_clip 1.0 / strength_model 0).
+Three stages in one graph: YuE2GenerateABC writes a score, YuE2GenerateMusic
+writes music tokens conditioned on it (mode "full"), then a KSampler + audio VAE
+turns those into sound. It takes no lyrics: the `lyrics` input carries timed
+section tags such as "[intro 0:00-0:03]", the only handle on length and structure.
+
+THE EXPORT MUST BE FLATTENED. The stock template feeds style, lyrics and seed in
+through PrimitiveStringMultiline / SeedNode wires, and routes the ABC score
+through a ComfySwitchNode whose default is OFF (an empty abc silently forces
+mode "off", so mode=full does nothing). build() only writes LITERAL inputs and
+never rewires, so the committed JSON has to carry style/lyrics/seed as literals
+on the two YuE2 nodes, a literal seed on the KSampler, and abc wired straight
+from the ABC node. build() refuses an export where that is not true rather than
+generating the template placeholder song.
 """
 import copy
 import json
@@ -55,14 +66,17 @@ def build(model, style, lyrics, duration_s, seed, prefix, cfg_scale=None):
     """Return (graph, meta). Raises if the export has no generate or save node."""
     base, spec = load(model)
     graph = copy.deepcopy(base)
-    touched = {"text": 0, "music": 0, "save": 0}
+    touched = {"text": 0, "music": 0, "save": 0, "sampler": 0}
+    unset = []
     for node in graph.values():
         cls = node.get("class_type", "")
         inputs = node.setdefault("inputs", {})
         if cls in _TEXT_NODES:
             touched["text"] += 1
             for key, value in (("style", style), ("lyrics", lyrics), ("seed", int(seed))):
-                if key in inputs and not isinstance(inputs[key], list):   # a list is a wire, leave it
+                if isinstance(inputs.get(key), list):   # a wire: whatever feeds it would win
+                    unset.append(f"{cls}.{key}")
+                else:
                     inputs[key] = value
             if "mode" in inputs and not isinstance(inputs["mode"], list):
                 inputs["mode"] = "full"
@@ -73,6 +87,16 @@ def build(model, style, lyrics, duration_s, seed, prefix, cfg_scale=None):
             inputs["max_duration"] = round(cap, 2)
             if cfg_scale is not None:
                 inputs["cfg_scale"] = float(cfg_scale)
+            if not isinstance(inputs.get("abc"), list):
+                unset.append("YuE2GenerateMusic.abc (must be wired from YuE2GenerateABC)")
+        if cls in ("KSampler", "KSamplerAdvanced"):
+            # One seed drives all three stages, so a retry changes the whole take.
+            key = "seed" if cls == "KSampler" else "noise_seed"
+            if isinstance(inputs.get(key), list):
+                unset.append(f"{cls}.{key}")
+            else:
+                inputs[key] = int(seed)
+                touched["sampler"] += 1
         if cls.startswith("SaveAudio"):
             touched["save"] += 1
             inputs["filename_prefix"] = prefix
@@ -80,13 +104,17 @@ def build(model, style, lyrics, duration_s, seed, prefix, cfg_scale=None):
         raise RuntimeError(f"{spec['file']} has no YuE2GenerateMusic node")
     if not touched["save"]:
         raise RuntimeError(f"{spec['file']} has no SaveAudio node, so nothing would come back")
+    if unset:
+        raise RuntimeError(f"{spec['file']} is not flattened, so this request would not reach the model: "
+                           f"{', '.join(unset)}. See the note at the top of audiogen/graphs.py.")
     meta = {"model": model, "nodes": len(graph), **touched}
     return graph, meta
 
 
 def hint(model, duration_s):
-    """comfy_client.wait() ETA seed. The generation is autoregressive, not a fixed
-    number of diffusion steps, so until a tqdm line appears it is one long 'step'."""
+    """comfy_client.wait() ETA seed. Most of the time goes in the autoregressive
+    token stages, not the 32 diffusion steps, so until a tqdm line appears it is
+    one long 'step' sized from the length asked for (25 music tokens per second)."""
     spec = MODELS[model]
     return {"steps": 1, "step_seconds": max(10.0, float(duration_s) * spec["realtime_factor"]),
             "load_seconds": spec["load_seconds"], "tail_seconds": 8.0}
