@@ -307,3 +307,37 @@ its own cached venv (`opencv-python-headless`), the runner owns downloads,
 params and rows, same split as matte. Measured: 1080p 124-frame clip, plate
 + badge, ~20 s. Pure tests in `worker/tests/test_planar_patch.py`; the
 tracking tests run when cv2 is importable.
+
+## audio_gen engine: YuE2 instrumental beds (added 2026-09-20)
+
+A music bed from a text description, for render-platform's Music page
+("Generate"). `engine: "audio_gen"`, no repo (`repo_url` is `-`), everything
+in `params.audio_gen` (see `worker/runners/audio_gen.py` docstring): `org_id`,
+`user_id`, `track_id` (scoping only), `model` (`yue2_inst`), `prompt` (the
+style: genre, mood, tempo, instruments), `tags` (what goes where lyrics
+would: timed section tags, one per line, `[intro 0:00-0:03]`; only intro,
+verse, pre-chorus, chorus, bridge, outro), `duration_s` (4-180), `seed`,
+optional `cfg_scale`.
+
+The model is YuE2 3B (`yue2_3b_int8_convrot.safetensors`, native ComfyUI
+nodes, needs ComfyUI >= 0.35) with the Mothersuperior instrumental LoRA on
+the CLIP slot at 1.0 and `mode: full` (it writes an ABC score, then the
+audio). Stock YuE2 sings over everything after 20-30 s; the LoRA is what
+makes a bed possible. The graph is NOT written in code: it is the workflow
+as exported from the UI with "Save (API format)",
+`worker/audiogen/yue2_inst.api.json`, and `audiogen/graphs.py` fills it in by
+node class and input name, so re-exporting after rearranging the workflow
+needs no code change. A second model is a second JSON file plus an entry in
+`graphs.MODELS`.
+
+Output is `outputs/<job_id>.wav`: 48 kHz stereo s16, trimmed to `duration_s`
+with a 0.4 s fade. A take shorter than 70% of the request fails (the
+platform's retry uses a new seed). The measured length is written back to
+`params.audio_gen_result` (`duration_s`, `generated_s`). Shares the ComfyUI
+queue and the TTS pause with video_gen: a bed waits behind an H3 clip that is
+already sampling. Licence: the YuE2 weights are CC BY-NC with a creator
+carve-out that does not cover companies, and the LoRA is non-commercial, so
+the platform stamps every generated track "internal use until licensed".
+Tests: `worker/tests/test_audio_gen.py` (graph filling is pure; the trim
+tests use real ffmpeg). Queue path:
+`worker\insert_test_job.py --engine audio_gen --params "{\"prompt\": \"warm lo-fi keys, 85 bpm\", \"tags\": \"[intro 0:00-0:03]\n[chorus 0:03-0:12]\n[outro 0:12-0:15]\", \"duration_s\": 15}"`.

@@ -15,9 +15,9 @@ import db  # noqa: E402
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", required=True, choices=["remotion", "blender", "video_gen"])
+    ap.add_argument("--engine", required=True, choices=["remotion", "blender", "video_gen", "audio_gen"])
     ap.add_argument("--repo", help="git URL (not used by video_gen)")
-    ap.add_argument("--params", help="video_gen: JSON for params.video_gen (prompt, mode, duration_s, ...)")
+    ap.add_argument("--params", help="video_gen / audio_gen: JSON for params.<engine> (prompt, duration_s, ...)")
     ap.add_argument("--timeout-minutes", type=int)
     ap.add_argument("--priority", type=int)
     ap.add_argument("--ref", default="main")
@@ -46,10 +46,10 @@ def main():
         params["props"] = json.loads(args.props)
     if args.assets:
         params["assets"] = json.loads(args.assets)
-    if args.engine == "video_gen":
+    if args.engine in ("video_gen", "audio_gen"):
         if not args.params:
-            ap.error("video_gen needs --params '<json>' with at least a prompt")
-        params = {"video_gen": json.loads(args.params)}
+            ap.error(f"{args.engine} needs --params '<json>' with at least a prompt")
+        params = {args.engine: json.loads(args.params)}
     elif not args.repo:
         ap.error("--repo is required for this engine")
 
