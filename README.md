@@ -293,7 +293,12 @@ way for small chrome lettering), `template` gray|edges|none, `min_score`,
 letters do not ghost under a letters-only alpha), `blur`, `feather`, `match`,
 `prescale`, `sharpen`, and `frames` / `fade` (per-pass frame range with a
 blend at each end, for turntables where a face comes round more than
-once). Look defaults, settled on the Atto 3 EVO 360 master: artwork
+once). `track_from` links a patch to an earlier patch's per-frame homography
+(a ~90 px badge that cannot hold its own track borrows the number plate's
+motion on the same nose), and `snap` (px) refines that linked position per
+frame by matching the key-frame appearance in the rectified frame, which
+removes the few px of parallax between the two surfaces; `clear_grow` now
+also widens a rect-shaped clear. Look defaults, settled on the Atto 3 EVO 360 master: artwork
 area-resampled at 1.2x its on-screen size before a cubic warp, unsharp
 0.35, blur 0.5, black-level match (full levels match dims white lettering
 to the footage's grey; 1.5 / 0.8 / 0.3 read too crisp).

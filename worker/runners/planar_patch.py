@@ -74,7 +74,7 @@ LIBRARY_DIR = os.path.join(PATCH_DIR, "library")
 # Keys the platform may set per patch and forward verbatim to planar.py.
 TUNABLE = ("key_frame", "key_box", "template", "min_score", "refine", "smooth", "win",
            "clear", "clear_grow", "clear_radius", "clear_shape", "blur", "feather", "match",
-           "prescale", "sharpen", "frames", "fade")
+           "prescale", "sharpen", "frames", "fade", "track_from", "snap")
 
 
 def resolve_library(ref):

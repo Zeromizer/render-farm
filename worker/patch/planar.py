@@ -60,7 +60,7 @@ DEFAULTS = {"alpha": None, "key_frame": -1, "key_box": None, "template": "gray",
             # Look defaults settled on the Atto 3 EVO 360 master (2026-09-19): levels match + blur 1.2
             # read grey and soft, prescale 1.5 / sharpen 0.8 too crisp against H3 footage.
             "clear_shape": "auto", "blur": 0.5, "feather": 2.0, "match": "black",
-            "prescale": 1.2, "sharpen": 0.35, "frames": None, "fade": 0}
+            "prescale": 1.2, "sharpen": 0.35, "frames": None, "fade": 0, "track_from": None, "snap": 0}
 
 
 def emit(kind, text):
@@ -247,7 +247,9 @@ def clear_mask(alpha, has_alpha, Hm, W, H, p):
     cr = np.zeros((ph_, pw_), np.uint8)
     mx, my = int(pw_ * p["clear"]), int(ph_ * p["clear"])
     cv2.rectangle(cr, (mx, my), (pw_ - mx, ph_ - my), 255, -1)
-    return cv2.dilate(cv2.warpPerspective(cr, Hm, (W, H), flags=cv2.INTER_NEAREST), np.ones((3, 3), np.uint8))
+    grow = max(1, int(round(float(p.get("clear_grow", 2.0)))))
+    return cv2.dilate(cv2.warpPerspective(cr, Hm, (W, H), flags=cv2.INTER_NEAREST),
+                      cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1)))
 
 
 def composite(frame, art, alpha, quad, p, has_alpha=False):
@@ -353,6 +355,47 @@ def proof_sheet(before, after, quads_by_patch, path):
     cv2.imwrite(path, np.vstack(blocks))
 
 
+def link_track(ref, key, q, lo, hi, grays, box, snap):
+    """Quads for frames lo..hi of a patch that borrows another patch's motion. `ref` is the source
+    patch's per-frame quad list (None where it has none), `q` this patch's key-frame quad, `box`
+    its key box. The source homography is exact only on its own surface; `snap` (px) refines each
+    frame with a translation search of the key-frame appearance in the frame rectified back to key
+    space, taking out the parallax between the two surfaces. Returns (quads, held, snapped)."""
+    H, W = grays[0].shape[:2]
+    n = len(grays)
+    base = np.asarray(ref[key], np.float32).reshape(4, 2)
+    x0, y0, x1, y1 = box
+    m = 4
+    kx0, ky0, kx1, ky1 = max(0, x0 - m), max(0, y0 - m), min(W, x1 + m), min(H, y1 + m)
+    kc = grays[key][ky0:ky1, kx0:kx1]
+    homs, offs, lost = {}, {}, 0
+    for i in range(lo, hi + 1):
+        if ref[i] is None:
+            lost += 1
+            continue
+        Hm = cv2.getPerspectiveTransform(base, np.asarray(ref[i], np.float32).reshape(4, 2))
+        homs[i] = Hm
+        if snap > 0 and i != key:
+            rect = cv2.warpPerspective(grays[i], Hm, (W, H), flags=cv2.WARP_INVERSE_MAP | cv2.INTER_LINEAR)
+            sx0, sy0 = max(0, kx0 - snap), max(0, ky0 - snap)
+            search = rect[sy0:min(H, ky1 + snap), sx0:min(W, kx1 + snap)]
+            if search.shape[0] > kc.shape[0] and search.shape[1] > kc.shape[1]:
+                r = cv2.matchTemplate(search, kc, cv2.TM_CCOEFF_NORMED)
+                _, sc, _, (bx, by) = cv2.minMaxLoc(r)
+                if sc > 0.4:
+                    offs[i] = (sx0 + bx - kx0, sy0 + by - ky0)
+    quads = [None] * n
+    keys = sorted(offs)
+    for i, Hm in homs.items():
+        dx = dy = 0.0
+        if snap > 0 and keys:
+            near = [offs[j] for j in keys if abs(j - i) <= 1] or [offs[min(keys, key=lambda j: abs(j - i))]]
+            dx = sum(o[0] for o in near) / len(near); dy = sum(o[1] for o in near) / len(near)
+        qq = (np.asarray(q, np.float32) + np.array([dx, dy], np.float32)).reshape(1, 4, 2)
+        quads[i] = cv2.perspectiveTransform(qq, Hm).reshape(4, 2)
+    return quads, lost, len(offs)
+
+
 def main(spec_path):
     with open(spec_path, encoding="utf-8") as f:
         spec = json.load(f)
@@ -420,13 +463,30 @@ def main(spec_path):
 
         emit("PHASE", f"tracking {name}")
         span = hi - lo + 1
-        quads, misses, lost = track(grays[lo:hi + 1], key - lo, q, aspect, bool(p["refine"]), float(p["win"]))
-        sm_span = smooth_quads(quads, int(p["smooth"]))
         sm = [None] * n
-        for k in range(span):
-            sm[lo + k] = sm_span[k]
+        if p["track_from"]:
+            # linked track: reuse another patch's per-frame homography (same rigid surface, e.g. a badge
+            # too small to track on its own borrowing the number plate's motion)
+            src = next((t for t in tracks if t[0] == p["track_from"]), None)
+            if src is None:
+                raise RuntimeError(f"{name}: track_from {p['track_from']!r} must name an earlier patch")
+            ref = src[4]
+            if ref[key] is None:
+                raise RuntimeError(f"{name}: track_from patch has no track at key_frame {key}")
+            linked, lost, nsnap = link_track(ref, key, q, lo, hi, grays, (x0, y0, x1, y1), int(p["snap"] or 0))
+            for i in range(lo, hi + 1):
+                sm[i] = linked[i]
+            misses = span
+            snapped = f" snapped={nsnap}" if int(p["snap"] or 0) > 0 else ""
+            stats.append(f"linked_to={p['track_from']} frames={span - lost} held={lost}{snapped}")
+        else:
+            quads, misses, lost = track(grays[lo:hi + 1], key - lo, q, aspect, bool(p["refine"]), float(p["win"]))
+            sm_span = smooth_quads(quads, int(p["smooth"]))
+            for k in range(span):
+                sm[lo + k] = sm_span[k]
         rng = f" frames={lo}-{hi}" if p["frames"] else ""
-        stats.append(f"detections={span - misses} flow={misses - lost} held={lost}{rng}")
+        if not p["track_from"]:
+            stats.append(f"detections={span - misses} flow={misses - lost} held={lost}{rng}")
         emit("MEASURED", f"{name} {stats[1]}")
         if lost > 0.1 * span:
             raise RuntimeError(f"{name}: track lost on {lost} of {span} frames (element leaves frame or too few "

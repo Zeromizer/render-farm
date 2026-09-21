@@ -186,6 +186,37 @@ class Tracking(unittest.TestCase):
         forced = planar.clear_mask(alpha, True, Hm, 80, 80, {"clear": 0.03, "clear_shape": "rect"})
         self.assertEqual(forced[2, 2], 255)        # lettering: rectangle even with an alpha
 
+    def test_link_track_follows_source_with_snap(self):
+        import cv2
+        import numpy as np
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "patch"))
+        import planar
+        frames, boxes = self._synthetic()
+        # a small badge drawn 24 px above the plate, but drifting 3 px sideways relative to it (parallax)
+        bboxes = []
+        for i, (x0, y0, x1, y1) in enumerate(boxes):
+            bx0 = x0 + 10 + (3 if i > 15 else 0)
+            cv2.rectangle(frames[i], (bx0, y0 - 24), (bx0 + 30, y0 - 12), (240, 240, 240), -1)
+            cv2.putText(frames[i], "BYD", (bx0 + 2, y0 - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (20, 20, 20), 1)
+            bboxes.append((bx0, y0 - 24, bx0 + 30, y0 - 12))
+        grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
+        key = 15
+        x0, y0, x1, y1 = boxes[key]
+        q = planar.order_quad([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+        plate, _, _ = planar.track(grays, key, q, 60 / 18, True, 1.0)
+        bx0, by0, bx1, by1 = bboxes[key]
+        bq = planar.order_quad([(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)])
+        raw, lost, nsnap = planar.link_track(plate, key, bq, 0, len(frames) - 1, grays, bboxes[key], 0)
+        self.assertEqual(lost, 0)
+        self.assertEqual(nsnap, 0)
+        self.assertGreater(abs(raw[25][:, 0].min() - bboxes[25][0]), 2.0)    # plain link misses the 3 px parallax
+        snapped, lost, nsnap = planar.link_track(plate, key, bq, 0, len(frames) - 1, grays, bboxes[key], 6)
+        self.assertEqual(lost, 0)
+        self.assertGreater(nsnap, 20)
+        for i in (0, 10, 20, 25, 29):
+            self.assertLess(abs(snapped[i][:, 0].min() - bboxes[i][0]), 1.6, f"frame {i}")
+            self.assertLess(abs(snapped[i][:, 1].min() - bboxes[i][1]), 1.6, f"frame {i}")
+
     def test_range_weights(self):
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "patch"))
         import planar

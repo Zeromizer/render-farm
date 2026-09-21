@@ -5,7 +5,7 @@
       "rear",
       "front"
     ],
-    "notes": "Rear plate, rear tailgate badge, front plate. Side badges not cut."
+    "notes": "Rear plate, rear tailgate badge, front plate, front light-bar BYD badge (link it to plate_front with track_from). Side badges not cut."
   },
   "plate": {
     "artwork": "plate.png",
@@ -56,5 +56,24 @@
     "clear_shape": "rect",
     "prescale": 1.2,
     "sharpen": 0.25
+  },
+  "badge_front": {
+    "artwork": "badge_front.png",
+    "alpha": "badge_front_alpha.png",
+    "template": "none",
+    "refine": false,
+    "clear": 0.03,
+    "clear_grow": 2,
+    "clear_radius": 3,
+    "clear_shape": "rect",
+    "blur": 0.6,
+    "feather": 1.0,
+    "win": 1.5,
+    "match": "black",
+    "prescale": 1.2,
+    "sharpen": 0.25,
+    "view": "front",
+    "element": "light-bar BYD badge",
+    "notes": "Chrome 'BYD' lettering on the front light bar, 770x170 cut from the press front render [4010:4180, 6620:7390] with a filled-glyph alpha. Too small to track on its own on most clips (~90 px): give key_box and track_from the plate_front patch (same rigid nose), which shares its homography."
   }
 }
