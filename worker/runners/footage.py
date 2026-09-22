@@ -89,7 +89,25 @@ PIN_WINDOW = 39                     # the window Phase 0 measured
 # tear. 12 new frames is half a second to travel from one pinned window to
 # another, and that appears to be too few. Offering these would ship a button
 # whose whole purpose is an invisible join, which measurably is not one.
-PROVEN_GENERATION_OPS = ("extend", "prepend")
+# WITHDRAWN AGAIN 2026-09-22 after review of 370d65c/6480fe3. The media path
+# is proven — trimmed latent, pixel import, auto fallback and chaining all
+# produce correct footage — but the FAILURE paths are not:
+#   comfy_client.wait() calls a bare interrupt() on timeout and on cancel,
+#   before _abort_prompt is ever reached, so a cancelled footage task can
+#   stop an unrelated video_gen prompt on the same ComfyUI. That is a live
+#   hazard to other work and is reason enough on its own.
+#   An uncertain submit whose queue read also fails resumes the TTS workers,
+#   because _prompt_is_live cannot distinguish "not queued" from "cannot
+#   tell"; queue_state accepts a non-2xx body as an empty queue.
+#   The prompt journal is written and never read, so a same-task retry
+#   submits a second generation instead of reconciling the first.
+#   Heartbeat is a class instance, not a callable, so _hb drops every
+#   phase, fraction and ETA it claimed to forward.
+#   resolve_boundary compares SOURCE frames against a 39 OUTPUT-frame
+#   window, so a 30fps import passes the check with too little context.
+# Correct output on the happy path is not enough when the failure paths can
+# disturb other jobs or silently under-pin an import.
+PROVEN_GENERATION_OPS = ()
 
 # Advertising an operation this runner would then refuse is worse than not
 # offering it: the website enables the button on capabilities alone, so the
