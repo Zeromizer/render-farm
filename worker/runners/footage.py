@@ -1037,6 +1037,9 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
                 except FootageError as exc:
                     guard.hold(str(exc))
                     raise
+                _release_models(log, f"{op} submit failed; owned prompt aborted")
+            elif state == GONE:
+                _release_models(log, f"{op} submit failed; completion confirmed")
             elif state == UNKNOWN:
                 # "Cannot tell" is not "not running". Releasing 6-8 GB of TTS
                 # here could starve a render that is very much alive.

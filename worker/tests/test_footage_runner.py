@@ -813,18 +813,15 @@ class FailurePaths(unittest.TestCase):
     def _idle(self):
         return {"queue_running": [], "queue_pending": []}
 
-    def test_a_successful_run_frees_models_before_tts_resumes(self):
-        """ComfyUI runs --fast-disk, so a finished generation leaves ~14 GB
-        of weights resident. Unload must happen INSIDE the guard, before the
-        TTS workers come back."""
+    def test_release_helper_frees_strictly_when_the_queue_is_idle(self):
+        """NOTE: this covers the HELPER only. It does NOT prove ordering
+        against the TTS guard. Its earlier name claimed an ordering
+        assertion it never made; the reviewer's acceptance suite drives real
+        op_continuation for that."""
         import unittest.mock as mock
-        from videogen import comfy_client, tts_guard
-        order = []
+        from videogen import comfy_client
         with mock.patch.object(footage, "_queue_snapshot", return_value=([], [])), \
-             mock.patch.object(comfy_client, "free",
-                               side_effect=lambda **k: order.append("free") or True) as free, \
-             mock.patch.object(tts_guard, "resume",
-                               side_effect=lambda *a: order.append("resume")):
+             mock.patch.object(comfy_client, "free", return_value=True) as free:
             self.assertTrue(footage._release_models(lambda m: None, "test"))
         self.assertEqual(free.call_count, 1)
         self.assertTrue(free.call_args.kwargs.get("strict"))
@@ -862,17 +859,20 @@ class FailurePaths(unittest.TestCase):
             self.assertFalse(footage._release_models(said.append, "test"))
             self.assertTrue(any("WARNING" in m for m in said))
 
-    def test_an_unconfirmed_abort_never_frees(self):
-        """Uncertain state keeps the guard held; a global /free there could
-        evict another engine's models while our prompt may still be live."""
+    def test_a_prior_attempt_refusal_never_frees(self):
+        """RENAMED: the old name promised an abort path, but a 'done' prior
+        journal makes this exit at the reconciliation check, long before any
+        abort is reached. What it actually proves is that refusing a
+        re-entered task never evicts another engine's cached work."""
         import unittest.mock as mock
         from videogen import comfy_client
         footage._journal("task-live", "old-pid", "done", op="extend")
         with mock.patch.object(comfy_client, "free") as free, \
              mock.patch.object(footage, "_prompt_state", return_value=footage.UNKNOWN), \
-             mock.patch.object(footage, "_stage_pair"):
+             mock.patch.object(footage, "_stage_pair") as stage:
             with self.assertRaises(footage.FootageError):
                 self._run()
+        self.assertEqual(stage.call_count, 0, "refusal should precede staging")
         self.assertEqual(free.call_count, 0)
 
     def test_a_pre_submit_refusal_never_frees(self):
@@ -905,3 +905,63 @@ class FailurePaths(unittest.TestCase):
             self.assertFalse(comfy_client.free())          # legacy: swallows
             with self.assertRaises(comfy_client.ComfyError):
                 comfy_client.free(strict=True)             # runner: reports
+
+    def test_a_settled_submission_failure_frees_on_both_settled_branches(self):
+        """A lost submit RESPONSE still leaves a settled prompt in two cases:
+        history confirms it completed (GONE), or it was live and our own
+        abort confirmed it stopped (LIVE + abort returns). Both previously
+        resumed TTS without ever unloading, which is the whole defect."""
+        import unittest.mock as mock
+        from videogen import comfy_client
+        for state in (footage.GONE, footage.LIVE):
+            with self.subTest(state=state):
+                calls = []
+                with mock.patch.object(footage, "_journal_last",
+                                       return_value=(None, False)), \
+                     mock.patch.object(footage, "_stage_pair",
+                                       return_value=("ref", True, "l.mp4")), \
+                     mock.patch.object(footage, "probe_media",
+                                       return_value={"frame_count": 73, "fps": R24,
+                                                     "width": 832, "height": 480,
+                                                     "has_audio": True}), \
+                     mock.patch.object(footage, "read_mctx_header",
+                                       return_value={"delivered_frames": 73,
+                                                     "pinned_head_frames": 0}), \
+                     mock.patch.object(footage, "build_continuation", return_value={}), \
+                     mock.patch.object(footage, "_prompt_state", return_value=state), \
+                     mock.patch.object(footage, "_abort_prompt", return_value=None), \
+                     mock.patch.object(footage, "_release_models",
+                                       side_effect=lambda *a: calls.append("free")), \
+                     mock.patch.object(comfy_client, "ensure_server"), \
+                     mock.patch.object(comfy_client, "submit",
+                                       side_effect=RuntimeError("response lost")):
+                    with self.assertRaises(RuntimeError):
+                        self._run()
+                self.assertEqual(calls, ["free"],
+                                 f"settled submit failure ({state}) skipped cleanup")
+
+    def test_an_unknown_submission_state_still_never_frees(self):
+        """The counterpart: UNKNOWN keeps the hold and must NOT unload."""
+        import unittest.mock as mock
+        from videogen import comfy_client
+        calls = []
+        with mock.patch.object(footage, "_journal_last", return_value=(None, False)), \
+             mock.patch.object(footage, "_stage_pair",
+                               return_value=("ref", True, "l.mp4")), \
+             mock.patch.object(footage, "probe_media",
+                               return_value={"frame_count": 73, "fps": R24,
+                                             "width": 832, "height": 480,
+                                             "has_audio": True}), \
+             mock.patch.object(footage, "read_mctx_header",
+                               return_value={"delivered_frames": 73,
+                                             "pinned_head_frames": 0}), \
+             mock.patch.object(footage, "build_continuation", return_value={}), \
+             mock.patch.object(footage, "_prompt_state", return_value=footage.UNKNOWN), \
+             mock.patch.object(footage, "_release_models",
+                               side_effect=lambda *a: calls.append("free")), \
+             mock.patch.object(comfy_client, "ensure_server"), \
+             mock.patch.object(comfy_client, "submit",
+                               side_effect=RuntimeError("response lost")):
+            with self.assertRaises(RuntimeError):
+                self._run()
+        self.assertEqual(calls, [])
