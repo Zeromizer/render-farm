@@ -107,7 +107,22 @@ PIN_WINDOW = 39                     # the window Phase 0 measured
 #   window, so a 30fps import passes the check with too little context.
 # Correct output on the happy path is not enough when the failure paths can
 # disturb other jobs or silently under-pin an import.
-PROVEN_GENERATION_OPS = ()
+#
+# RESTORED 2026-09-22 on reviewed bytes (aaa6cbc). Every branch below was
+# re-proven on THIS revision, not carried over from the earlier runs:
+#   latent  cut [0,56) of a 73-frame take -> source_start_frame 17, seam
+#           "seamless", context binds, 94.8s
+#   pixel   same cut, no sidecar -> staged src[17,56), real take_id, 80.2s
+#   auto    cut [0,60) -> off the 17-frame grid, re-encoded from pixels
+#           BEFORE sampling, legal ends named [56,73], 76.9s
+#   latent  cut [0,60) -> refused before the GPU, same legal ends
+#   chain   successor of the trimmed candidate -> raw_start 51, delivered
+#           51, 67.1s
+#   prepend raw 90 -> 51 delivered, one pin placed after, arrival seam
+#           "seamless", 78.5s
+# bridge and loop stay withheld: mechanically correct, but their arrival
+# joins have not passed VISUAL review, and a seam metric is not acceptance.
+PROVEN_GENERATION_OPS = ("extend", "prepend")
 
 # Advertising an operation this runner would then refuse is worse than not
 # offering it: the website enables the button on capabilities alone, so the
