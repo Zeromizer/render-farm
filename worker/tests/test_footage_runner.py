@@ -586,11 +586,23 @@ class FailurePaths(unittest.TestCase):
         footage._journal("task-1", "pid-A", "submitting", op="extend")
         footage._journal("task-1", "pid-A", "queued", op="extend")
         footage._journal("task-2", "pid-B", "submitting", op="extend")
-        last = footage._journal_last("task-1")
+        last, ambiguous = footage._journal_last("task-1")
+        self.assertFalse(ambiguous)
         self.assertEqual(last["prompt_id"], "pid-A")
         self.assertEqual(last["state"], "queued")
-        self.assertEqual(footage._journal_last("task-2")["prompt_id"], "pid-B")
-        self.assertIsNone(footage._journal_last("never-seen"))
+        self.assertEqual(footage._journal_last("task-2")[0]["prompt_id"], "pid-B")
+        self.assertEqual(footage._journal_last("never-seen"), (None, False))
+
+    def test_a_torn_line_is_ambiguous_not_absent(self):
+        """A crash mid-write leaves a partial trailing line. One bad line
+        used to discard every valid record before it, which reads as 'no
+        prior attempt' and reopens staging while a prompt may be live."""
+        footage._journal("task-1", "pid-A", "queued", op="extend")
+        with open(footage._journal_path(), "a", encoding="utf-8") as f:
+            f.write('{"task_id":')
+        last, ambiguous = footage._journal_last("task-1")
+        self.assertTrue(ambiguous)
+        self.assertEqual(last["prompt_id"], "pid-A")   # earlier record survives
 
     def test_journal_failure_raises_rather_than_being_swallowed(self):
         """A pre-submit record that silently fails makes a duplicate
@@ -767,14 +779,32 @@ class FailurePaths(unittest.TestCase):
         self.assertEqual(stage.call_count, 0)
         self.assertIn("duplicate", str(cm.exception))
 
-    def test_a_settled_prior_attempt_does_not_block(self):
-        """A finished attempt must not wedge the task forever."""
+    def test_even_a_completed_prior_attempt_is_never_resampled(self):
+        """ONE generation per task, whatever the prior outcome.
+
+        This test previously asserted the OPPOSITE — that a 'done' record
+        fell through to a fresh submission — which is exactly the unsafe
+        behaviour: reclaim re-enters a task under its own id, and reclaim is
+        not authorization to spend the GPU twice. A fresh generation is a
+        NEW task.
+        """
         import unittest.mock as mock
         footage._journal("task-live", "old-pid", "done", op="extend")
         with mock.patch.object(footage, "_prompt_state",
-                               return_value=footage.LIVE), \
-             mock.patch.object(footage, "_stage_pair",
-                               side_effect=RuntimeError("reached staging")):
-            with self.assertRaises(RuntimeError) as cm:
+                               return_value=footage.GONE), \
+             mock.patch.object(footage, "_stage_pair") as stage:
+            with self.assertRaises(footage.FootageError) as cm:
                 self._run()
-        self.assertIn("reached staging", str(cm.exception))
+        self.assertEqual(stage.call_count, 0)
+        self.assertIn("twice", str(cm.exception))
+
+    def test_an_unreadable_journal_blocks_before_staging(self):
+        """Ambiguity must block, not masquerade as 'no prior attempt'."""
+        import unittest.mock as mock
+        with mock.patch.object(footage, "_journal_last",
+                               return_value=(None, True)), \
+             mock.patch.object(footage, "_stage_pair") as stage:
+            with self.assertRaises(footage.FootageError) as cm:
+                self._run()
+        self.assertEqual(stage.call_count, 0)
+        self.assertIn("could not be read", str(cm.exception))

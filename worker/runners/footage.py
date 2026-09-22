@@ -852,24 +852,39 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
     # the very inputs a still-running prompt is reading, and stepping aside to
     # a fresh name would quietly turn an uncertain retry into a SECOND
     # generation on the same GPU. Settle the previous attempt first.
-    prior = _journal_last(jid)
-    if prior and prior.get("state") not in _SETTLED and prior.get("prompt_id"):
+    prior, ambiguous = _journal_last(jid)
+    if ambiguous:
+        raise FootageError(
+            "this worker's prompt journal could not be read completely, so "
+            f"whether task {jid} already has a generation running cannot be "
+            "established. Refusing to stage or submit rather than risk a "
+            f"duplicate. Inspect {_journal_path()}.")
+    if prior and prior.get("prompt_id"):
         ppid = prior["prompt_id"]
         state = _prompt_state(ppid)
         log(f"task {jid} has a prior prompt {ppid} in state "
             f"{prior['state']!r}; ComfyUI says {state}")
+        # ONE generation per task, whatever the prior outcome. A completed
+        # attempt must be collected, not sampled again: re-entry happens
+        # through reclaim, and reclaim is not authorization to spend the GPU
+        # twice on the same task. A deliberate retry is a NEW task id.
         if state == LIVE:
             raise FootageError(
                 f"this task already has prompt {ppid} on the ComfyUI queue "
                 f"(recorded as {prior['state']!r}). Refusing to submit a "
                 "second generation for the same task. Let it finish, or "
-                "cancel it, then retry with a new task.")
+                "cancel it, then submit a new task.")
         if state == UNKNOWN:
             raise FootageError(
-                f"this task has an unsettled prompt {ppid} and ComfyUI could "
-                "not be read to find out whether it is still running. "
+                f"this task has prompt {ppid} recorded as {prior['state']!r} "
+                "and ComfyUI could not confirm whether it is still running. "
                 "Refusing to risk a duplicate generation.")
-        _journal(jid, ppid, "reconciled-gone", op=op)
+        raise FootageError(
+            f"this task already ran as prompt {ppid} (recorded "
+            f"{prior['state']!r}); its result is in ComfyUI's history and "
+            f"under {config.COMFYUI_DIR}/output/footage/{jid}. Refusing to "
+            "generate the same task twice — collect that attempt, or submit "
+            "a new task for a fresh generation.")
 
     _STAGE_KEY["folder"] = f"footage/{jid}"
     staged = [_stage_pair(s, work_dir, i, log) for i, s in enumerate(sources)]
@@ -947,9 +962,14 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
         spec["staged_has_audio"] = bool(infos[i]["has_audio"])
         spec["staged_source_frames"] = list(src_span)
         if got["frame_count"] != PIN_WINDOW:
-            warnings.append(
-                f"a pinned window yielded {got['frame_count']} frames rather "
-                f"than {PIN_WINDOW}; your cut was not moved")
+            # Reaching the GPU with a short pin wastes a run and produces a
+            # join conditioned on less context than the recipe claims. This
+            # used to be a warning, which the earlier checkpoint wrongly
+            # reported as a rejection.
+            raise FootageError(
+                f"source {i}'s cut yielded {got['frame_count']} usable frames "
+                f"after normalizing to the output rate and canvas, but a "
+                f"continuation holds {PIN_WINDOW}. Select more of this clip.")
         if not infos[i]["has_audio"]:
             warnings.append(
                 f"source {i} has no audio, so its pinned context carries "
@@ -992,7 +1012,7 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
         except BaseException:
             # The POST may have been received even though the response was
             # not. Reconcile rather than assume, and never resubmit.
-            _journal(jid, pid, "submit-uncertain", op=op)
+            _journal_note(jid, pid, "submit-uncertain", op=op, log=log)
             state = _prompt_state(pid)
             if state == LIVE:
                 log(f"prompt {pid} IS on the queue despite the failed "
@@ -1009,7 +1029,7 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
                     f"submission of prompt {pid} was uncertain and ComfyUI "
                     "could not be read, so the GPU may be in use")
             raise
-        _journal(jid, pid, "queued", op=op)
+        _journal_note(jid, pid, "queued", op=op, log=log)
         log(f"comfyui prompt {pid} ({op})")
         try:
             outputs = comfy_client.wait(
@@ -1023,17 +1043,17 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
             # the GPU: they take 6-8 GB and would starve a run that is still
             # going, turning a clean failure into a pathologically slow one.
             log(f"aborting comfyui prompt {pid} before releasing the GPU")
-            _journal(jid, pid, "aborting", op=op)
+            _journal_note(jid, pid, "aborting", op=op, log=log)
             try:
                 _abort_prompt(pid, log)
             except FootageError as exc:
                 # Could not prove the GPU is free: hold the workers down.
-                _journal(jid, pid, "abort-unconfirmed", op=op)
+                _journal_note(jid, pid, "abort-unconfirmed", op=op, log=log)
                 guard.hold(str(exc))
                 raise
-            _journal(jid, pid, "aborted", op=op)
+            _journal_note(jid, pid, "aborted", op=op, log=log)
             raise
-    _journal(jid, pid, "done", op=op)
+    _journal_note(jid, pid, "done", op=op, log=log)
     elapsed = time.time() - t0
 
     saved, result_item = _saved_path(outputs)
@@ -1131,6 +1151,22 @@ def _journal(task_id, prompt_id, state, op=None):
         os.fsync(f.fileno())
 
 
+def _journal_note(task_id, prompt_id, state, op=None, log=None):
+    """A POST-submit journal write that can never change control flow.
+
+    Once a prompt has been submitted, cleanup and guard.hold are the only
+    things that matter: a disk or fsync error while recording "queued" must
+    not propagate, because propagating exits the TTS guard and resumes 6-8 GB
+    of workers while the prompt may still be running. Pre-submit persistence
+    stays mandatory (_journal), because there the whole point is to refuse.
+    """
+    try:
+        _journal(task_id, prompt_id, state, op=op)
+    except Exception as exc:                             # noqa: BLE001
+        if log:
+            log(f"WARNING could not journal {state!r} for {prompt_id}: {exc}")
+
+
 def _journal_last(task_id):
     """The most recent journal record for one task, or None.
 
@@ -1139,13 +1175,25 @@ def _journal_last(task_id):
     """
     try:
         with open(_journal_path(), encoding="utf-8") as f:
-            rows = [json.loads(line) for line in f if line.strip()]
+            lines = [ln for ln in f if ln.strip()]
     except FileNotFoundError:
-        return None
-    except (OSError, ValueError):
-        return None
+        return None, False
+    except OSError:
+        # The journal exists but cannot be read. That is NOT "no prior
+        # attempt" — it is "cannot tell", and the caller must block rather
+        # than start a second generation on no information.
+        return None, True
+    rows, ambiguous = [], False
+    for ln in lines:
+        try:
+            rows.append(json.loads(ln))
+        except ValueError:
+            # A torn trailing line is the normal shape of a crash mid-write.
+            # Previously ONE bad line discarded every valid record before it,
+            # which reopened staging while the recorded prompt could be live.
+            ambiguous = True
     mine = [r for r in rows if r.get("task_id") == task_id]
-    return mine[-1] if mine else None
+    return (mine[-1] if mine else None), ambiguous
 
 
 # Terminal states never need reconciling; anything else may still be live.
@@ -1208,9 +1256,21 @@ def _prompt_state(pid):
         h = r.json()
     except Exception:                                    # noqa: BLE001
         return UNKNOWN
-    if isinstance(h, dict) and pid in h:
+    # GONE requires POSITIVE evidence that the prompt reached a terminal
+    # state. An empty history, a malformed body, or a record that is not
+    # completed are all compatible with a prompt still in server-side
+    # validation, not yet on the queue — which is exactly the window an
+    # uncertain submit lands in. Treating those as terminal would release
+    # the GPU and the TTS workers on no evidence at all.
+    if not isinstance(h, dict):
+        return UNKNOWN
+    entry = h.get(pid)
+    if not isinstance(entry, dict):
+        return UNKNOWN
+    status = entry.get("status")
+    if isinstance(status, dict) and status.get("completed") is True:
         return GONE
-    return GONE
+    return UNKNOWN
 
 
 def _status_callback(jid, hb, label, lo=10, hi=90):
@@ -1247,14 +1307,11 @@ def _abort_prompt(pid, log, wait_seconds=120):
     from videogen import comfy_client
     import httpx
 
-    def queue_state():
-        """(running_ids, pending_ids) or None when the queue cannot be read."""
-        try:
-            q = httpx.get(comfy_client._url("/queue"), timeout=10).json()
-        except Exception:                                # noqa: BLE001
-            return None
-        return ([i[1] for i in (q.get("queue_running") or [])],
-                [i[1] for i in (q.get("queue_pending") or [])])
+    # The validated reader, NOT a second unvalidated copy. This function kept
+    # its own queue_state() that called .json() with no status or shape check,
+    # so the cleanup path — the one place that must never guess — still read a
+    # 500 body as a drained queue while the rest of the runner had been fixed.
+    queue_state = _queue_snapshot
 
     state = queue_state()
     if state is None:
