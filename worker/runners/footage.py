@@ -59,13 +59,24 @@ PIN_WINDOW = 39                     # the window Phase 0 measured
 #           chaining holds. bridge/loop await their own raw-90 runs at
 #           12 new frames; prepend is not exercised at all.
 #
-# WITHDRAWN 2026-09-22 after review of a7951ab. extend ran correctly on
-# untrimmed sources, but the graph ignores per-source in_frame/out_frame
-# while the receipt reports them, so any trimmed request conditions on the
-# wrong footage and SAYS it used the user's cut. Silently wrong output is
-# worse than no feature, so nothing generative is offered until the trim,
-# pixel-import and lineage fixes land. Capabilities are CPU-only meanwhile.
-PROVEN_GENERATION_OPS = ()
+# Withdrawn 2026-09-22 after review of a7951ab found that the user's cut was
+# ignored, then RESTORED for extend only once each branch had its own run on
+# this host. The earlier extend proof used untrimmed sources and passed by
+# construction, so it is not counted:
+#   latent, cut [0,56) of a 73-frame take -> pinned source frames [17,56),
+#           recipe source_start_frame 17. The ignored-cut answer would have
+#           been 34, so this number alone separates right from confidently
+#           wrong.
+#   pixel,  same cut -> staged window src[17,56), pin carries a real take_id
+#           rather than None. First footage this path has ever produced.
+#   auto,   cut [0,60) -> raw 21 is off the 17-frame grid, so it re-encoded
+#           from pixels BEFORE sampling and named [56,73] as the legal ends.
+#   latent, cut [0,60) -> refused before the GPU, naming the same ends.
+#   chain,  a second extend from the trimmed-parent candidate pinned at
+#           raw_start 51 and delivered 51, so sequences still grow.
+# bridge and loop await their own raw-90 runs at 12 new frames; prepend is
+# not exercised at all.
+PROVEN_GENERATION_OPS = ("extend",)
 
 # Advertising an operation this runner would then refuse is worse than not
 # offering it: the website enables the button on capabilities alone, so the
@@ -471,7 +482,7 @@ def _stage_pair(src, work_dir, idx, log):
     ctx_ref = src.get("context") or {}
     stage_dir = os.path.join(config.COMFYUI_DIR, "output", _stage_folder(src))
     os.makedirs(stage_dir, exist_ok=True)
-    name = f"src{idx:02d}"
+    name = _stage_stem(stage_dir, f"src{idx:02d}")
     shutil.copyfile(local, os.path.join(stage_dir, f"{name}.mp4"))
     has_ctx = False
     if ctx_ref.get("path"):
@@ -492,6 +503,34 @@ def _stage_folder(src):
     return _STAGE_KEY["folder"]
 
 
+def _stage_stem(stage_dir, base):
+    """A stem whose .mp4 and .mctx.safetensors can both actually be written.
+
+    Staging is keyed by task id, so a RETRY of the same task — which the
+    farm's reclaim path can produce — restages under the same names. ComfyUI
+    keeps the previous attempt's sidecar memory-mapped, and overwriting an
+    mmapped file fails with EINVAL on Windows, so the retry dies before it
+    starts. Clear the names when possible, and step aside when not.
+    """
+    for attempt in range(20):
+        stem = base if attempt == 0 else f"{base}-r{attempt}"
+        blocked = False
+        for ext in (".mp4", ".mctx.safetensors"):
+            path = os.path.join(stage_dir, stem + ext)
+            if not os.path.exists(path):
+                continue
+            try:
+                os.remove(path)
+            except OSError:
+                blocked = True
+                break
+        if not blocked:
+            return stem
+    raise FootageError(
+        f"could not clear a staging name under {stage_dir}; 20 attempts are "
+        "all still held open by ComfyUI")
+
+
 def _stage_window(local, info, spec, req, idx, log):
     """Trim ONE pixel boundary's window and normalize it exactly as assembly
     does: aspect-fit with black pad, output frame rate, 48k stereo audio.
@@ -501,7 +540,7 @@ def _stage_window(local, info, spec, req, idx, log):
     """
     stage_dir = os.path.join(config.COMFYUI_DIR, "output", _stage_folder(None))
     os.makedirs(stage_dir, exist_ok=True)
-    name = f"b{idx:02d}"
+    name = _stage_stem(stage_dir, f"b{idx:02d}")
     dest = os.path.join(stage_dir, f"{name}.mp4")
     ofps = (req.get("output") or {}).get("fps") or {"num": 24, "den": 1}
     width, height = _canvas(req)
