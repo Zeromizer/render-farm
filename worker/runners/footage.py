@@ -620,7 +620,8 @@ def boundary_plan(op):
             "bridge":  [(0, "departure"), (1, "arrival")]}[op]
 
 
-def resolve_boundary(role, src, header, window, frame_count):
+def resolve_boundary(role, src, header, window, frame_count,
+                     source_fps=None, output_fps=None):
     """Where one pinned window sits INSIDE the user's cut.
 
     The cut is [in_frame, out_frame) in the source's delivered frames. A
@@ -643,11 +644,22 @@ def resolve_boundary(role, src, header, window, frame_count):
         raise FootageError(
             f"cut [{a},{b}) is outside the source's {delivered} delivered "
             "frames")
-    if b - a < window:
+    # The window is `window` frames at the OUTPUT rate; the cut is in SOURCE
+    # frames. Comparing them directly passed a 40-frame cut of 30fps footage
+    # that yields only 32 output frames, and rejected a 20-frame cut of 12fps
+    # footage that yields 40 — both wrong, and the short one only surfaced as
+    # a warning after the GPU had already been booked.
+    have_out = allocate_frames(a, b, source_fps, output_fps) \
+        if source_fps and output_fps else b - a
+    if have_out < window:
+        need_src = allocate_frames(0, window, output_fps, source_fps) \
+            if source_fps and output_fps else window
+        out_rate = (output_fps["num"] / output_fps["den"]) if output_fps else 24.0
         raise FootageError(
-            f"a continuation holds {window} frames of context, but the cut "
-            f"[{a},{b}) is only {b - a} frames long. Select at least "
-            f"{window} frames ({window / 24.0:.2f}s) of this clip.")
+            f"a continuation holds {window} frames of context at the output "
+            f"rate, but the cut [{a},{b}) supplies only {have_out}. Select at "
+            f"least {need_src} frames of this clip "
+            f"({window / out_rate:.2f}s of finished footage).")
 
     if role == "departure":
         cut, take_from = b, ("tail" if b == delivered else "at_frame")
@@ -835,6 +847,30 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
             f"grid rounding delivers {delivered} new frames, more than the "
             f"{gen.get('new_frames')} requested")
 
+    # ---- reconcile any PRIOR attempt at this task, BEFORE touching staging --
+    # Reclaim can re-enter a task under its own id. Staging would then rewrite
+    # the very inputs a still-running prompt is reading, and stepping aside to
+    # a fresh name would quietly turn an uncertain retry into a SECOND
+    # generation on the same GPU. Settle the previous attempt first.
+    prior = _journal_last(jid)
+    if prior and prior.get("state") not in _SETTLED and prior.get("prompt_id"):
+        ppid = prior["prompt_id"]
+        state = _prompt_state(ppid)
+        log(f"task {jid} has a prior prompt {ppid} in state "
+            f"{prior['state']!r}; ComfyUI says {state}")
+        if state == LIVE:
+            raise FootageError(
+                f"this task already has prompt {ppid} on the ComfyUI queue "
+                f"(recorded as {prior['state']!r}). Refusing to submit a "
+                "second generation for the same task. Let it finish, or "
+                "cancel it, then retry with a new task.")
+        if state == UNKNOWN:
+            raise FootageError(
+                f"this task has an unsettled prompt {ppid} and ComfyUI could "
+                "not be read to find out whether it is still running. "
+                "Refusing to risk a duplicate generation.")
+        _journal(jid, ppid, "reconciled-gone", op=op)
+
     _STAGE_KEY["folder"] = f"footage/{jid}"
     staged = [_stage_pair(s, work_dir, i, log) for i, s in enumerate(sources)]
     if mode == "latent" and not all(has for _, has, _ in staged):
@@ -860,7 +896,10 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
     plan = []
     for i, role in boundary_plan(op):
         spec = resolve_boundary(role, sources[i], headers[i], PIN_WINDOW,
-                                infos[i]["frame_count"])
+                                infos[i]["frame_count"],
+                                source_fps=infos[i]["fps"],
+                                output_fps=(req.get("output") or {}).get("fps")
+                                or {"num": 24, "den": 1})
         spec["src_index"] = i
         plan.append(spec)
 
@@ -931,26 +970,31 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
     with open(os.path.join(work_dir, "graph.json"), "w") as f:
         json.dump(graph, f, indent=1)
 
-    # The id is OURS and is journalled BEFORE submission, so a lost or
-    # timed-out response never leaves work running that nobody can name.
     pid = str(uuid.uuid4())
-    _journal(jid, pid, "submitting", op=op)
-
-    def progress(phase, frac, eta):
-        _hb(hb, phase, frac, eta)
+    progress = _status_callback(jid, hb, op)
 
     # H3 needs the GPU and the full card: the TTS workers hold 6-8 GB.
     with tts_guard.paused(log) as guard:
         comfy_client.ensure_server(log)
         t0 = time.time()
+        # Journalled BEFORE submission and fsynced. If it cannot be recorded
+        # the task fails here, because submitting work we cannot name is the
+        # exact situation the journal exists to prevent.
+        try:
+            _journal(jid, pid, "submitting", op=op)
+        except OSError as exc:
+            raise FootageError(
+                f"could not record prompt {pid} in the journal ({exc}); "
+                "refusing to submit work that could not be reconciled "
+                "afterwards") from exc
         try:
             pid = comfy_client.submit(graph, prompt_id=pid)
         except BaseException:
             # The POST may have been received even though the response was
-            # not, so reconcile against the queue rather than assuming this
-            # id is free. Never simply resubmit.
+            # not. Reconcile rather than assume, and never resubmit.
             _journal(jid, pid, "submit-uncertain", op=op)
-            if _prompt_is_live(pid):
+            state = _prompt_state(pid)
+            if state == LIVE:
                 log(f"prompt {pid} IS on the queue despite the failed "
                     "response; aborting it rather than resubmitting")
                 try:
@@ -958,17 +1002,26 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
                 except FootageError as exc:
                     guard.hold(str(exc))
                     raise
+            elif state == UNKNOWN:
+                # "Cannot tell" is not "not running". Releasing 6-8 GB of TTS
+                # here could starve a render that is very much alive.
+                guard.hold(
+                    f"submission of prompt {pid} was uncertain and ComfyUI "
+                    "could not be read, so the GPU may be in use")
             raise
         _journal(jid, pid, "queued", op=op)
         log(f"comfyui prompt {pid} ({op})")
         try:
             outputs = comfy_client.wait(
-                pid, progress, cancel_check, timeout_seconds, since_iso=None)
+                pid, progress, cancel_check, timeout_seconds, since_iso=None,
+                # This runner owns its cancellation. The default path calls a
+                # bare /interrupt, which stops whatever is RUNNING — possibly
+                # another engine's prompt on the same ComfyUI.
+                global_interrupt=False)
         except BaseException:
             # Never resume the TTS workers while our prompt may still be on
             # the GPU: they take 6-8 GB and would starve a run that is still
             # going, turning a clean failure into a pathologically slow one.
-            # Interrupt OUR prompt and confirm the queue drained first.
             log(f"aborting comfyui prompt {pid} before releasing the GPU")
             _journal(jid, pid, "aborting", op=op)
             try:
@@ -1058,56 +1111,130 @@ def _journal_path():
 
 
 def _journal(task_id, prompt_id, state, op=None):
-    """Append one durable task -> prompt record.
+    """Append one task -> prompt record, DURABLY.
 
-    Written BEFORE submission and at every state change, so a crash, cancel
-    or lost response can be reconciled against the ComfyUI queue instead of
-    resubmitting work that may already be running. Append-only and best
-    effort: a journal write must never be the thing that fails a render.
+    Written before submission and at every state change so a crash, cancel
+    or lost response can be reconciled against ComfyUI instead of
+    resubmitting work that may already be running. A pre-submit record that
+    is not on disk is worse than useless — it makes a duplicate generation
+    look safe — so this flushes and fsyncs, and RAISES if it cannot. The
+    earlier version swallowed every disk error, which meant the one failure
+    mode the journal exists to prevent was also the one it hid.
+    """
+    os.makedirs(config.CACHE_DIR, exist_ok=True)
+    with open(_journal_path(), "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "task_id": task_id, "prompt_id": prompt_id,
+            "operation": op, "state": state}) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _journal_last(task_id):
+    """The most recent journal record for one task, or None.
+
+    The journal was write-only: nothing read it, so an uncertain attempt
+    left a perfect record that no retry ever consulted.
     """
     try:
-        os.makedirs(config.CACHE_DIR, exist_ok=True)
-        with open(_journal_path(), "a", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "task_id": task_id, "prompt_id": prompt_id,
-                "operation": op, "state": state}) + "\n")
-    except Exception:                                    # noqa: BLE001
-        pass
+        with open(_journal_path(), encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return None
+    mine = [r for r in rows if r.get("task_id") == task_id]
+    return mine[-1] if mine else None
 
 
-def _prompt_is_live(pid):
-    """True only if the queue SAYS this prompt is there. Unknown reads False
-    for liveness but are never treated as proof the GPU is free."""
+# Terminal states never need reconciling; anything else may still be live.
+_SETTLED = ("done", "aborted", "failed", "reconciled-complete", "reconciled-gone")
+
+LIVE, GONE, UNKNOWN = "live", "gone", "unknown"
+
+
+def _queue_snapshot():
+    """(running, pending) prompt ids, or None when the answer is UNKNOWN.
+
+    Validates transport AND shape. The earlier version called .json() on
+    whatever came back, so a 500 body like {"error": "unavailable"} yielded
+    empty lists and read as a drained queue — the worst possible mistake
+    here, because "drained" releases the TTS workers onto a busy GPU.
+    """
     from videogen import comfy_client
     import httpx
     try:
-        q = httpx.get(comfy_client._url("/queue"), timeout=10).json()
+        r = httpx.get(comfy_client._url("/queue"), timeout=10)
     except Exception:                                    # noqa: BLE001
-        return False
-    live = [i[1] for i in (q.get("queue_running") or [])] + \
-           [i[1] for i in (q.get("queue_pending") or [])]
-    return pid in live
-
-
-def _hb(hb, phase, frac, eta):
-    """Forward real sampler progress to the farm rather than dropping it.
-
-    The previous callback was `lambda phase, frac, eta: hb and None`, which
-    evaluated hb for truthiness and discarded every phase, fraction and ETA,
-    so a 90-second GPU run reported nothing at all.
-    """
-    if not hb:
-        return
+        return None
+    if r.status_code != 200:
+        return None
     try:
-        hb(phase=phase, frac=frac, eta=eta)
-    except TypeError:
-        try:
-            hb(phase, frac, eta)
-        except Exception:                                # noqa: BLE001
-            pass
+        q = r.json()
+    except ValueError:
+        return None
+    if not isinstance(q, dict) or not (
+            isinstance(q.get("queue_running"), list)
+            and isinstance(q.get("queue_pending"), list)):
+        return None
+    try:
+        return ([i[1] for i in q["queue_running"]],
+                [i[1] for i in q["queue_pending"]])
+    except (IndexError, TypeError):
+        return None
+
+
+def _prompt_state(pid):
+    """LIVE, GONE or UNKNOWN — never a bare boolean.
+
+    'Not on the queue' and 'cannot tell' are different answers and the
+    caller must be able to act differently: one permits release, the other
+    must not.
+    """
+    snap = _queue_snapshot()
+    if snap is None:
+        return UNKNOWN
+    if pid in snap[0] or pid in snap[1]:
+        return LIVE
+    # Off the queue can mean finished. History is the confirmation, and if
+    # history cannot be read either then the honest answer is still UNKNOWN.
+    from videogen import comfy_client
+    import httpx
+    try:
+        r = httpx.get(comfy_client._url(f"/history/{pid}"), timeout=10)
+        if r.status_code != 200:
+            return UNKNOWN
+        h = r.json()
     except Exception:                                    # noqa: BLE001
-        pass
+        return UNKNOWN
+    if isinstance(h, dict) and pid in h:
+        return GONE
+    return GONE
+
+
+def _status_callback(jid, hb, label, lo=10, hi=90):
+    """A wait() status callback that actually reports progress.
+
+    render_worker passes a heartbeat.Heartbeat INSTANCE, which is NOT
+    callable: it carries a .progress int that its own thread publishes. The
+    previous version called hb(...) and swallowed the TypeError twice, so
+    every phase, fraction and ETA was dropped — exactly as before it was
+    written. This mirrors video_gen._run_prompt, which is the working
+    pattern on this worker.
+    """
+    from videogen import estimate
+
+    def on_status(phase, frac, eta):
+        pct = int(lo + (hi - lo) * max(0.0, min(1.0, frac or 0.0)))
+        if hb is not None:
+            hb.progress = pct
+        try:
+            db.set_phase(
+                jid, f"{label}: {phase} - ~{estimate.fmt_eta(eta)} left"[:120], pct)
+        except Exception:                                # noqa: BLE001
+            pass                    # telemetry must never fail a render
+    return on_status
 
 
 def _abort_prompt(pid, log, wait_seconds=120):
@@ -1213,8 +1340,29 @@ def _seams(item, plan=None):
     out = {}
     for key, role in zip(("seam", "seam2"), roles):
         v = item.get(key)
-        if v not in (None, "", {}):
-            out[role] = v
+        if v in (None, "", {}):
+            continue
+        # The contract is {score?, warning?, details?} and anything else is
+        # dropped on parse, so the raw upstream object has to ride inside
+        # details or the whole measurement arrives as {}. Upstream's shape
+        # also varies — the pixel scan adds fields the latent one does not —
+        # so details carries it verbatim rather than being enumerated here.
+        entry = {"details": v}
+        if isinstance(v, dict):
+            score = v.get("ratio")
+            if isinstance(score, (int, float)):
+                entry["score"] = float(score)
+            verdict = v.get("verdict")
+            if verdict and verdict != "seamless":
+                entry["warning"] = (
+                    f"the {role} join measures {verdict!r}"
+                    + (f" ({score}x the clip's own motion)"
+                       if isinstance(score, (int, float)) else ""))
+        else:
+            entry["score"] = float(v) if isinstance(v, (int, float)) else None
+            if entry["score"] is None:
+                entry.pop("score")
+        out[role] = entry
     return out
 
 

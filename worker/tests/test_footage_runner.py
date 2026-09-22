@@ -521,19 +521,37 @@ class ContinuationGraph(unittest.TestCase):
         self.assertEqual(spec["inputs"]["take_from_frame"], 56)
 
     def test_seams_are_kept_as_separate_named_joins(self):
+        # REAL upstream shapes. nodes_result returns
+        # {ratio, verdict, at, boundary} and the pixel scan adds kind/latent.
+        # A float-only fixture proves nothing: the contract is
+        # {score?, warning?, details?} and every other key is dropped on
+        # parse, so the raw object has to ride inside details.
         two = [{"role": "departure"}, {"role": "arrival"}]
-        item = {"clip": "a.mp4", "seam": 0.012, "seam2": 0.031}
-        self.assertEqual(footage._seams(item, two),
-                         {"departure": 0.012, "arrival": 0.031})
-        # prepend has ONE join and it is an arrival, even though obvpm
-        # reports it in the "seam" field.
-        self.assertEqual(footage._seams({"clip": "a.mp4", "seam": 0.5},
-                                        [{"role": "arrival"}]),
-                         {"arrival": 0.5})
-        self.assertEqual(footage._seams({"clip": "a.mp4", "seam": 0.5},
-                                        [{"role": "departure"}]),
-                         {"departure": 0.5})
-        self.assertEqual(footage._seams({}, two), {})
+        item = {"clip": "a.mp4",
+                "seam": {"ratio": 1.2, "verdict": "seamless", "at": 0.0,
+                         "boundary": 1.1},
+                "seam2": {"ratio": 10.6, "verdict": "hard cut", "kind": "cut",
+                          "at": 0.0, "latent": 2.02}}
+        got = footage._seams(item, two)
+        self.assertEqual(set(got), {"departure", "arrival"})
+        for role in got:
+            self.assertLessEqual(set(got[role]), {"score", "warning", "details"})
+        # the whole upstream object survives, including keys we never named
+        self.assertEqual(got["departure"]["details"], item["seam"])
+        self.assertEqual(got["arrival"]["details"]["latent"], 2.02)
+        self.assertEqual(got["departure"]["score"], 1.2)
+        self.assertNotIn("warning", got["departure"])      # seamless
+        self.assertIn("hard cut", got["arrival"]["warning"])
+
+    def test_prepend_single_seam_is_labelled_arrival(self):
+        """prepend has ONE join and it is an arrival, even though obvpm
+        reports it in the "seam" field."""
+        one = footage._seams(
+            {"seam": {"ratio": 1.3, "verdict": "seamless"}},
+            [{"role": "arrival"}])
+        self.assertEqual(set(one), {"arrival"})
+        self.assertEqual(one["arrival"]["score"], 1.3)
+        self.assertEqual(footage._seams({}, [{"role": "arrival"}]), {})
 
     def test_result_reader_returns_both_path_and_measurements(self):
         outputs = {"result": {"h3_result": [
@@ -545,3 +563,218 @@ class ContinuationGraph(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class FailurePaths(unittest.TestCase):
+    """The paths a happy-path render proof never touches.
+
+    Every case here was a reproduced defect: correct output does not mean a
+    cancelled, uncertain or retried run behaves safely.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp(prefix="footage_fail_")
+        self._orig = footage.config.CACHE_DIR
+        footage.config.CACHE_DIR = self.tmp
+
+    def tearDown(self):
+        footage.config.CACHE_DIR = self._orig
+
+    # ---- journal ------------------------------------------------------
+    def test_journal_is_written_and_read_back(self):
+        footage._journal("task-1", "pid-A", "submitting", op="extend")
+        footage._journal("task-1", "pid-A", "queued", op="extend")
+        footage._journal("task-2", "pid-B", "submitting", op="extend")
+        last = footage._journal_last("task-1")
+        self.assertEqual(last["prompt_id"], "pid-A")
+        self.assertEqual(last["state"], "queued")
+        self.assertEqual(footage._journal_last("task-2")["prompt_id"], "pid-B")
+        self.assertIsNone(footage._journal_last("never-seen"))
+
+    def test_journal_failure_raises_rather_than_being_swallowed(self):
+        """A pre-submit record that silently fails makes a duplicate
+        generation look safe, which is what the journal exists to stop."""
+        blocker = os.path.join(self.tmp, "blocker")
+        with open(blocker, "w") as f:      # a FILE where a directory must go
+            f.write("x")
+        footage.config.CACHE_DIR = os.path.join(blocker, "sub")
+        with self.assertRaises(OSError):
+            footage._journal("t", "p", "submitting")
+
+    # ---- queue state --------------------------------------------------
+    def _queue(self, status=200, body=None, raises=False):
+        import unittest.mock as mock
+
+        class R:
+            status_code = status
+
+            def json(self):
+                if body is None:
+                    raise ValueError("not json")
+                return body
+
+        def get(url, **kw):
+            if raises:
+                raise OSError("unreachable")
+            return R()
+        return mock.patch("httpx.get", side_effect=get)
+
+    def test_http_500_is_unknown_not_an_empty_queue(self):
+        """A 500 body parsed as JSON yields no queue keys, which previously
+        read as 'drained' — the one mistake that releases TTS onto a busy
+        GPU."""
+        with self._queue(status=500, body={"error": "unavailable"}):
+            self.assertIsNone(footage._queue_snapshot())
+            self.assertEqual(footage._prompt_state("pid-A"), footage.UNKNOWN)
+
+    def test_unreachable_queue_is_unknown(self):
+        with self._queue(raises=True):
+            self.assertEqual(footage._prompt_state("pid-A"), footage.UNKNOWN)
+
+    def test_malformed_queue_body_is_unknown(self):
+        with self._queue(status=200, body={"queue_running": "nope"}):
+            self.assertIsNone(footage._queue_snapshot())
+
+    def test_a_queued_prompt_reads_live(self):
+        with self._queue(status=200, body={"queue_running": [[0, "pid-A"]],
+                                           "queue_pending": []}):
+            self.assertEqual(footage._prompt_state("pid-A"), footage.LIVE)
+
+    # ---- heartbeat ----------------------------------------------------
+    def test_status_callback_drives_the_real_heartbeat_class(self):
+        """render_worker passes a Heartbeat INSTANCE, which is not callable.
+        The previous code called hb(...) and swallowed the TypeError."""
+        import unittest.mock as mock
+        import heartbeat
+
+        hb = heartbeat.Heartbeat.__new__(heartbeat.Heartbeat)
+        hb.job_id, hb.progress = "task-1", 0
+        with mock.patch.object(footage.db, "set_phase") as phase:
+            cb = footage._status_callback("task-1", hb, "extend")
+            cb("sampling 4/8", 0.5, 40)
+        self.assertGreater(hb.progress, 0, "progress was dropped again")
+        self.assertEqual(phase.call_count, 1)
+        args = phase.call_args[0]
+        self.assertEqual(args[0], "task-1")
+        self.assertIn("sampling 4/8", args[1])
+        self.assertEqual(args[2], hb.progress)
+
+    def test_status_callback_survives_a_db_outage(self):
+        import unittest.mock as mock
+        import heartbeat
+        hb = heartbeat.Heartbeat.__new__(heartbeat.Heartbeat)
+        hb.job_id, hb.progress = "t", 0
+        with mock.patch.object(footage.db, "set_phase",
+                               side_effect=RuntimeError("db down")):
+            footage._status_callback("t", hb, "extend")("load", 0.1, 10)
+        self.assertGreater(hb.progress, 0)
+
+    # ---- targeted cancellation ----------------------------------------
+    def test_wait_can_be_told_not_to_interrupt_globally(self):
+        """/interrupt with no prompt_id stops whatever is RUNNING. footage
+        owns its own cancellation, so it must be able to opt out; every
+        other caller keeps the old behaviour by default."""
+        import inspect
+        from videogen import comfy_client
+        sig = inspect.signature(comfy_client.wait)
+        self.assertIn("global_interrupt", sig.parameters)
+        self.assertIs(sig.parameters["global_interrupt"].default, True)
+        src = inspect.getsource(comfy_client.wait)
+        # every interrupt() in wait() must sit behind the flag
+        for line in src.splitlines():
+            if "interrupt()" in line and "global_interrupt" not in line:
+                self.assertIn("if global_interrupt", src)
+
+    def test_footage_opts_out_of_the_global_interrupt(self):
+        import inspect
+        src = inspect.getsource(footage.op_continuation)
+        self.assertIn("global_interrupt=False", src)
+
+    # ---- mixed frame rates --------------------------------------------
+    R24 = {"num": 24, "den": 1}
+
+    def test_30fps_cut_needs_more_source_frames_than_the_window(self):
+        """40 source frames at 30fps is only 32 output frames: too little
+        for a 39-frame pin, but the old check compared 40 against 39."""
+        hdr = {"delivered_frames": 200, "pinned_head_frames": 0}
+        with self.assertRaises(footage.FootageError) as cm:
+            footage.resolve_boundary(
+                "departure", {"in_frame": 0, "out_frame": 40}, hdr, 39, 200,
+                source_fps={"num": 30, "den": 1}, output_fps=self.R24)
+        self.assertIn("supplies only 32", str(cm.exception))
+        self.assertIn("49", str(cm.exception))      # frames actually needed
+
+    def test_60fps_cut_is_measured_at_the_output_rate(self):
+        hdr = {"delivered_frames": 400, "pinned_head_frames": 0}
+        with self.assertRaises(footage.FootageError):
+            footage.resolve_boundary(
+                "departure", {"in_frame": 0, "out_frame": 90}, hdr, 39, 400,
+                source_fps={"num": 60, "den": 1}, output_fps=self.R24)
+        # 98 source frames at 60fps is 39 output frames: exactly enough
+        ok = footage.resolve_boundary(
+            "departure", {"in_frame": 0, "out_frame": 98}, hdr, 39, 400,
+            source_fps={"num": 60, "den": 1}, output_fps=self.R24)
+        self.assertEqual(ok["take_from_frame"], 98)
+
+    def test_low_rate_cut_is_not_rejected_for_being_short(self):
+        """20 frames at 12fps is 40 output frames — enough. The old check
+        rejected it for being fewer than 39 source frames."""
+        hdr = {"delivered_frames": 100, "pinned_head_frames": 0}
+        spec = footage.resolve_boundary(
+            "departure", {"in_frame": 0, "out_frame": 20}, hdr, 39, 100,
+            source_fps={"num": 12, "den": 1}, output_fps=self.R24)
+        self.assertEqual(spec["take_from_frame"], 20)
+
+    # ---- retry reconciliation -----------------------------------------
+    def _req(self):
+        return {"schema_version": footage.CONTRACT_VERSION, "operation": "extend",
+                "org_id": "o", "job_id": "j", "request_key": "k",
+                "sources": [{"take_id": "t",
+                             "media": {"bucket": "renders", "path": "a.mp4",
+                                       "sha256": "0" * 64},
+                             "in_frame": 0, "out_frame": 73}],
+                "output": {"fps": {"num": 24, "den": 1}, "width": 832, "height": 480},
+                "generation": {"prompt": "x", "seed": 1, "new_frames": 12,
+                               "context_mode": "auto", "resolution": "480p"}}
+
+    def _run(self):
+        return footage.op_continuation(
+            "extend", self._req(), "task-live", self.tmp, None,
+            lambda m: None, lambda: False, 60)
+
+    def test_a_live_prior_prompt_blocks_a_second_generation(self):
+        """Reclaim re-enters a task under its own id. Staging must not run,
+        and a fresh staging name must not turn this into a duplicate."""
+        import unittest.mock as mock
+        footage._journal("task-live", "old-pid", "queued", op="extend")
+        with mock.patch.object(footage, "_prompt_state",
+                               return_value=footage.LIVE), \
+             mock.patch.object(footage, "_stage_pair") as stage:
+            with self.assertRaises(footage.FootageError) as cm:
+                self._run()
+        self.assertEqual(stage.call_count, 0, "staging ran despite a live prompt")
+        self.assertIn("second generation", str(cm.exception))
+
+    def test_an_unknown_prior_prompt_also_blocks(self):
+        import unittest.mock as mock
+        footage._journal("task-live", "old-pid", "submit-uncertain", op="extend")
+        with mock.patch.object(footage, "_prompt_state",
+                               return_value=footage.UNKNOWN), \
+             mock.patch.object(footage, "_stage_pair") as stage:
+            with self.assertRaises(footage.FootageError) as cm:
+                self._run()
+        self.assertEqual(stage.call_count, 0)
+        self.assertIn("duplicate", str(cm.exception))
+
+    def test_a_settled_prior_attempt_does_not_block(self):
+        """A finished attempt must not wedge the task forever."""
+        import unittest.mock as mock
+        footage._journal("task-live", "old-pid", "done", op="extend")
+        with mock.patch.object(footage, "_prompt_state",
+                               return_value=footage.LIVE), \
+             mock.patch.object(footage, "_stage_pair",
+                               side_effect=RuntimeError("reached staging")):
+            with self.assertRaises(RuntimeError) as cm:
+                self._run()
+        self.assertIn("reached staging", str(cm.exception))

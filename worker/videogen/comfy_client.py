@@ -163,7 +163,8 @@ def sampling_progress(since_iso):
     return None
 
 
-def wait(prompt_id, on_status, cancel_check, timeout_seconds, poll=2.0, hint=None, since_iso=None):
+def wait(prompt_id, on_status, cancel_check, timeout_seconds, poll=2.0, hint=None,
+         since_iso=None, global_interrupt=True):
     """Block until /history has the prompt. on_status(phase, fraction, eta_seconds)
     is called as things change: fraction is 0..1 through this prompt's work
     (queue -> load -> sampling steps -> decode), eta_seconds the estimated time
@@ -183,10 +184,16 @@ def wait(prompt_id, on_status, cancel_check, timeout_seconds, poll=2.0, hint=Non
     while True:
         elapsed = time.monotonic() - started
         if elapsed > timeout_seconds:
-            interrupt()
+            # /interrupt with no prompt_id stops whatever is RUNNING, which
+            # need not be ours. A caller that owns targeted cancellation
+            # passes global_interrupt=False and cleans up its own prompt;
+            # the default keeps existing behaviour for every other caller.
+            if global_interrupt:
+                interrupt()
             raise ComfyError(f"generation exceeded {timeout_seconds}s")
         if cancel_check():
-            interrupt()
+            if global_interrupt:
+                interrupt()
             raise _CanceledSignal()
         try:
             h = httpx.get(_url(f"/history/{prompt_id}"), timeout=10).json()
