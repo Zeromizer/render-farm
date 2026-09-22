@@ -1067,7 +1067,14 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
                 guard.hold(str(exc))
                 raise
             _journal_note(jid, pid, "aborted", op=op, log=log)
+            # Owned cancellation CONFIRMED (the abort returned), so the GPU is
+            # provably free of our work and cached models may go.
+            _release_models(log, f"{op} aborted")
             raise
+        # Positively settled. Unload INSIDE the guard, before the TTS workers
+        # can come back, and before output collection — a sidecar, probe or
+        # recipe failure after this point must not skip cleanup.
+        _release_models(log, f"{op} completed")
     _journal_note(jid, pid, "done", op=op, log=log)
     elapsed = time.time() - t0
 
@@ -1310,6 +1317,53 @@ def _status_callback(jid, hb, label, lo=10, hi=90):
         except Exception:                                # noqa: BLE001
             pass                    # telemetry must never fail a render
     return on_status
+
+
+def _release_models(log, reason):
+    """Drop ComfyUI's cached models, but ONLY when the shared queue is idle.
+
+    ComfyUI runs with --fast-disk, which keeps weights resident so a
+    following job skips model paging. That is the right trade between
+    back-to-back jobs and the wrong one when the box then sits idle: a
+    footage generation left roughly 14 GB pinned until something evicted it.
+    video_gen has always called free(); this runner never did.
+
+    /free is GLOBAL — it unloads every model, not ours — so this refuses
+    unless a validated snapshot shows BOTH lists empty. An unknown,
+    malformed or non-2xx queue read, or anyone else's prompt, means skip and
+    say why: a slow next job for another engine is a far better outcome than
+    guessing.
+
+    LIMITATION, deliberately not papered over: the snapshot is not a lock.
+    ComfyUI reads the free flags only after any in-flight execution
+    finishes (main.py, q.get_flags() below e.execute), so cleanup can never
+    interrupt a racing submission — but a prompt that arrives between the
+    snapshot and the flag WILL have its models unloaded once it completes,
+    costing it a reload. Nothing here can close that window from outside the
+    server.
+
+    Never raises: cleanup must not replace a real result or a real error.
+    """
+    from videogen import comfy_client
+    snap = _queue_snapshot()
+    if snap is None:
+        log("skipping model unload: the ComfyUI queue could not be read, so "
+            "whether other work is running is unknown")
+        return False
+    running, pending = snap
+    if running or pending:
+        log(f"skipping model unload: ComfyUI has {len(running)} running and "
+            f"{len(pending)} pending prompt(s) that are not ours")
+        return False
+    try:
+        comfy_client.free(strict=True)
+    except Exception as exc:                             # noqa: BLE001
+        log(f"WARNING model unload request failed ({reason}): {exc}")
+        return False
+    # Acknowledged, not reclaimed: the unload runs on ComfyUI's own worker.
+    log(f"asked ComfyUI to unload cached models ({reason}); the release is "
+        "asynchronous on its prompt worker")
+    return True
 
 
 def _abort_prompt(pid, log, wait_seconds=120):

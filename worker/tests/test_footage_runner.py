@@ -808,3 +808,100 @@ class FailurePaths(unittest.TestCase):
                 self._run()
         self.assertEqual(stage.call_count, 0)
         self.assertIn("could not be read", str(cm.exception))
+
+    # ---- model cleanup ------------------------------------------------
+    def _idle(self):
+        return {"queue_running": [], "queue_pending": []}
+
+    def test_a_successful_run_frees_models_before_tts_resumes(self):
+        """ComfyUI runs --fast-disk, so a finished generation leaves ~14 GB
+        of weights resident. Unload must happen INSIDE the guard, before the
+        TTS workers come back."""
+        import unittest.mock as mock
+        from videogen import comfy_client, tts_guard
+        order = []
+        with mock.patch.object(footage, "_queue_snapshot", return_value=([], [])), \
+             mock.patch.object(comfy_client, "free",
+                               side_effect=lambda **k: order.append("free") or True) as free, \
+             mock.patch.object(tts_guard, "resume",
+                               side_effect=lambda *a: order.append("resume")):
+            self.assertTrue(footage._release_models(lambda m: None, "test"))
+        self.assertEqual(free.call_count, 1)
+        self.assertTrue(free.call_args.kwargs.get("strict"))
+
+    def test_cleanup_skips_when_another_prompt_is_running(self):
+        """/free is GLOBAL. Someone else's prompt must veto it."""
+        import unittest.mock as mock
+        from videogen import comfy_client
+        for snap in ((["other-pid"], []), ([], ["other-pid"])):
+            with mock.patch.object(footage, "_queue_snapshot", return_value=snap), \
+                 mock.patch.object(comfy_client, "free") as free:
+                said = []
+                self.assertFalse(footage._release_models(said.append, "test"))
+                self.assertEqual(free.call_count, 0)
+                self.assertIn("not ours", said[0])
+
+    def test_cleanup_skips_on_an_unreadable_or_malformed_queue(self):
+        import unittest.mock as mock
+        from videogen import comfy_client
+        with mock.patch.object(footage, "_queue_snapshot", return_value=None), \
+             mock.patch.object(comfy_client, "free") as free:
+            said = []
+            self.assertFalse(footage._release_models(said.append, "test"))
+            self.assertEqual(free.call_count, 0)
+            self.assertIn("could not be read", said[0])
+
+    def test_a_cleanup_failure_is_logged_and_swallowed(self):
+        """Cleanup must never replace a real result or a real error."""
+        import unittest.mock as mock
+        from videogen import comfy_client
+        with mock.patch.object(footage, "_queue_snapshot", return_value=([], [])), \
+             mock.patch.object(comfy_client, "free",
+                               side_effect=RuntimeError("free exploded")):
+            said = []
+            self.assertFalse(footage._release_models(said.append, "test"))
+            self.assertTrue(any("WARNING" in m for m in said))
+
+    def test_an_unconfirmed_abort_never_frees(self):
+        """Uncertain state keeps the guard held; a global /free there could
+        evict another engine's models while our prompt may still be live."""
+        import unittest.mock as mock
+        from videogen import comfy_client
+        footage._journal("task-live", "old-pid", "done", op="extend")
+        with mock.patch.object(comfy_client, "free") as free, \
+             mock.patch.object(footage, "_prompt_state", return_value=footage.UNKNOWN), \
+             mock.patch.object(footage, "_stage_pair"):
+            with self.assertRaises(footage.FootageError):
+                self._run()
+        self.assertEqual(free.call_count, 0)
+
+    def test_a_pre_submit_refusal_never_frees(self):
+        """Refusing before submission must not evict unrelated cached work."""
+        import unittest.mock as mock
+        from videogen import comfy_client
+        with mock.patch.object(comfy_client, "free") as free, \
+             mock.patch.object(footage, "_journal_last", return_value=(None, True)), \
+             mock.patch.object(footage, "_stage_pair"):
+            with self.assertRaises(footage.FootageError):
+                self._run()
+        self.assertEqual(free.call_count, 0)
+
+    def test_free_reports_acknowledgement_rather_than_swallowing(self):
+        """A bare call could not tell acknowledgment from failure, so the
+        runner could not log the difference. video_gen's no-arg call must
+        still behave exactly as before."""
+        import inspect
+        import unittest.mock as mock
+        from videogen import comfy_client
+        sig = inspect.signature(comfy_client.free)
+        for name in ("unload_models", "free_memory", "strict"):
+            self.assertIn(name, sig.parameters)
+        self.assertIs(sig.parameters["strict"].default, False)
+
+        class R:
+            status_code = 500
+            text = "boom"
+        with mock.patch("httpx.post", return_value=R()):
+            self.assertFalse(comfy_client.free())          # legacy: swallows
+            with self.assertRaises(comfy_client.ComfyError):
+                comfy_client.free(strict=True)             # runner: reports

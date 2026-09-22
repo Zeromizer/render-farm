@@ -118,11 +118,33 @@ def interrupt():
         pass
 
 
-def free():
+def free(unload_models=True, free_memory=True, strict=False):
+    """Ask ComfyUI to drop cached models. Returns True if it ACKNOWLEDGED.
+
+    Acknowledgment is NOT reclamation. /free only sets queue flags and
+    returns 200 immediately (server.py post_free); the unload happens later
+    on the prompt worker, which reads the flags after any in-flight
+    execution finishes (main.py: unload_all_models under q.get_flags()).
+    set_flag notifies the queue condition, so an idle server acts promptly,
+    but a caller cannot treat a 200 as "the memory is back".
+
+    strict=True raises instead of swallowing, for a caller that needs to log
+    the difference between acknowledged and failed. The default keeps the
+    original fire-and-forget behaviour for existing callers.
+    """
     try:
-        httpx.post(_url("/free"), json={"unload_models": True, "free_memory": True}, timeout=60)
-    except httpx.HTTPError:
-        pass
+        r = httpx.post(_url("/free"),
+                       json={"unload_models": unload_models,
+                             "free_memory": free_memory}, timeout=60)
+    except httpx.HTTPError as exc:
+        if strict:
+            raise ComfyError(f"/free did not answer: {exc}") from exc
+        return False
+    if r.status_code != 200:
+        if strict:
+            raise ComfyError(f"/free returned HTTP {r.status_code}: {r.text[:200]}")
+        return False
+    return True
 
 
 def _queue_position(prompt_id):
