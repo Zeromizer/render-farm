@@ -57,7 +57,14 @@ PIN_WINDOW = 39                     # the window Phase 0 measured
 #           candidate pinned at raw_start 51 and delivered 51 again, so
 #           chaining holds. bridge/loop await their own raw-90 runs at
 #           12 new frames; prepend is not exercised at all.
-PROVEN_GENERATION_OPS = ("extend",)
+#
+# WITHDRAWN 2026-09-22 after review of a7951ab. extend ran correctly on
+# untrimmed sources, but the graph ignores per-source in_frame/out_frame
+# while the receipt reports them, so any trimmed request conditions on the
+# wrong footage and SAYS it used the user's cut. Silently wrong output is
+# worse than no feature, so nothing generative is offered until the trim,
+# pixel-import and lineage fixes land. Capabilities are CPU-only meanwhile.
+PROVEN_GENERATION_OPS = ()
 
 # Advertising an operation this runner would then refuse is worse than not
 # offering it: the website enables the button on capabilities alone, so the
@@ -263,7 +270,11 @@ def capabilities_block():
     # drives, AND an adapter in run() that can actually serve the request.
     # Phase 0 proved the operations in an isolated instance; that proves the
     # nodes work, not that this runner can drive them.
-    can_generate = bool(obvpm) and GENERATION_ADAPTER_READY
+    # An empty proven list means no generative operation is offered at all, so
+    # latent_context must read false too: claiming latent capability while
+    # serving nothing generative is the same lie in a different field.
+    can_generate = (bool(obvpm) and GENERATION_ADAPTER_READY
+                    and bool(PROVEN_GENERATION_OPS))
     if can_generate:
         ops += list(PROVEN_GENERATION_OPS)
     return {"contract_version": CONTRACT_VERSION,
@@ -516,7 +527,14 @@ def build_continuation(op, req, staged, length, prefix, latent_only):
                     f"source {i} has no original generation context, so a "
                     "latent continuation is impossible. Use 'auto' to fall "
                     "back to the pixel path, or pick a take that has context.")
-            g[f"lv{key}"] = {"class_type": "LoadVideo", "inputs": {"file": clip_ref}}
+            # _stage_pair writes into ComfyUI/output, but LoadVideo validates
+            # through folder_paths.exists_annotated_filepath, and a BARE
+            # relative path is resolved against input. Without the annotation
+            # the prompt is rejected at submission with "Invalid video file".
+            # H3LoadMCtx takes a clip identifier, not an annotated path, so
+            # this must not be applied there.
+            g[f"lv{key}"] = {"class_type": "LoadVideo",
+                             "inputs": {"file": f"{clip_ref} [output]"}}
             g[f"comp{key}"] = {"class_type": "GetVideoComponents",
                                "inputs": {"video": [f"lv{key}", 0]}}
             g[f"enc{key}"] = {"class_type": "H3MCtxFromFrames",
@@ -875,10 +893,13 @@ def run(job, repo, work_dir, hb, log, cancel_check, timeout_seconds):
     elif op == "assemble":
         body = op_assemble(req, work_dir, hb, log)
     elif op in ("extend", "prepend", "bridge", "loop"):
-        if not GENERATION_ADAPTER_READY:
+        # Gate on the SAME list capabilities advertises, before any staging,
+        # download or GPU access. Checking GENERATION_ADAPTER_READY alone let
+        # run() serve operations the manifest never offered.
+        if not GENERATION_ADAPTER_READY or op not in PROVEN_GENERATION_OPS:
             raise FootageError(
                 f"operation {op!r} is not available on this worker yet; "
-                "capabilities lists what is")
+                f"capabilities offers {list(PROVEN_GENERATION_OPS)!r}")
         body = op_continuation(op, req, jid, work_dir, hb, log,
                                cancel_check, timeout_seconds)
     else:

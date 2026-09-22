@@ -193,9 +193,35 @@ class ResultEnvelope(unittest.TestCase):
         must agree — otherwise the UI enables a button that always fails."""
         import runners.footage as f
         ops = f.capabilities_block()["operations"]
-        if not f.GENERATION_ADAPTER_READY:
-            for op in f.PROVEN_GENERATION_OPS:
-                self.assertNotIn(op, ops)
+        for op in ("extend", "prepend", "bridge", "loop"):
+            if op not in f.PROVEN_GENERATION_OPS:
+                self.assertNotIn(op, ops, f"{op} advertised but not proven")
+
+    def test_run_refuses_every_operation_it_does_not_advertise(self):
+        """The earlier version of this test only asserted when the adapter was
+        disabled, so it was vacuous in the shipped state and run() accepted all
+        four operations. Force the interesting case: adapter READY, exactly one
+        operation proven, and assert the others never reach op_continuation."""
+        import unittest.mock as mock
+        import runners.footage as f
+
+        for proven in ((), ("extend",)):
+            with mock.patch.object(f, "GENERATION_ADAPTER_READY", True), \
+                 mock.patch.object(f, "PROVEN_GENERATION_OPS", proven), \
+                 mock.patch.object(f, "op_continuation") as spy:
+                for op in ("extend", "prepend", "bridge", "loop"):
+                    job = {"id": "t", "params": {"footage": {
+                        "schema_version": f.CONTRACT_VERSION, "operation": op,
+                        "org_id": "o", "job_id": "j"}}}
+                    if op in proven:
+                        continue
+                    with self.assertRaises(f.FootageError) as caught:
+                        f.run(job, None, ".", None, lambda m: None,
+                              lambda: False, 60)
+                    self.assertIn("not available", str(caught.exception))
+                self.assertEqual(
+                    spy.call_count, 0,
+                    "an unadvertised operation reached the GPU adapter")
 
 
 @unittest.skipUnless(os.path.isdir(TAKES), "Phase 0 takes not archived here")
