@@ -63,13 +63,29 @@ class FrameArithmetic(unittest.TestCase):
         them on the AV grid. Each op joins the list after its own raw-90 run."""
         lim = footage.generation_limits()
         self.assertEqual(set(lim), set(footage.PROVEN_GENERATION_OPS))
-        self.assertNotIn("prepend", lim)
+        # bridge and loop RUN correctly but measure a hard cut at the
+        # arrival, so they are withheld deliberately, not by oversight.
+        self.assertNotIn("bridge", lim)
+        self.assertNotIn("loop", lim)
         for op, spec in lim.items():
-            two = op in ("bridge", "loop")
+            pre, post = footage.held_frames(op)
             self.assertEqual(spec["grid_offset"], 39)
             self.assertEqual(spec["grid_stride"], 51)
-            self.assertEqual(spec["max_new_frames"],
-                             90 - 39 - (39 if two else 0))
+            self.assertEqual(spec["held_prefix_frames"], pre)
+            self.assertEqual(spec["held_suffix_frames"], post)
+            self.assertEqual(spec["max_new_frames"], 90 - pre - post)
+
+    def test_prepend_holds_its_context_after_the_new_footage(self):
+        """prepend generates INTO its source, so the held frames sit AFTER
+        the new footage. Reporting them as a prefix would have the website
+        reserve budget at the wrong end."""
+        self.assertEqual(footage.held_frames("prepend"), (0, 39))
+        self.assertEqual(footage.held_frames("extend"), (39, 0))
+        self.assertEqual(footage.held_frames("bridge"), (39, 39))
+        self.assertEqual(footage.held_frames("loop"), (39, 39))
+        # the sampling window is the same size either way
+        self.assertEqual(footage.solve_sample_window(24, 0, 39, av_grid=True),
+                         footage.solve_sample_window(24, 39, 0, av_grid=True))
 
     def test_av_grid_is_used_for_every_source_audio_state(self):
         """One conservative profile: an audio stream is not evidence of
@@ -505,12 +521,19 @@ class ContinuationGraph(unittest.TestCase):
         self.assertEqual(spec["inputs"]["take_from_frame"], 56)
 
     def test_seams_are_kept_as_separate_named_joins(self):
+        two = [{"role": "departure"}, {"role": "arrival"}]
         item = {"clip": "a.mp4", "seam": 0.012, "seam2": 0.031}
-        self.assertEqual(footage._seams(item),
+        self.assertEqual(footage._seams(item, two),
                          {"departure": 0.012, "arrival": 0.031})
-        self.assertEqual(footage._seams({"clip": "a.mp4", "seam": 0.5}),
+        # prepend has ONE join and it is an arrival, even though obvpm
+        # reports it in the "seam" field.
+        self.assertEqual(footage._seams({"clip": "a.mp4", "seam": 0.5},
+                                        [{"role": "arrival"}]),
+                         {"arrival": 0.5})
+        self.assertEqual(footage._seams({"clip": "a.mp4", "seam": 0.5},
+                                        [{"role": "departure"}]),
                          {"departure": 0.5})
-        self.assertEqual(footage._seams({}), {})
+        self.assertEqual(footage._seams({}, two), {})
 
     def test_result_reader_returns_both_path_and_measurements(self):
         outputs = {"result": {"h3_result": [

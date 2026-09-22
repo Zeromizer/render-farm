@@ -74,9 +74,22 @@ PIN_WINDOW = 39                     # the window Phase 0 measured
 #   latent, cut [0,60) -> refused before the GPU, naming the same ends.
 #   chain,  a second extend from the trimmed-parent candidate pinned at
 #           raw_start 51 and delivered 51, so sequences still grow.
-# bridge and loop await their own raw-90 runs at 12 new frames; prepend is
-# not exercised at all.
-PROVEN_GENERATION_OPS = ("extend",)
+#   prepend, raw 90 -> delivered 51, one pin placed AFTER the new footage,
+#           arrival seam ratio 1.3 "seamless". Held context is reported at
+#           the correct end (0 before / 39 after), which the site reserves
+#           budget from.
+#
+# BRIDGE AND LOOP RUN BUT ARE DELIBERATELY NOT OFFERED. Both are mechanically
+# correct at raw 90 / 12 new frames — right frame count, both pins present,
+# correctly placed, correctly attributed — and both measure a HARD CUT at the
+# arrival:
+#   loop    departure ratio 1.2 "seamless", arrival ratio 10.6 "hard cut"
+#   bridge  departure ratio 1.2 "seamless", arrival ratio 18.3 "hard cut"
+# A seamless departure and a hard-cut arrival is the join a user would see
+# tear. 12 new frames is half a second to travel from one pinned window to
+# another, and that appears to be too few. Offering these would ship a button
+# whose whole purpose is an invisible join, which measurably is not one.
+PROVEN_GENERATION_OPS = ("extend", "prepend")
 
 # Advertising an operation this runner would then refuse is worse than not
 # offering it: the website enables the button on capabilities alone, so the
@@ -218,6 +231,22 @@ def solve_sample_window(desired_new, held_prefix, held_suffix, av_grid=False):
     return raw, raw - int(held_prefix) - int(held_suffix)
 
 
+def held_frames(op):
+    """(held_before, held_after) for one operation.
+
+    Held context is sampled and then trimmed off the delivered clip, so the
+    website reserves budget from these. They are NOT symmetric: prepend
+    generates INTO its source, so its 39 held frames sit AFTER the new
+    footage, not before it. Reporting prepend as held_prefix would have the
+    site reserve at the wrong end.
+    """
+    if op == "prepend":
+        return 0, PIN_WINDOW
+    if op in ("bridge", "loop"):
+        return PIN_WINDOW, PIN_WINDOW
+    return PIN_WINDOW, 0
+
+
 def generation_limits():
     """Per-operation limits on the shared AV grid, for operations proven here.
 
@@ -228,9 +257,7 @@ def generation_limits():
     """
     lim = {}
     for op in PROVEN_GENERATION_OPS:
-        two_sided = op in ("bridge", "loop")
-        prefix = PIN_WINDOW
-        suffix = PIN_WINDOW if two_sided else 0
+        prefix, suffix = held_frames(op)
         lim[op] = {"max_new_frames": MAX_AV_RAW - prefix - suffix,
                    "held_prefix_frames": prefix, "held_suffix_frames": suffix,
                    "grid_offset": AV_GRID_OFFSET, "grid_stride": AV_GRID_STRIDE}
@@ -775,11 +802,11 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
     # audio stream is not evidence of audible content, and a generated
     # successor can carry audio even when its source did not — so one
     # conservative profile beats switching per source.
+    held_pre, held_post = held_frames(op)
     raw, delivered = solve_sample_window(
-        int(gen.get("new_frames") or 24), PIN_WINDOW,
-        PIN_WINDOW if two_sided else 0, av_grid=True)
+        int(gen.get("new_frames") or 24), held_pre, held_post, av_grid=True)
     if raw > MAX_AV_RAW:
-        most = MAX_AV_RAW - PIN_WINDOW - (PIN_WINDOW if two_sided else 0)
+        most = MAX_AV_RAW - held_pre - held_post
         raise FootageError(
             f"that request needs a {raw} frame sampling window; the largest "
             f"run on the shared audio/video grid within this worker's "
@@ -996,7 +1023,7 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
                                           "out_frame": int(s.get("out_frame") or 0)}
                                          for s in sources],
                         "pin_windows": pin_windows},
-            "seams": _seams(result_item),
+            "seams": _seams(result_item, plan),
             "sampling": {"context_mode": resolved_mode,
                          "requested_new_frames": int(gen.get("new_frames") or 24),
                          "delivered_new_frames": d,
@@ -1152,7 +1179,7 @@ def _saved_path(outputs):
     return path, item
 
 
-def _seams(item):
+def _seams(item, plan=None):
     """Departure and arrival seam measurements, kept as SEPARATE objects.
 
     obvpm reports seam for the departure join and seam2 for the arrival, and
@@ -1160,8 +1187,13 @@ def _seams(item):
     number would hide whichever join was worse. Presence of a number is not
     approval of the join — it is a measurement for a human to read.
     """
+    # obvpm emits seam then seam2 in the order the pins were applied, so the
+    # role comes from the PLAN, not from the key name. prepend has exactly one
+    # join and it is an ARRIVAL — labelling it "departure" because it arrived
+    # in the "seam" field would misreport which end of the clip was measured.
+    roles = [s["role"] for s in (plan or [])] or ["departure", "arrival"]
     out = {}
-    for key, role in (("seam", "departure"), ("seam2", "arrival")):
+    for key, role in zip(("seam", "seam2"), roles):
         v = item.get(key)
         if v not in (None, "", {}):
             out[role] = v
