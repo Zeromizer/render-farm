@@ -50,8 +50,8 @@ import proc
 import venvs
 from heartbeat import Heartbeat
 import queue_status
-from runners import (asset_check, audio_gen, blender, frame_extract, hyperframes, matte, planar_patch,
-                     python_script, reference_extract, remotion, video_gen,
+from runners import (asset_check, audio_gen, blender, footage, frame_extract, hyperframes, matte,
+                     planar_patch, python_script, reference_extract, remotion, video_gen,
                      video_split)
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
@@ -79,12 +79,16 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # An instrumental music bed from a description (YuE2 + instrumental
            # LoRA) in the same headless ComfyUI video_gen uses. Feeds the
            # platform's music library; a minute or two per bed.
-           "audio_gen": audio_gen.run}
+           "audio_gen": audio_gen.run,
+           # Non-linear footage timeline: probe/assemble are CPU-only and
+           # answer with a manifest, never a media file, so they keep the
+           # separate collector video_gen's MP4 one would misfile.
+           "footage": footage.run}
 
 # Engines that work on a storage object, not a repo — the clone is skipped and
 # repo_url is a "-" placeholder (the column is NOT NULL).
 NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split",
-            "matte", "video_gen", "planar_patch", "audio_gen"}
+            "matte", "video_gen", "planar_patch", "audio_gen", "footage"}
 
 
 def log(msg):
