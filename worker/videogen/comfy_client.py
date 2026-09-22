@@ -84,9 +84,20 @@ def upload_input(local_path, subfolder="video_gen"):
     return f"{sub}/{j['name']}" if sub else j["name"]
 
 
-def submit(graph):
+def submit(graph, prompt_id=None):
+    """Queue a graph. Optionally under an id the CALLER chose.
+
+    ComfyUI accepts a client-provided prompt_id (server.py, /prompt), which
+    lets a caller record the id durably BEFORE submitting. Without that, a
+    lost or timed-out response leaves work running that nobody can name, and
+    the only recovery is to submit again and hope. Defaulting to None keeps
+    every existing caller on the server-generated id.
+    """
     client_id = str(uuid.uuid4())
-    r = httpx.post(_url("/prompt"), json={"prompt": graph, "client_id": client_id}, timeout=_TIMEOUT)
+    body = {"prompt": graph, "client_id": client_id}
+    if prompt_id:
+        body["prompt_id"] = prompt_id
+    r = httpx.post(_url("/prompt"), json=body, timeout=_TIMEOUT)
     if r.status_code != 200:
         # 400 carries node_errors: surface them, they are the whole diagnosis.
         try:

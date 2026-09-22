@@ -28,6 +28,7 @@ import shutil
 import struct
 import subprocess
 import time
+import uuid
 
 import config
 import db
@@ -491,9 +492,107 @@ def _stage_folder(src):
     return _STAGE_KEY["folder"]
 
 
-def _pin_spec_node(mctx_ref, window, take_from, place, mode, chain=None):
+def _stage_window(local, info, spec, req, idx, log):
+    """Trim ONE pixel boundary's window and normalize it exactly as assembly
+    does: aspect-fit with black pad, output frame rate, 48k stereo audio.
+
+    This is what makes the declared fps truthful and makes "cover" a no-op
+    instead of a second, differently-framed crop of the car.
+    """
+    stage_dir = os.path.join(config.COMFYUI_DIR, "output", _stage_folder(None))
+    os.makedirs(stage_dir, exist_ok=True)
+    name = f"b{idx:02d}"
+    dest = os.path.join(stage_dir, f"{name}.mp4")
+    ofps = (req.get("output") or {}).get("fps") or {"num": 24, "den": 1}
+    width, height = _canvas(req)
+    a, b = spec["in_frame"], spec["out_frame"]
+    # The window is PIN_WINDOW frames at the OUTPUT rate, so convert it back
+    # into source frames rather than assuming the source runs at 24.
+    span = allocate_frames(0, spec["window"], ofps, info["fps"])
+    if spec["role"] == "departure":
+        a2, b2 = max(a, b - span), b
+    else:
+        a2, b2 = a, min(b, a + span)
+    _cut(local, a2, b2, info, ofps, width, height, spec["window"], dest)
+    got = probe_media(dest)
+    log(f"{name}: pixel window src[{a2},{b2}) -> {got['frame_count']}f "
+        f"{width}x{height} @{ofps['num']}/{ofps['den']}"
+        f"{'' if info['has_audio'] else ' (silent source)'}")
+    return (f"{_stage_folder(None)}/{name}.mp4", got, (a2, b2))
+
+
+LATENT_GROUP = 17           # obvpm slices only at 17-frame group boundaries
+
+
+def boundary_plan(op):
+    """Which end of which source supplies each pinned window.
+
+    A departure is pinned BEFORE the new footage and an arrival AFTER it.
+    loop takes both boundaries from ONE source; bridge takes one from each.
+    """
+    return {"extend":  [(0, "departure")],
+            "prepend": [(0, "arrival")],
+            "loop":    [(0, "departure"), (0, "arrival")],
+            "bridge":  [(0, "departure"), (1, "arrival")]}[op]
+
+
+def resolve_boundary(role, src, header, window, frame_count):
+    """Where one pinned window sits INSIDE the user's cut.
+
+    The cut is [in_frame, out_frame) in the source's delivered frames. A
+    departure holds the last `window` frames of that cut, so the window ENDS
+    at out_frame; an arrival holds the first `window`, so it ends at
+    in_frame + window. obvpm's take_from_frame is exactly that end, in
+    delivered coordinates, which is why nothing here converts to raw except
+    the legality test.
+
+    Returns a dict describing the pin, including whether a LATENT slice of it
+    is legal. Upstream slices only at 17-frame group boundaries
+    (nodes_pins.py: raw_start % FRAMES_PER_GROUP), so an interior cut is
+    frequently illegal and must be resolved BEFORE the GPU is booked.
+    """
+    delivered = int(header.get("delivered_frames") or 0) or int(frame_count)
+    pinned_head = int(header.get("pinned_head_frames") or 0)
+    a = int(src.get("in_frame") or 0)
+    b = int(src.get("out_frame") or 0) or delivered
+    if not 0 <= a < b <= delivered:
+        raise FootageError(
+            f"cut [{a},{b}) is outside the source's {delivered} delivered "
+            "frames")
+    if b - a < window:
+        raise FootageError(
+            f"a continuation holds {window} frames of context, but the cut "
+            f"[{a},{b}) is only {b - a} frames long. Select at least "
+            f"{window} frames ({window / 24.0:.2f}s) of this clip.")
+
+    if role == "departure":
+        cut, take_from = b, ("tail" if b == delivered else "at_frame")
+    else:
+        cut, take_from = a + window, ("head" if a == 0 else "at_frame")
+
+    # Mirror upstream's own arithmetic rather than approximating it.
+    d_start = 0 if take_from == "head" else cut - window
+    raw_start = pinned_head + d_start
+    legal = raw_start % LATENT_GROUP == 0
+    suggest = []
+    if not legal:
+        lo = (raw_start // LATENT_GROUP) * LATENT_GROUP
+        for boundary in (lo, lo + LATENT_GROUP):
+            end = boundary - pinned_head + window
+            if 0 <= boundary - pinned_head and end <= delivered:
+                suggest.append(end)
+    return {"role": role, "place": "before" if role == "departure" else "after",
+            "mode": "masked" if role == "departure" else "both",
+            "take_from": take_from, "take_from_frame": int(cut),
+            "in_frame": a, "out_frame": b, "window": window,
+            "raw_start": raw_start, "latent_legal": legal,
+            "legal_ends": sorted(set(suggest)), "take_id": src.get("take_id")}
+
+
+def _pin_spec_node(mctx_ref, window, take_from, place, mode, chain=None,
+                   take_from_frame=0):
     inputs = {"mctx": mctx_ref, "window": str(window),
-              "take_from": take_from, "take_from_frame": 0,
+              "take_from": take_from, "take_from_frame": int(take_from_frame),
               "place": place, "place_at_frame": 0,
               "audio_window": 0, "mode": mode,
               "mask_ramp_frames": 0, "mask_ramp_edge": 0.0, "mask_hold": 0.0}
@@ -502,7 +601,7 @@ def _pin_spec_node(mctx_ref, window, take_from, place, mode, chain=None):
     return {"class_type": "H3MCtxPinSpec", "inputs": inputs}
 
 
-def build_continuation(op, req, staged, length, prefix, latent_only):
+def build_continuation(op, req, staged, length, prefix, latent_only, plan):
     """The API graph for extend/prepend/bridge/loop.
 
     Departure is pinned BEFORE the new footage and arrival AFTER it. A source
@@ -513,57 +612,74 @@ def build_continuation(op, req, staged, length, prefix, latent_only):
     gen = req.get("generation") or {}
     g = _h3_base(gen.get("prompt") or "", int(gen.get("seed") or 0), length,
                  *_canvas(req))
-    chain, mctx_nodes = None, []
+    mctx_nodes = {}
+    # A LATENT source is loaded once and shared by both of its boundaries:
+    # take_from_frame distinguishes them inside the same stored latent.
     for i, (clip_ref, has_ctx, _local) in enumerate(staged):
-        key = f"src{i}"
         if has_ctx:
-            g[f"load{key}"] = {"class_type": "H3LoadMCtx",
-                               "inputs": {"clip": clip_ref, "create_pins": "none",
-                                          "pin_window": str(PIN_WINDOW)}}
-            mctx = [f"load{key}", 0]
-        else:
-            if latent_only:
-                raise FootageError(
-                    f"source {i} has no original generation context, so a "
-                    "latent continuation is impossible. Use 'auto' to fall "
-                    "back to the pixel path, or pick a take that has context.")
-            # _stage_pair writes into ComfyUI/output, but LoadVideo validates
-            # through folder_paths.exists_annotated_filepath, and a BARE
-            # relative path is resolved against input. Without the annotation
-            # the prompt is rejected at submission with "Invalid video file".
-            # H3LoadMCtx takes a clip identifier, not an annotated path, so
-            # this must not be applied there.
-            g[f"lv{key}"] = {"class_type": "LoadVideo",
-                             "inputs": {"file": f"{clip_ref} [output]"}}
-            g[f"comp{key}"] = {"class_type": "GetVideoComponents",
-                               "inputs": {"video": [f"lv{key}", 0]}}
-            g[f"enc{key}"] = {"class_type": "H3MCtxFromFrames",
-                              "inputs": {"images": [f"comp{key}", 0],
-                                         "video_vae": ["vae", 0], "audio_vae": ["avae", 0],
-                                         "latent": ["cond", 1], "fps": 24.0,
-                                         "keep": "tail" if i == 0 else "head",
-                                         "max_frames": PIN_WINDOW, "fit": "cover"}}
-            mctx = [f"enc{key}", 0]
-        mctx_nodes.append(mctx)
+            g[f"loadsrc{i}"] = {"class_type": "H3LoadMCtx",
+                                "inputs": {"clip": clip_ref, "create_pins": "none",
+                                           "pin_window": str(PIN_WINDOW)}}
+            mctx_nodes[("src", i)] = [f"loadsrc{i}", 0]
+    # A PIXEL boundary gets its OWN encoder over its OWN pre-trimmed clip.
+    # Sharing one encoder per source was wrong for loop: both pins then came
+    # from the same kept tail, so the arrival was the clip's end rather than
+    # its beginning.
+    for n, spec in enumerate(plan):
+        i = spec["src_index"]
+        if staged[i][1]:
+            continue
+        if latent_only:
+            raise FootageError(
+                f"source {i} has no original generation context, so a "
+                "latent continuation is impossible. Use 'auto' to fall "
+                "back to the pixel path, or pick a take that has context.")
+        key = f"b{n}"
+        # The staged clip is already trimmed to this boundary's window and
+        # normalized to the output rate and canvas, so fps is a measured
+        # fact rather than a guess and "cover" cannot crop anything.
+        # _stage_pair writes into ComfyUI/output, but LoadVideo validates
+        # through folder_paths.exists_annotated_filepath, and a BARE
+        # relative path is resolved against input. Without the annotation
+        # the prompt is rejected at submission with "Invalid video file".
+        # H3LoadMCtx takes a clip identifier, not an annotated path, so
+        # this must not be applied there.
+        g[f"lv{key}"] = {"class_type": "LoadVideo",
+                         "inputs": {"file": f"{spec['clip_ref']} [output]"}}
+        g[f"comp{key}"] = {"class_type": "GetVideoComponents",
+                           "inputs": {"video": [f"lv{key}", 0]}}
+        enc = {"images": [f"comp{key}", 0],
+               "video_vae": ["vae", 0], "audio_vae": ["avae", 0],
+               "latent": ["cond", 1], "fps": float(spec["staged_fps"]),
+               "keep": "tail" if spec["role"] == "departure" else "head",
+               "max_frames": PIN_WINDOW, "fit": "cover"}
+        # Absent audio means the pin carries encoded silence, which is right
+        # for a genuinely silent source and wrong for one we simply failed to
+        # connect — so this follows what the staged file actually contains.
+        if spec.get("staged_has_audio"):
+            enc["audio"] = [f"comp{key}", 1]
+        g[f"enc{key}"] = {"class_type": "H3MCtxFromFrames", "inputs": enc}
+        mctx_nodes[("bnd", n)] = [f"enc{key}", 0]
 
-    # departure pins BEFORE the new footage, arrival AFTER it
-    if op in ("extend", "loop"):
-        chain = "specA"
-        g["specA"] = _pin_spec_node(mctx_nodes[0], PIN_WINDOW, "tail", "before", "masked")
-        if op == "loop":
-            g["specB"] = _pin_spec_node(mctx_nodes[0], PIN_WINDOW, "head", "after",
-                                        "both", chain=["specA", 0])
-            chain = "specB"
-    elif op == "prepend":
-        chain = "specA"
-        g["specA"] = _pin_spec_node(mctx_nodes[0], PIN_WINDOW, "head", "after", "both")
-    elif op == "bridge":
-        g["specA"] = _pin_spec_node(mctx_nodes[0], PIN_WINDOW, "tail", "before", "masked")
-        g["specB"] = _pin_spec_node(mctx_nodes[1], PIN_WINDOW, "head", "after",
-                                    "both", chain=["specA", 0])
-        chain = "specB"
-    else:
+    # Each pinned window comes from the plan, which has already placed it
+    # inside the user's cut. A pixel source was staged pre-trimmed, so its
+    # window is the whole staged clip and take_from_frame does not apply.
+    if not plan:
         raise FootageError(f"{op!r} is not a continuation")
+    chain = None
+    for n, spec in enumerate(plan):
+        name = f"spec{chr(ord('A') + n)}"
+        src_i = spec["src_index"]
+        pixel = not staged[src_i][1]
+        take_from = ("tail" if spec["role"] == "departure" else "head") \
+            if pixel else spec["take_from"]
+        ref = mctx_nodes[("bnd", n)] if pixel else mctx_nodes[("src", src_i)]
+        g[name] = _pin_spec_node(
+            ref, PIN_WINDOW, take_from, spec["place"],
+            spec["mode"], chain=None if chain is None else [chain, 0],
+            take_from_frame=0 if take_from != "at_frame"
+            else spec["take_from_frame"])
+        chain = name
 
     g["apply"] = {"class_type": "H3MCtxApplyPins",
                   "inputs": {"conditioning": ["cond", 0], "latent": ["cond", 1],
@@ -644,39 +760,146 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
             "re-encode from pixels, or choose a take that has context.")
     if mode == "pixel":
         staged = [(ref, False, loc) for ref, _has, loc in staged]
-    resolved_mode = "latent" if all(has for _, has, _ in staged) else "pixel"
-    if resolved_mode == "pixel" and mode == "auto":
+
+    # ---- per-source, per-boundary preflight, BEFORE the GPU is booked ----
+    # Each pinned window has to sit inside the user's cut, and a latent slice
+    # is legal only on the 17-frame group boundary. Resolving that here means
+    # an illegal cut costs nothing; discovering it after sampling would waste
+    # a run, and ignoring it (as this runner used to) silently generated from
+    # footage the user had trimmed away.
+    infos = [probe_media(loc) for _, _, loc in staged]
+    headers = []
+    for i, (_ref, has_ctx, loc) in enumerate(staged):
+        side = os.path.join(work_dir, f"stage{i:02d}.mctx.safetensors")
+        headers.append(read_mctx_header(side)
+                       if has_ctx and os.path.isfile(side) else {})
+    plan = []
+    for i, role in boundary_plan(op):
+        spec = resolve_boundary(role, sources[i], headers[i], PIN_WINDOW,
+                                infos[i]["frame_count"])
+        spec["src_index"] = i
+        plan.append(spec)
+
+    # A source goes to pixels if ANY of its boundaries cannot be sliced.
+    illegal = {}
+    for spec in plan:
+        if staged[spec["src_index"]][1] and not spec["latent_legal"]:
+            illegal.setdefault(spec["src_index"], []).append(spec)
+    for i, specs in illegal.items():
+        ends = sorted({e for s in specs for e in s["legal_ends"]})
+        detail = (f"source {i}'s cut puts a pinned window at raw frame "
+                  f"{specs[0]['raw_start']}, which is not on the "
+                  f"{LATENT_GROUP}-frame latent grid")
+        if mode == "latent":
+            alts = (f" Legal window end frames for this clip: {ends}."
+                    if ends else "")
+            raise FootageError(
+                f"context_mode 'latent' was requested but {detail}, so the "
+                f"slice would be unsound.{alts} Or use 'auto' to re-encode "
+                "this cut from pixels at the cost of exactness.")
+        staged[i] = (staged[i][0], False, staged[i][2])
+        warnings.append(
+            f"{detail}, so this cut was re-encoded from pixels instead; the "
+            "join is exact only to the VAE round trip"
+            + (f". Latent-grade cuts here end at {ends}" if ends else ""))
+
+    if mode == "pixel":
+        warnings.append("pixel context was requested explicitly; the join is "
+                        "exact only to the VAE round trip")
+    elif not illegal and not all(has for _, has, _ in staged) and mode == "auto":
         warnings.append(
             "continued from re-encoded pixels because original generation "
             "context was not available for every source; the join is exact "
             "only to the VAE round trip")
+    resolved_mode = "latent" if all(has for _, has, _ in staged) else "pixel"
+
+    # Stage each pixel boundary's own normalized window.
+    for n, spec in enumerate(plan):
+        i = spec["src_index"]
+        if staged[i][1]:
+            continue
+        ref, got, src_span = _stage_window(staged[i][2], infos[i], spec, req, n, log)
+        spec["clip_ref"] = ref
+        spec["staged_fps"] = got["fps"]["num"] / float(got["fps"]["den"])
+        spec["staged_has_audio"] = bool(infos[i]["has_audio"])
+        spec["staged_source_frames"] = list(src_span)
+        if got["frame_count"] != PIN_WINDOW:
+            warnings.append(
+                f"a pinned window yielded {got['frame_count']} frames rather "
+                f"than {PIN_WINDOW}; your cut was not moved")
+        if not infos[i]["has_audio"]:
+            warnings.append(
+                f"source {i} has no audio, so its pinned context carries "
+                "encoded silence")
+        if (infos[i]["width"], infos[i]["height"]) != _canvas(req):
+            warnings.append(
+                f"source {i} was rescaled from {infos[i]['width']}x"
+                f"{infos[i]['height']} to {_canvas(req)[0]}x{_canvas(req)[1]} "
+                "with aspect-fit padding")
+        if infos[i]["fps"] != ((req.get("output") or {}).get("fps")
+                               or {"num": 24, "den": 1}):
+            warnings.append(
+                f"source {i} was retimed from {infos[i]['fps']['num']}/"
+                f"{infos[i]['fps']['den']} to the output rate")
 
     graph = build_continuation(op, req, staged, raw, f"{op}-{jid[:8]}",
-                               latent_only=(mode == "latent"))
+                               latent_only=(mode == "latent"), plan=plan)
     with open(os.path.join(work_dir, "graph.json"), "w") as f:
         json.dump(graph, f, indent=1)
 
+    # The id is OURS and is journalled BEFORE submission, so a lost or
+    # timed-out response never leaves work running that nobody can name.
+    pid = str(uuid.uuid4())
+    _journal(jid, pid, "submitting", op=op)
+
+    def progress(phase, frac, eta):
+        _hb(hb, phase, frac, eta)
+
     # H3 needs the GPU and the full card: the TTS workers hold 6-8 GB.
-    with tts_guard.paused(log):
+    with tts_guard.paused(log) as guard:
         comfy_client.ensure_server(log)
         t0 = time.time()
-        pid = comfy_client.submit(graph)
+        try:
+            pid = comfy_client.submit(graph, prompt_id=pid)
+        except BaseException:
+            # The POST may have been received even though the response was
+            # not, so reconcile against the queue rather than assuming this
+            # id is free. Never simply resubmit.
+            _journal(jid, pid, "submit-uncertain", op=op)
+            if _prompt_is_live(pid):
+                log(f"prompt {pid} IS on the queue despite the failed "
+                    "response; aborting it rather than resubmitting")
+                try:
+                    _abort_prompt(pid, log)
+                except FootageError as exc:
+                    guard.hold(str(exc))
+                    raise
+            raise
+        _journal(jid, pid, "queued", op=op)
         log(f"comfyui prompt {pid} ({op})")
         try:
             outputs = comfy_client.wait(
-                pid, lambda phase, frac, eta: hb and None, cancel_check,
-                timeout_seconds, since_iso=None)
+                pid, progress, cancel_check, timeout_seconds, since_iso=None)
         except BaseException:
             # Never resume the TTS workers while our prompt may still be on
             # the GPU: they take 6-8 GB and would starve a run that is still
             # going, turning a clean failure into a pathologically slow one.
             # Interrupt OUR prompt and confirm the queue drained first.
             log(f"aborting comfyui prompt {pid} before releasing the GPU")
-            _abort_prompt(pid, log)
+            _journal(jid, pid, "aborting", op=op)
+            try:
+                _abort_prompt(pid, log)
+            except FootageError as exc:
+                # Could not prove the GPU is free: hold the workers down.
+                _journal(jid, pid, "abort-unconfirmed", op=op)
+                guard.hold(str(exc))
+                raise
+            _journal(jid, pid, "aborted", op=op)
             raise
+    _journal(jid, pid, "done", op=op)
     elapsed = time.time() - t0
 
-    saved = _saved_path(outputs)
+    saved, result_item = _saved_path(outputs)
     if not saved:
         raise FootageError(f"no clip pair in the obvpm outputs: {json.dumps(outputs)[:400]}")
     mp4 = saved if os.path.isabs(saved) else os.path.join(
@@ -708,7 +931,7 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
     pins = header.get("pins")
     if isinstance(pins, str):
         pins = json.loads(pins)
-    pin_windows = verify_recipe(pins, sources, warnings)
+    pin_windows = verify_recipe(pins, sources, warnings, plan)
     for pw in pin_windows:
         if pw["source_frames"] and pw["source_frames"] != PIN_WINDOW:
             warnings.append(
@@ -734,6 +957,7 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
                                           "out_frame": int(s.get("out_frame") or 0)}
                                          for s in sources],
                         "pin_windows": pin_windows},
+            "seams": _seams(result_item),
             "sampling": {"context_mode": resolved_mode,
                          "requested_new_frames": int(gen.get("new_frames") or 24),
                          "delivered_new_frames": d,
@@ -745,6 +969,63 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
             "warnings": warnings}
 
 
+def _journal_path():
+    return os.path.join(config.CACHE_DIR, "footage-prompts.jsonl")
+
+
+def _journal(task_id, prompt_id, state, op=None):
+    """Append one durable task -> prompt record.
+
+    Written BEFORE submission and at every state change, so a crash, cancel
+    or lost response can be reconciled against the ComfyUI queue instead of
+    resubmitting work that may already be running. Append-only and best
+    effort: a journal write must never be the thing that fails a render.
+    """
+    try:
+        os.makedirs(config.CACHE_DIR, exist_ok=True)
+        with open(_journal_path(), "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "task_id": task_id, "prompt_id": prompt_id,
+                "operation": op, "state": state}) + "\n")
+    except Exception:                                    # noqa: BLE001
+        pass
+
+
+def _prompt_is_live(pid):
+    """True only if the queue SAYS this prompt is there. Unknown reads False
+    for liveness but are never treated as proof the GPU is free."""
+    from videogen import comfy_client
+    import httpx
+    try:
+        q = httpx.get(comfy_client._url("/queue"), timeout=10).json()
+    except Exception:                                    # noqa: BLE001
+        return False
+    live = [i[1] for i in (q.get("queue_running") or [])] + \
+           [i[1] for i in (q.get("queue_pending") or [])]
+    return pid in live
+
+
+def _hb(hb, phase, frac, eta):
+    """Forward real sampler progress to the farm rather than dropping it.
+
+    The previous callback was `lambda phase, frac, eta: hb and None`, which
+    evaluated hb for truthiness and discarded every phase, fraction and ETA,
+    so a 90-second GPU run reported nothing at all.
+    """
+    if not hb:
+        return
+    try:
+        hb(phase=phase, frac=frac, eta=eta)
+    except TypeError:
+        try:
+            hb(phase, frac, eta)
+        except Exception:                                # noqa: BLE001
+            pass
+    except Exception:                                    # noqa: BLE001
+        pass
+
+
 def _abort_prompt(pid, log, wait_seconds=120):
     """Interrupt OUR prompt and wait for the GPU to actually be released.
 
@@ -754,44 +1035,98 @@ def _abort_prompt(pid, log, wait_seconds=120):
     """
     from videogen import comfy_client
     import httpx
-    try:
-        comfy_client.interrupt()
-    except Exception:                                    # noqa: BLE001
-        pass
-    try:
-        httpx.post(comfy_client._url("/queue"), json={"delete": [pid]}, timeout=10)
-    except Exception:                                    # noqa: BLE001
-        pass
-    deadline = time.time() + wait_seconds
-    while time.time() < deadline:
+
+    def queue_state():
+        """(running_ids, pending_ids) or None when the queue cannot be read."""
         try:
             q = httpx.get(comfy_client._url("/queue"), timeout=10).json()
         except Exception:                                # noqa: BLE001
-            return
-        live = [i[1] for i in (q.get("queue_running") or [])] + \
-               [i[1] for i in (q.get("queue_pending") or [])]
-        if pid not in live:
+            return None
+        return ([i[1] for i in (q.get("queue_running") or [])],
+                [i[1] for i in (q.get("queue_pending") or [])])
+
+    state = queue_state()
+    if state is None:
+        # Unknown state: do NOT interrupt, because an unconditional interrupt
+        # would hit whatever is running, which may be another engine's prompt.
+        raise FootageError(
+            f"could not read the ComfyUI queue while aborting prompt {pid}, so "
+            "ownership of the running job is unknown and nothing was "
+            "interrupted. TTS stays paused. Recover by checking "
+            f"{comfy_client._url('/queue')} and, if {pid} is still there, "
+            "cancelling it before restarting the TTS workers.")
+    running, pending = state
+    if pid in running:
+        # Targeted: v0.37 honours a prompt_id on /interrupt, so this can never
+        # stop a prompt we do not own.
+        try:
+            httpx.post(comfy_client._url("/interrupt"),
+                       json={"prompt_id": pid}, timeout=10)
+        except Exception:                                # noqa: BLE001
+            pass
+    if pid in pending:
+        try:
+            httpx.post(comfy_client._url("/queue"),
+                       json={"delete": [pid]}, timeout=10)
+        except Exception:                                # noqa: BLE001
+            pass
+    if pid not in running and pid not in pending:
+        log(f"prompt {pid} was already off the queue; nothing to interrupt")
+        return
+
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        state = queue_state()
+        if state is None:
+            raise FootageError(
+                f"lost contact with ComfyUI while draining prompt {pid}; TTS "
+                "stays paused because the GPU may still be in use.")
+        if pid not in state[0] and pid not in state[1]:
             log(f"prompt {pid} is off the queue")
             return
         time.sleep(2)
-    log(f"WARNING prompt {pid} still queued after {wait_seconds}s; "
-        "TTS stays paused is not guaranteed beyond this point")
+    # Fail CLOSED. Returning here would let the caller's tts_guard exit and
+    # resume 6-8 GB of TTS workers into a render that is demonstrably still
+    # on the GPU.
+    raise FootageError(
+        f"prompt {pid} was still on the ComfyUI queue {wait_seconds}s after "
+        "being interrupted, so the GPU cannot be assumed free and the TTS "
+        "workers have not been restarted. Recover by cancelling it at "
+        f"{comfy_client._url('/queue')} and restarting the TTS workers.")
 
 
 def _saved_path(outputs):
     """obvpm's saver returns the written path as a STRING output, and its
     preview node emits ui.h3_result — neither is a 'videos' entry, which is
     exactly why video_gen's collector cannot be reused here."""
+    path, item = None, {}
     for node in (outputs or {}).values():
         for key in ("path", "text", "string"):
             v = node.get(key)
-            if isinstance(v, list) and v and isinstance(v[0], str) and v[0].endswith(".mp4"):
-                return v[0]
-        for item in (node.get("h3_result") or []):
-            clip = item.get("clip")
+            if isinstance(v, list) and v and isinstance(v[0], str) \
+                    and v[0].endswith(".mp4") and path is None:
+                path = v[0]
+        for entry in (node.get("h3_result") or []):
+            clip = entry.get("clip")
             if isinstance(clip, str) and clip.endswith(".mp4"):
-                return clip
-    return None
+                path, item = clip, entry
+    return path, item
+
+
+def _seams(item):
+    """Departure and arrival seam measurements, kept as SEPARATE objects.
+
+    obvpm reports seam for the departure join and seam2 for the arrival, and
+    they are not interchangeable: a two-sided operation that reported one
+    number would hide whichever join was worse. Presence of a number is not
+    approval of the join — it is a measurement for a human to read.
+    """
+    out = {}
+    for key, role in (("seam", "departure"), ("seam2", "arrival")):
+        v = item.get(key)
+        if v not in (None, "", {}):
+            out[role] = v
+    return out
 
 
 def _canvas(req):
@@ -824,7 +1159,7 @@ def _h3_base(prompt, seed, length, width, height):
     }
 
 
-def verify_recipe(pins, sources, warnings):
+def verify_recipe(pins, sources, warnings, plan=None):
     """Map each pin's content hash back to a requested source.
 
     A NONEMPTY hash that matches no requested source is a hard failure, not a
@@ -844,14 +1179,30 @@ def verify_recipe(pins, sources, warnings):
                        (s.get("context") or {}).get("media_sha256")):
             if digest:
                 by_hash[digest] = s.get("take_id")
+    # A pixel pin has no content-addressed origin, so its identity comes from
+    # the boundary that produced it: specs are emitted in plan order and each
+    # names the placement it was built with. That is request provenance, not a
+    # hash guess — deliberately so, because the same media can appear in two
+    # clips and a hash could not tell them apart.
     resolved = []
-    for p in pins or []:
+    for idx, p in enumerate(pins or []):
         sid = (p.get("source_id") or "").strip()
         if not sid:
+            spec = plan[idx] if plan and idx < len(plan) else None
+            if spec is None:
+                raise FootageError(
+                    f"pin {idx} has no content hash and no planned boundary to "
+                    "identify it; refusing to record unattributed lineage.")
+            if p.get("place") and p["place"] != spec["place"]:
+                raise FootageError(
+                    f"pin {idx} was placed {p['place']!r} but the planned "
+                    f"boundary was {spec['place']!r}; refusing to record "
+                    "lineage that does not match the graph.")
+            take_id = spec["take_id"]
             warnings.append(
-                "a pinned window came from re-encoded pixels, so its origin is "
-                "recorded from the request rather than proven by content hash")
-            take_id = None
+                f"the {spec['place']} window came from re-encoded pixels, so "
+                "its origin is recorded from the request rather than proven "
+                "by content hash")
         else:
             take_id = by_hash.get(sid)
             if take_id is None:

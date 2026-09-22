@@ -86,6 +86,18 @@ class paused:
         self.did_pause = pause(self.log)
         return self
 
+    def hold(self, reason):
+        """Keep the TTS workers down PAST this block.
+
+        For a caller that could not confirm the GPU was released. Resuming
+        6-8 GB of TTS workers into a render that may still be running turns a
+        clean failure into a pathological one, so the supported way out is to
+        leave them stopped and say so loudly rather than guess.
+        """
+        if self.did_pause:
+            self.did_pause = False
+            self.log(f"tts workers: STAYING STOPPED — {reason}")
+
     def __exit__(self, *exc):
         if self.did_pause:
             try:

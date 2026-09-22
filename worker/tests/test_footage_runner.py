@@ -300,14 +300,125 @@ class ContinuationAdapter(unittest.TestCase):
             footage.verify_recipe(pins, sources, [])
         self.assertIn("not any requested source", str(cm.exception))
 
-    def test_blank_pixel_origin_warns_and_uses_request_provenance(self):
+    def test_blank_pixel_origin_takes_identity_from_its_boundary(self):
+        """A pixel pin has no content hash, but the contract needs a real
+        take_id. It comes from the boundary that produced it — request
+        provenance, not a hash guess, because the same media can appear in
+        two clips and a hash could not tell them apart."""
         pins = [{"source_id": "", "place": "before", "source_start": 0,
                  "source_frames": 39}]
+        plan = [{"place": "before", "take_id": "take-A", "src_index": 0}]
         warnings = []
-        resolved = footage.verify_recipe(pins, [{"take_id": "take-A"}], warnings)
+        resolved = footage.verify_recipe(pins, [{"take_id": "take-A"}],
+                                         warnings, plan)
         self.assertEqual(resolved[0]["context_mode"], "pixel")
-        self.assertIsNone(resolved[0]["take_id"])
+        self.assertEqual(resolved[0]["take_id"], "take-A")
         self.assertTrue(any("re-encoded pixels" in w for w in warnings))
+
+    def test_bridge_pixel_pins_keep_their_own_sources_apart(self):
+        """Two boundaries, two different sources: each pin must carry the id
+        of the clip it actually came from."""
+        pins = [{"source_id": "", "place": "before", "source_frames": 39},
+                {"source_id": "", "place": "after", "source_frames": 39}]
+        plan = [{"place": "before", "take_id": "take-A", "src_index": 0},
+                {"place": "after", "take_id": "take-B", "src_index": 1}]
+        resolved = footage.verify_recipe(
+            pins, [{"take_id": "take-A"}, {"take_id": "take-B"}], [], plan)
+        self.assertEqual([r["take_id"] for r in resolved],
+                         ["take-A", "take-B"])
+
+    def test_pin_placement_must_match_the_planned_boundary(self):
+        """If what came back was placed differently from what was planned,
+        the mapping is unsafe and lineage must not be invented."""
+        pins = [{"source_id": "", "place": "after", "source_frames": 39}]
+        plan = [{"place": "before", "take_id": "take-A", "src_index": 0}]
+        with self.assertRaises(footage.FootageError) as cm:
+            footage.verify_recipe(pins, [{"take_id": "take-A"}], [], plan)
+        self.assertIn("does not match the graph", str(cm.exception))
+
+    # -------------------------------------------------- the user's cut
+
+    HDR_ROOT = {"delivered_frames": 73, "pinned_head_frames": 0}
+    HDR_GEN = {"delivered_frames": 51, "pinned_head_frames": 39}
+
+    def test_untrimmed_departure_still_uses_tail(self):
+        """The proven path must not change shape: a cut covering the whole
+        clip is still take_from=tail, not an at_frame equivalent."""
+        s = {"in_frame": 0, "out_frame": 73}
+        b = footage.resolve_boundary("departure", s, self.HDR_ROOT, 39, 73)
+        self.assertEqual(b["take_from"], "tail")
+        self.assertTrue(b["latent_legal"])
+        self.assertEqual(b["raw_start"], 34)
+
+    def test_trimmed_departure_ends_at_the_users_out_frame(self):
+        """THE regression. A cut of [0,56) must pin the 39 frames ending at
+        56 — not the last 39 frames of the whole file."""
+        s = {"in_frame": 0, "out_frame": 56}
+        b = footage.resolve_boundary("departure", s, self.HDR_ROOT, 39, 73)
+        self.assertEqual(b["take_from"], "at_frame")
+        self.assertEqual(b["take_from_frame"], 56)
+        self.assertEqual(b["raw_start"], 17)
+        self.assertTrue(b["latent_legal"])
+
+    def test_two_different_out_frames_give_two_different_windows(self):
+        """Two requests on the SAME source must not produce the same pin."""
+        a = footage.resolve_boundary("departure", {"in_frame": 0, "out_frame": 56},
+                                     self.HDR_ROOT, 39, 73)
+        b = footage.resolve_boundary("departure", {"in_frame": 0, "out_frame": 73},
+                                     self.HDR_ROOT, 39, 73)
+        self.assertNotEqual(a["raw_start"], b["raw_start"])
+
+    def test_illegal_cut_is_detected_with_legal_alternatives(self):
+        """An interior cut off the 17-frame group boundary cannot be sliced
+        from latents, and the runner must say which cuts would work."""
+        s = {"in_frame": 0, "out_frame": 60}
+        b = footage.resolve_boundary("departure", s, self.HDR_ROOT, 39, 73)
+        self.assertFalse(b["latent_legal"])
+        self.assertEqual(b["raw_start"], 21)
+        self.assertIn(56, b["legal_ends"])          # raw 17 -> end 56
+        self.assertIn(73, b["legal_ends"])          # raw 34 -> end 73
+        for end in b["legal_ends"]:
+            alt = footage.resolve_boundary(
+                "departure", {"in_frame": 0, "out_frame": end},
+                self.HDR_ROOT, 39, 73)
+            self.assertTrue(alt["latent_legal"], f"suggested end {end} is not legal")
+
+    def test_arrival_window_starts_at_the_users_in_frame(self):
+        s = {"in_frame": 17, "out_frame": 73}
+        b = footage.resolve_boundary("arrival", s, self.HDR_ROOT, 39, 73)
+        self.assertEqual(b["take_from"], "at_frame")
+        self.assertEqual(b["take_from_frame"], 17 + 39)
+        self.assertEqual(b["raw_start"], 17)
+        self.assertTrue(b["latent_legal"])
+
+    def test_generated_parent_offsets_through_pinned_head(self):
+        """A generated take's delivered frame 12 is raw 51, because 39 frames
+        of its run were held context. Latent legality is decided in RAW."""
+        b = footage.resolve_boundary("departure", {"in_frame": 0, "out_frame": 51},
+                                     self.HDR_GEN, 39, 51)
+        self.assertEqual(b["take_from"], "tail")
+        self.assertEqual(b["raw_start"], 39 + 12)
+        self.assertEqual(b["raw_start"] % 17, 0)
+
+    def test_cut_shorter_than_the_context_window_is_refused(self):
+        with self.assertRaises(footage.FootageError) as cm:
+            footage.resolve_boundary("departure", {"in_frame": 0, "out_frame": 20},
+                                     self.HDR_ROOT, 39, 73)
+        self.assertIn("at least 39 frames", str(cm.exception))
+
+    def test_cut_outside_the_source_is_refused(self):
+        with self.assertRaises(footage.FootageError):
+            footage.resolve_boundary("departure", {"in_frame": 0, "out_frame": 99},
+                                     self.HDR_ROOT, 39, 73)
+
+    def test_boundary_plan_covers_every_operation(self):
+        self.assertEqual(footage.boundary_plan("extend"), [(0, "departure")])
+        self.assertEqual(footage.boundary_plan("prepend"), [(0, "arrival")])
+        # loop takes BOTH boundaries from one source; bridge one from each
+        self.assertEqual(footage.boundary_plan("loop"),
+                         [(0, "departure"), (0, "arrival")])
+        self.assertEqual(footage.boundary_plan("bridge"),
+                         [(0, "departure"), (1, "arrival")])
 
     def test_chain_window_snap_is_grid_legal(self):
         """A 34-frame candidate cannot take a 39-frame pin; obvpm snaps to 22,
@@ -318,6 +429,95 @@ class ContinuationAdapter(unittest.TestCase):
         raw_start = pinned_head + (delivered - snapped)
         self.assertEqual(raw_start, 51)
         self.assertEqual(raw_start % 17, 0)
+
+
+class ContinuationGraph(unittest.TestCase):
+    """The graph actually handed to ComfyUI, without running it."""
+
+    REQ = {"output": {"fps": {"num": 24, "den": 1}, "width": 832, "height": 480},
+           "generation": {"prompt": "a car", "seed": 1}}
+
+    def _spec(self, n, role, src=0, **kw):
+        d = {"src_index": src, "role": role,
+             "place": "before" if role == "departure" else "after",
+             "mode": "masked" if role == "departure" else "both",
+             "take_from": "at_frame", "take_from_frame": 56,
+             "clip_ref": f"footage/x/b{n}.mp4", "staged_fps": 24.0,
+             "staged_has_audio": True, "take_id": f"take-{src}"}
+        d.update(kw)
+        return d
+
+    def setUp(self):
+        footage._STAGE_KEY["folder"] = "footage/x"
+
+    def test_pixel_loop_gives_each_boundary_its_own_window(self):
+        """The loop bug: one encoder per SOURCE meant both pins came from the
+        same kept tail, so the arrival was the clip's end rather than its
+        beginning. Each boundary needs its own pre-trimmed clip."""
+        staged = [("footage/x/src0.mp4", False, "src0.mp4")]
+        plan = [self._spec(0, "departure"), self._spec(1, "arrival")]
+        g = footage.build_continuation("loop", self.REQ, staged, 90, "p",
+                                       latent_only=False, plan=plan)
+        encs = {k: v for k, v in g.items() if v["class_type"] == "H3MCtxFromFrames"}
+        self.assertEqual(len(encs), 2, "each boundary needs its own encoder")
+        keeps = sorted(v["inputs"]["keep"] for v in encs.values())
+        self.assertEqual(keeps, ["head", "tail"])
+        clips = {g[v["inputs"]["images"][0]]["inputs"]["video"][0] for v in encs.values()}
+        self.assertEqual(len(clips), 2, "the two windows must be different files")
+
+    def test_pixel_encoder_connects_audio_when_the_source_has_it(self):
+        staged = [("footage/x/src0.mp4", False, "src0.mp4")]
+        plan = [self._spec(0, "departure", staged_has_audio=True)]
+        g = footage.build_continuation("extend", self.REQ, staged, 90, "p",
+                                       latent_only=False, plan=plan)
+        enc = next(v for v in g.values() if v["class_type"] == "H3MCtxFromFrames")
+        comp = enc["inputs"]["images"][0]
+        self.assertEqual(enc["inputs"]["audio"], [comp, 1],
+                         "GetVideoComponents output 1 is audio")
+
+    def test_silent_source_omits_audio_so_the_pin_encodes_silence(self):
+        staged = [("footage/x/src0.mp4", False, "src0.mp4")]
+        plan = [self._spec(0, "departure", staged_has_audio=False)]
+        g = footage.build_continuation("extend", self.REQ, staged, 90, "p",
+                                       latent_only=False, plan=plan)
+        enc = next(v for v in g.values() if v["class_type"] == "H3MCtxFromFrames")
+        self.assertNotIn("audio", enc["inputs"])
+
+    def test_loadvideo_paths_are_annotated_for_the_output_folder(self):
+        """Staging writes to ComfyUI/output; a bare relative path resolves
+        against input and is rejected at submission."""
+        staged = [("footage/x/src0.mp4", False, "src0.mp4")]
+        plan = [self._spec(0, "departure")]
+        g = footage.build_continuation("extend", self.REQ, staged, 90, "p",
+                                       latent_only=False, plan=plan)
+        for node in g.values():
+            if node["class_type"] == "LoadVideo":
+                self.assertTrue(node["inputs"]["file"].endswith(" [output]"))
+
+    def test_latent_source_carries_the_users_cut_into_the_pin_spec(self):
+        staged = [("footage/x/src0.mp4", True, "src0.mp4")]
+        plan = [self._spec(0, "departure", take_from="at_frame",
+                           take_from_frame=56)]
+        g = footage.build_continuation("extend", self.REQ, staged, 90, "p",
+                                       latent_only=True, plan=plan)
+        spec = next(v for v in g.values() if v["class_type"] == "H3MCtxPinSpec")
+        self.assertEqual(spec["inputs"]["take_from"], "at_frame")
+        self.assertEqual(spec["inputs"]["take_from_frame"], 56)
+
+    def test_seams_are_kept_as_separate_named_joins(self):
+        item = {"clip": "a.mp4", "seam": 0.012, "seam2": 0.031}
+        self.assertEqual(footage._seams(item),
+                         {"departure": 0.012, "arrival": 0.031})
+        self.assertEqual(footage._seams({"clip": "a.mp4", "seam": 0.5}),
+                         {"departure": 0.5})
+        self.assertEqual(footage._seams({}), {})
+
+    def test_result_reader_returns_both_path_and_measurements(self):
+        outputs = {"result": {"h3_result": [
+            {"clip": "out.mp4", "seam": 0.02, "seam2": 0.04}]}}
+        path, item = footage._saved_path(outputs)
+        self.assertEqual(path, "out.mp4")
+        self.assertEqual(item["seam2"], 0.04)
 
 
 if __name__ == "__main__":
