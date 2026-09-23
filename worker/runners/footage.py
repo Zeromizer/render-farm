@@ -515,24 +515,41 @@ def _cut(src, a, b, info, ofps, width, height, want, dest):
 
 def _concat(parts, dest, log):
     lst = os.path.join(os.path.dirname(dest), "concat.txt")
+    infos = [probe_media(p) for p in parts]
     with open(lst, "w") as f:
-        for p in parts:
+        for p, info in zip(parts, infos):
             f.write(f"file '{p.replace(chr(92), '/')}'\n")
+            # The demuxer offsets the NEXT part by this part's duration, which
+            # it otherwise takes from the longest stream: a part whose audio
+            # overhangs its video by an AAC frame pushed every later frame
+            # ~21 ms late. The video's own length is the only right offset.
+            fps = info["fps"]
+            f.write(f"duration {info['frame_count'] * fps['den'] / fps['num']:.9f}\n")
     # Video is stream-copied through the concat demuxer (frame-exact, no
-    # re-encode). Audio is NOT: every AAC part carries 1024 samples of encoder
-    # priming that its MP4 edit list hides, and the concat demuxer ignores
-    # those edit lists, so a copied join grew by ~21 ms per part and slid the
-    # sound off its frames. Opening each part as its own input applies its
-    # edit list; the concat filter then joins exact-length audio.
-    inputs = []
-    for p in parts:
+    # re-encode). Audio is NOT: an AAC part carries encoder priming at its
+    # start and padding to a whole 1024-sample frame at its end. The concat
+    # demuxer ignores the MP4 edit list that hides the priming, and whether a
+    # decoder drops the end padding differs between FFmpeg builds (9.0.1 did,
+    # 8.1.1 did not), so every join grew by up to a frame and slid the sound
+    # off its frames. Each part is therefore opened as its own input and its
+    # decoded audio is cut (or padded) to exactly the length of that part's
+    # video before the concat filter joins them: the total can then only be
+    # off by the final encode's own rounding, never by one frame per part.
+    inputs, chains = [], []
+    for i, (p, info) in enumerate(zip(parts, infos)):
+        n = _samples_48k(info["frame_count"], info["fps"])
         inputs += ["-i", p]
-    joined = "".join(f"[{i + 1}:a]" for i in range(len(parts))) + f"concat=n={len(parts)}:v=0:a=1[a]"
+        chains.append(f"[{i + 1}:a]aresample=48000,atrim=end_sample={n},asetpts=N/SR/TB,"
+                      f"apad=whole_len={n},atrim=end_sample={n}[a{i}]")
+    joined = ";".join(chains) + ";" + "".join(f"[a{i}]" for i in range(len(parts))) + \
+        f"concat=n={len(parts)}:v=0:a=1[a]"
+    # -copyts keeps the demuxer's own zero-based video timestamps; without it
+    # the muxer shifted video to start at ~0.021 s while audio started at 0.
     r = subprocess.run(
-        [segments._tool("ffmpeg"), "-v", "error", "-y", "-f", "concat", "-safe", "0",
+        [segments._tool("ffmpeg"), "-v", "error", "-y", "-copyts", "-f", "concat", "-safe", "0",
          "-i", lst] + inputs +
         ["-filter_complex", joined, "-map", "0:v:0", "-map", "[a]", "-c:v", "copy",
-         "-c:a", "aac", "-ar", "48000", "-ac", "2", "-fflags", "+genpts", dest],
+         "-c:a", "aac", "-ar", "48000", "-ac", "2", dest],
         capture_output=True, text=True, timeout=1800)
     if r.returncode != 0:
         raise FootageError(f"concat failed: {r.stderr.strip()[:400]}")

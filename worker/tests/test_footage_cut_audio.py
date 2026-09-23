@@ -11,8 +11,11 @@ the cut was never bounded.
 Tolerance: the output is AAC in MP4. The encoder primes 1024 samples, which
 the MP4 edit list hides on decode, and a stream ends on a whole 1024-sample
 frame, so decoded length may exceed the exact frame-derived length by up to
-one AAC frame. Anything beyond that is drift, not encoder rounding.
+one AAC frame. Anything beyond that is drift, not encoder rounding. Whether a
+decoder drops the END padding differs by FFmpeg build (9.0.1 drops it, 8.1.1
+keeps it), so _concat must not rely on it; the padded-part test pins that.
 """
+import json
 import math
 import os
 import struct
@@ -66,6 +69,38 @@ def pcm48(path):
                         "-f", "s16le", "-"], check=True, capture_output=True)
     n = len(r.stdout) // 2
     return struct.unpack(f"<{n}h", r.stdout[:2 * n])
+
+
+def probe_streams(path):
+    """(video start, audio start, video duration, audio duration, video frame pts list)."""
+    fp = segments._tool("ffprobe")
+    r = subprocess.run([fp, "-v", "error", "-show_entries", "stream=codec_type,start_time,duration",
+                        "-of", "json", path], check=True, capture_output=True, text=True)
+    st = {s["codec_type"]: s for s in json.loads(r.stdout)["streams"]}
+    r = subprocess.run([fp, "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts_time",
+                        "-of", "csv=p=0", path], check=True, capture_output=True, text=True)
+    pts = [float(x.strip(",")) for x in r.stdout.split() if x.strip(",")]
+    return (float(st["video"]["start_time"]), float(st["audio"]["start_time"]),
+            float(st["video"]["duration"]), float(st["audio"]["duration"]), pts)
+
+
+def padded_part(path, src, a, b, extra):
+    """A part as _cut would make it, but whose audio runs `extra` samples PAST its
+    video - what a decoder that keeps AAC end padding hands _concat. Built as
+    exact video + separately trimmed PCM, muxed without any frame limit."""
+    n = b - a
+    v = path + ".v.mp4"
+    w = path + ".a.wav"
+    subprocess.run([FF, "-v", "error", "-y", "-i", src, "-an",
+                    "-vf", f"select='between(n\,{a}\,{b - 1})',setpts=N/FRAME_RATE/TB", "-frames:v", str(n),
+                    "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", v], check=True, capture_output=True)
+    subprocess.run([FF, "-v", "error", "-y", "-i", src, "-vn",
+                    "-af", (f"aresample=48000,atrim=start_sample={a * SLOT}:end_sample={b * SLOT + extra},"
+                           f"asetpts=N/SR/TB,apad=whole_len={n * SLOT + extra}"),  # also past the source end
+                    "-ac", "2", "-c:a", "pcm_s16le", w], check=True, capture_output=True)
+    subprocess.run([FF, "-v", "error", "-y", "-i", v, "-i", w, "-map", "0:v:0", "-map", "1:a:0",
+                    "-c", "copy", path], check=True, capture_output=True)
+    return path
 
 
 def goertzel(x, f, rate=48000):
@@ -165,6 +200,76 @@ class CutAudioContent(unittest.TestCase):
         for start, a, want in marks[1:]:
             for j in sorted({0, 1, want // 2, want - 2, want - 1}):
                 self.assertEqual(slot_tone(pcm, start + j, self.cands), a + j, f"mix slot {start + j}")
+
+
+    def assert_join_timing(self, final, total, label):
+        v0, a0, vd, ad, pts = probe_streams(final)
+        self.assertAlmostEqual(v0, 0.0, delta=0.001, msg=f"{label}: video start {v0}")
+        self.assertAlmostEqual(a0, 0.0, delta=0.001, msg=f"{label}: audio start {a0}")
+        self.assertEqual(len(pts), total, label)
+        for i, x in enumerate(pts):                     # native 24 fps, zero-based, ordered
+            self.assertAlmostEqual(x, i / 24, delta=0.001, msg=f"{label}: frame {i} pts {x}")
+        self.assertAlmostEqual(vd, total / 24, delta=0.001, msg=label)
+        self.assertLessEqual(abs(ad - vd), AAC_FRAME / 48000, f"{label}: audio {ad}s vs video {vd}s")
+
+    def test_join_is_zero_based_and_tones_stay_on_their_frames_at_every_join(self):
+        parts, cursor, marks = [], 0, []
+        for i, (src, a, b) in enumerate([(self.silent, 0, 12), (self.src[32000], 12, 51),
+                                          (self.src[44100], 0, 6)]):
+            out, want = self.cut(src, a, b, f"jt{i}.mp4")
+            parts.append(out)
+            marks.append((cursor, a, want, src is self.silent))
+            cursor += want
+        final = os.path.join(self.work, "jt.mp4")
+        footage._concat(parts, final, lambda *_: None)
+        self.assert_join_timing(final, cursor, "3-part")
+        pcm = pcm48(final)
+        for start, a, want, silent in marks:            # both sides of every join
+            for j in (0, want - 1):
+                self.assertEqual(slot_tone(pcm, start + j, self.cands), None if silent else a + j,
+                                 f"slot {start + j}")
+
+    def test_long_chain_does_not_accumulate_per_part_padding(self):
+        """Ten parts across all rates and silence: the total stays within ONE
+        final AAC frame, not one per part."""
+        plan = [(self.src[32000], 0, 7), (self.silent, 7, 13), (self.src[44100], 13, 21),
+                (self.src[48000], 21, 26), (self.src[32000], 26, 33), (self.src[44100], 33, 38),
+                (self.silent, 38, 41), (self.src[48000], 41, 45), (self.src[32000], 45, 49),
+                (self.src[44100], 49, 51)]
+        parts, cursor, marks = [], 0, []
+        for i, (src, a, b) in enumerate(plan):
+            out, want = self.cut(src, a, b, f"chain{i}.mp4")
+            parts.append(out)
+            marks.append((cursor, a, want, src is self.silent))
+            cursor += want
+        final = os.path.join(self.work, "chain.mp4")
+        footage._concat(parts, final, lambda *_: None)
+        self.assertEqual(cursor, 51)
+        self.assertEqual(grey_levels(final), list(range(51)))
+        self.assert_join_timing(final, cursor, "10-part")
+        pcm = pcm48(final)
+        self.assertLessEqual(abs(len(pcm) - cursor * SLOT), AAC_FRAME, "10-part length")
+        for start, a, want, silent in marks:
+            for j in sorted({0, want - 1}):
+                self.assertEqual(slot_tone(pcm, start + j, self.cands), None if silent else a + j,
+                                 f"chain slot {start + j}")
+
+    def test_concat_bounds_parts_whose_decoded_audio_is_longer_than_their_video(self):
+        """Simulates a decoder that keeps AAC end padding: every part's audio runs
+        a whole AAC frame past its video. _concat must still join exact lengths."""
+        spans = [(0, 12), (12, 30), (30, 39), (39, 51)]
+        parts = [padded_part(os.path.join(self.work, f"pad{i}.mov"), self.src[48000], a, b, AAC_FRAME)
+                 for i, (a, b) in enumerate(spans)]
+        for p, (a, b) in zip(parts, spans):
+            self.assertEqual(len(pcm48(p)), (b - a) * SLOT + AAC_FRAME)   # the fixture really is long
+        final = os.path.join(self.work, "pad.mp4")
+        footage._concat(parts, final, lambda *_: None)
+        self.assert_join_timing(final, 51, "padded parts")
+        pcm = pcm48(final)
+        self.assertLessEqual(abs(len(pcm) - 51 * SLOT), AAC_FRAME, "padded parts: no per-part growth")
+        for a, b in spans:
+            for k in (a, b - 1):
+                self.assertEqual(slot_tone(pcm, k, self.cands), k, f"padded slot {k}")
 
 
 if __name__ == "__main__":
