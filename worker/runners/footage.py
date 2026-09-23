@@ -16,6 +16,9 @@ is the whole request; operations:
   prepend       one source, continue before its start      (H3, needs obvpm)
   bridge        two sources, departure then arrival        (H3, needs obvpm)
   loop          one source, its end back to its beginning  (H3, needs obvpm)
+  repair_join   A then B, profile continuation-gap-v1 only: regenerate B's
+                first 12 frames (H3, needs obvpm; offered only via
+                capabilities.generation_profiles)
 
 Artifacts are uploaded BEFORE the manifest that references them, so a manifest
 never points at something that is not there yet. CPU-only operations never
@@ -129,6 +132,40 @@ PROVEN_GENERATION_OPS = ("extend", "prepend")
 # two MUST agree. True only because extend has run end to end here; what is
 # actually offered is still governed by PROVEN_GENERATION_OPS.
 GENERATION_ADAPTER_READY = True
+
+# ---- Restricted short-gap profile ("Repair join") ------------------------
+# NOT general bridge. One fixed recipe, reviewed visually on ONE same-lineage
+# fixed-camera gap (diag-moving-gap-seed77-both, 2026-09-23): regenerate the
+# first 12 frames of B where B is the direct extend of A, pinned on A's last
+# 39 and B's frames [12,51), both pins mode "both". Total duration unchanged.
+#
+# It is a separate operation behind a separate capability key, because the
+# website enables general Bridge from `operations` alone: adding "bridge" to
+# PROVEN_GENERATION_OPS would offer distinct-shot bridges, which still measure
+# a hard cut. `operations` never lists repair_join, bridge or loop for it.
+#
+# Every number below is a REQUIREMENT, not a default: a request that differs
+# in any of them fails before staging completes and before the GPU is booked.
+GAP_PROFILE = "continuation-gap-v1"
+GAP_OPERATION = "repair_join"
+GAP_NEW_FRAMES = 12
+GAP_SAMPLED_FRAMES = 90                  # 39 + 12 + 39, on the AV grid
+GAP_SOURCE_HEADER = {"raw_frames": 90, "pinned_head_frames": 39,
+                     "pinned_tail_frames": 0, "delivered_frames": 51}
+GAP_RESULT_HEADER = {"raw_frames": 90, "pinned_head_frames": 39,
+                     "pinned_tail_frames": 39, "delivered_frames": 12}
+GAP_CUTS = ({"in_frame": 0, "out_frame": 51},      # A: all of it
+            {"in_frame": 12, "out_frame": 51})     # B: minus what is replaced
+GAP_ORIGINAL_TRIM = {"in_frame": 0, "out_frame": 51}   # both, as saved
+GAP_REPLACED_B = {"in_frame": 0, "out_frame": 12}
+GAP_CANVAS = (832, 480)
+GAP_FPS = {"num": 24, "den": 1}
+GAP_RAW_START = 51                       # both pins: raw[51,90) of their source
+
+# Empty until the contract and a site-queued proof are reviewed. While empty,
+# capabilities carries no generation_profiles key at all and run() refuses
+# repair_join outright.
+OFFERED_GENERATION_PROFILES = ()
 
 
 class FootageError(RuntimeError):
@@ -360,7 +397,38 @@ def capabilities_block():
             "max_generation_frames": {"480p": MAX_AV_RAW if can_generate else 0,
                                       "768p": MAX_RAW_768P},
             "max_context_bytes": MAX_CONTEXT_BYTES if can_generate else 0,
-            "generation_limits": generation_limits() if can_generate else {}}
+            "generation_limits": generation_limits() if can_generate else {},
+            # absent, not empty, while nothing is offered: the current site
+            # sees exactly the manifest it validates today
+            **({"generation_profiles": generation_profiles()}
+               if can_generate and OFFERED_GENERATION_PROFILES else {})}
+
+
+def generation_profiles():
+    """The restricted profiles this worker serves, keyed by profile id.
+
+    Each entry is the complete recipe the request must match; the site builds
+    the request FROM this, and the worker re-checks every field of it.
+    """
+    out = {}
+    if GAP_PROFILE in OFFERED_GENERATION_PROFILES:
+        out[GAP_PROFILE] = {
+            "operation": GAP_OPERATION,
+            "sources": 2,
+            "resolution": "480p", "width": GAP_CANVAS[0], "height": GAP_CANVAS[1],
+            "fps": dict(GAP_FPS),
+            "context_mode": "latent",
+            "new_frames": GAP_NEW_FRAMES,
+            "sampled_frames": GAP_SAMPLED_FRAMES,
+            "held_prefix_frames": PIN_WINDOW, "held_suffix_frames": PIN_WINDOW,
+            "pin_modes": {"before": "both", "after": "both"},
+            "source_header": dict(GAP_SOURCE_HEADER),
+            "original_trims": [dict(GAP_ORIGINAL_TRIM), dict(GAP_ORIGINAL_TRIM)],
+            "worker_cuts": [dict(c) for c in GAP_CUTS],
+            "replaces": {"source": 1, **GAP_REPLACED_B},
+            "lineage": {"source_1_relation": "extends",
+                        "source_1_parent": "source_0.media.sha256"}}
+    return out
 
 
 def _worker_revision():
@@ -869,8 +937,185 @@ def build_continuation(op, req, staged, length, prefix, latent_only, plan):
     return g
 
 
-def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_seconds):
-    """Run one extend / prepend / bridge / loop and reconcile what came back."""
+def _is_sha256(v):
+    return (isinstance(v, str) and len(v) == 64
+            and all(c in "0123456789abcdef" for c in v))
+
+
+def _trim(d):
+    d = d or {}
+    return {"in_frame": d.get("in_frame"), "out_frame": d.get("out_frame")}
+
+
+def validate_gap_request(req):
+    """Refuse any repair_join request that is not exactly the profile.
+
+    Pure: no download, no staging, no ComfyUI. Runs before the prior-attempt
+    journal check so a malformed request never touches anything. Values are
+    compared exactly — nothing here falls back to a default, because a
+    defaulted field is a field the site did not commit to.
+    """
+    gen = req.get("generation") or {}
+    out = req.get("output") or {}
+    bad = []
+    if gen.get("profile") != GAP_PROFILE:
+        bad.append(f"generation.profile must be {GAP_PROFILE!r} "
+                   f"(got {gen.get('profile')!r})")
+    if gen.get("new_frames") != GAP_NEW_FRAMES:
+        bad.append(f"generation.new_frames must be {GAP_NEW_FRAMES}")
+    if gen.get("context_mode") != "latent":
+        bad.append("generation.context_mode must be 'latent'; this profile "
+                   "never falls back to pixels")
+    if gen.get("resolution") != "480p":
+        bad.append("generation.resolution must be '480p'")
+    if not isinstance(gen.get("seed"), int) or isinstance(gen.get("seed"), bool):
+        bad.append("generation.seed must be an integer")
+    if not (gen.get("prompt") or "").strip():
+        bad.append("generation.prompt must be non-empty")
+    if out.get("fps") != GAP_FPS:
+        bad.append(f"output.fps must be {GAP_FPS}")
+    if (out.get("width"), out.get("height")) != GAP_CANVAS:
+        bad.append(f"output must be {GAP_CANVAS[0]}x{GAP_CANVAS[1]}")
+
+    sources = req.get("sources") or []
+    if len(sources) != 2:
+        bad.append(f"exactly 2 sources [A, B] are required (got {len(sources)})")
+    else:
+        for i, (s, want) in enumerate(zip(sources, GAP_CUTS)):
+            media, ctx = s.get("media") or {}, s.get("context") or {}
+            if not s.get("take_id"):
+                bad.append(f"source {i} has no take_id")
+            if not _is_sha256(media.get("sha256")):
+                bad.append(f"source {i} media.sha256 must be a sha256 hex digest")
+            if not ctx.get("path") or not _is_sha256(ctx.get("sha256")):
+                bad.append(f"source {i} needs its paired context (path + sha256)")
+            elif ctx.get("media_sha256") != media.get("sha256"):
+                bad.append(f"source {i} context.media_sha256 does not name "
+                           "its own media")
+            if _trim(s) != want:
+                bad.append(f"source {i} worker cut must be "
+                           f"[{want['in_frame']},{want['out_frame']}) "
+                           f"(got [{s.get('in_frame')},{s.get('out_frame')}))")
+        if (sources[0].get("media") or {}).get("sha256") == \
+                (sources[1].get("media") or {}).get("sha256"):
+            bad.append("A and B are the same media; a repair joins two takes")
+
+    rj = req.get("repair_join") or {}
+    if not rj.get("sequence_id"):
+        bad.append("repair_join.sequence_id is required")
+    rev = rj.get("sequence_revision")
+    if not isinstance(rev, int) or isinstance(rev, bool) or rev < 1:
+        bad.append("repair_join.sequence_revision must be a positive integer")
+    ids = rj.get("clip_instance_ids") or []
+    if len(ids) != 2 or not all(ids) or ids[0] == ids[1]:
+        bad.append("repair_join.clip_instance_ids must be two distinct ids [A, B]")
+    trims = rj.get("original_trims") or []
+    if [_trim(t) for t in trims] != [GAP_ORIGINAL_TRIM, GAP_ORIGINAL_TRIM]:
+        # B saved as [12,51) would mean it was destructively pre-trimmed, and
+        # adoption could not then advance its in-frame by exactly 12.
+        bad.append("repair_join.original_trims must be the saved, untrimmed "
+                   "[0,51) of both A and B")
+    if bad:
+        raise FootageError(f"{GAP_OPERATION} ({GAP_PROFILE}) refused: "
+                           + "; ".join(bad))
+
+
+def check_gap_sources(sources, locals_, sidecars, headers, infos, plan,
+                      digest=None):
+    """The downloaded bytes must be the profile too. Runs after download and
+    staging but BEFORE the graph is built or the GPU is booked.
+
+    digest(path) -> sha256 hex; injectable for tests.
+    """
+    digest = digest or (lambda p: sha256_size(p)[0])
+    bad = []
+    for i, s in enumerate(sources):
+        want_media = (s.get("media") or {}).get("sha256")
+        if digest(locals_[i]) != want_media:
+            bad.append(f"source {i} media bytes do not match media.sha256")
+        if not sidecars[i] or digest(sidecars[i]) != (s.get("context") or {}).get("sha256"):
+            bad.append(f"source {i} context bytes do not match context.sha256")
+        h = headers[i] or {}
+        if h.get("self_id") != want_media:
+            bad.append(f"source {i} context is not bound to its media (self_id)")
+        for k, v in GAP_SOURCE_HEADER.items():
+            try:
+                got = int(h.get(k))
+            except (TypeError, ValueError):
+                got = None
+            if got != v:
+                bad.append(f"source {i} context {k} must be {v} (got {h.get(k)!r})")
+        info = infos[i] or {}
+        if info.get("frame_count") != GAP_SOURCE_HEADER["delivered_frames"]:
+            bad.append(f"source {i} decodes {info.get('frame_count')} frames, "
+                       f"not {GAP_SOURCE_HEADER['delivered_frames']}")
+        if info.get("fps") != GAP_FPS:
+            bad.append(f"source {i} is not native {GAP_FPS['num']}/{GAP_FPS['den']} fps")
+        if (info.get("width"), info.get("height")) != GAP_CANVAS:
+            bad.append(f"source {i} is not native {GAP_CANVAS[0]}x{GAP_CANVAS[1]}")
+        if not info.get("has_audio"):
+            bad.append(f"source {i} has no audio stream; a native H3 take does")
+    hb_ = headers[1] or {}
+    if hb_.get("relation") != "extends":
+        bad.append(f"B must be an extend (relation {hb_.get('relation')!r})")
+    if hb_.get("parent_id") != (sources[0].get("media") or {}).get("sha256"):
+        bad.append("B's parent is not A: this profile repairs a direct "
+                   "extend join only")
+    for spec in plan:
+        if not spec.get("latent_legal") or spec.get("raw_start") != GAP_RAW_START:
+            bad.append(f"the {spec.get('role')} window resolves to raw "
+                       f"{spec.get('raw_start')}, not the latent-legal "
+                       f"{GAP_RAW_START}")
+    if bad:
+        raise FootageError(f"{GAP_OPERATION} ({GAP_PROFILE}) refused before "
+                           "generation: " + "; ".join(bad))
+
+
+def verify_gap_result(header, pin_windows, sources):
+    """A candidate is returned only if it is the profile's shape: 12 new
+    frames between two latent pins, A's before and B's after."""
+    bad = []
+    for k, v in GAP_RESULT_HEADER.items():
+        try:
+            got = int(header.get(k))
+        except (TypeError, ValueError):
+            got = None
+        if got != v:
+            bad.append(f"{k} {header.get(k)!r} != {v}")
+    want = [(sources[0].get("take_id"), "before"), (sources[1].get("take_id"), "after")]
+    got = [(p.get("take_id"), p.get("placement")) for p in pin_windows]
+    if got != want:
+        bad.append(f"pins {got} != {want}")
+    if any(p.get("context_mode") != "latent" for p in pin_windows):
+        bad.append("a pin is not latent")
+    if bad:
+        raise FootageError(f"{GAP_OPERATION} candidate does not match "
+                           f"{GAP_PROFILE}; not returned: " + "; ".join(bad))
+
+
+def gap_lineage(req):
+    """What adoption needs to stay stale-revision safe: the saved sequence the
+    candidate was made for, and the cuts the worker ACTUALLY used."""
+    rj = req.get("repair_join") or {}
+    src = req.get("sources") or []
+    ids = rj.get("clip_instance_ids") or [None, None]
+    return {"profile": GAP_PROFILE,
+            "sequence_id": rj.get("sequence_id"),
+            "sequence_revision": rj.get("sequence_revision"),
+            "clip_instance_ids": list(ids),
+            "original_trims": [_trim(t) for t in rj.get("original_trims") or []],
+            "worker_cuts": [{"clip_instance_id": ids[i],
+                             "take_id": s.get("take_id"), **_trim(s)}
+                            for i, s in enumerate(src)],
+            "replaces": {"clip_instance_id": ids[1], **GAP_REPLACED_B}}
+
+
+def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_seconds,
+                    profile=None):
+    """Run one extend / prepend / bridge / loop and reconcile what came back.
+
+    profile=GAP_PROFILE runs the restricted Repair join recipe over the
+    bridge boundary plan; run() has already validated the request."""
     from videogen import comfy_client, tts_guard
 
     gen = req.get("generation") or {}
@@ -977,6 +1222,17 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
                                 or {"num": 24, "den": 1})
         spec["src_index"] = i
         plan.append(spec)
+
+    if profile == GAP_PROFILE:
+        # Every byte and header is the profile, or nothing is built. This sits
+        # BEFORE the pixel-demotion loop below so an illegal window is refused
+        # rather than quietly re-encoded.
+        sides = [os.path.join(work_dir, f"stage{i:02d}.mctx.safetensors")
+                 if has_ctx else None for i, (_r, has_ctx, _l) in enumerate(staged)]
+        check_gap_sources(sources, [loc for _, _, loc in staged], sides,
+                          headers, infos, plan)
+        # The reviewed recipe pins the departure "both", not bridge's masked.
+        plan[0]["mode"] = "both"
 
     # A source goes to pixels if ANY of its boundaries cannot be sliced.
     illegal = {}
@@ -1174,16 +1430,24 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
         f"head {header.get('pinned_head_frames')} tail {header.get('pinned_tail_frames')} "
         f"-> delivered {d}")
 
+    lineage = {"source_take_ids": [s.get("take_id") for s in sources],
+               # the USER's windows, verbatim - never the narrower pins
+               "source_trims": [{"take_id": s.get("take_id"),
+                                 "in_frame": int(s.get("in_frame") or 0),
+                                 "out_frame": int(s.get("out_frame") or 0)}
+                                for s in sources],
+               "pin_windows": pin_windows}
+    if profile == GAP_PROFILE:
+        verify_gap_result(header, pin_windows, sources)
+        if ctx_out is None:
+            raise FootageError(f"{GAP_OPERATION} candidate has no context bound "
+                               "to its media; not returned")
+        lineage["repair_join"] = gap_lineage(req)
+
     return {"_media_local": mp4, "_context_local": ctx_out,
             "media": {"bucket": config.BUCKET, "path": None, "sha256": digest,
                       "size": size, "info": info},
-            "lineage": {"source_take_ids": [s.get("take_id") for s in sources],
-                        # the USER's windows, verbatim - never the narrower pins
-                        "source_trims": [{"take_id": s.get("take_id"),
-                                          "in_frame": int(s.get("in_frame") or 0),
-                                          "out_frame": int(s.get("out_frame") or 0)}
-                                         for s in sources],
-                        "pin_windows": pin_windows},
+            "lineage": lineage,
             "seams": _seams(result_item, plan),
             "sampling": {"context_mode": resolved_mode,
                          "requested_new_frames": int(gen.get("new_frames") or 24),
@@ -1664,6 +1928,17 @@ def run(job, repo, work_dir, hb, log, cancel_check, timeout_seconds):
                 f"capabilities offers {list(PROVEN_GENERATION_OPS)!r}")
         body = op_continuation(op, req, jid, work_dir, hb, log,
                                cancel_check, timeout_seconds)
+    elif op == GAP_OPERATION:
+        # Its own gate: never reachable through PROVEN_GENERATION_OPS, and
+        # never through operation "bridge" with a profile field attached.
+        if not (GENERATION_ADAPTER_READY and _comfy_identity()[2]
+                and GAP_PROFILE in OFFERED_GENERATION_PROFILES):
+            raise FootageError(
+                f"operation {op!r} is not available on this worker yet; "
+                f"capabilities offers profiles {list(OFFERED_GENERATION_PROFILES)!r}")
+        validate_gap_request(req)
+        body = op_continuation("bridge", req, jid, work_dir, hb, log,
+                               cancel_check, timeout_seconds, profile=GAP_PROFILE)
     else:
         raise FootageError(f"unknown footage operation {op!r}")
 
