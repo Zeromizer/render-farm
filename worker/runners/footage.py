@@ -153,7 +153,14 @@ GAP_SAMPLED_FRAMES = 90                  # 39 + 12 + 39, on the AV grid
 GAP_SOURCE_HEADER = {"raw_frames": 90, "pinned_head_frames": 39,
                      "pinned_tail_frames": 0, "delivered_frames": 51}
 GAP_RESULT_HEADER = {"raw_frames": 90, "pinned_head_frames": 39,
-                     "pinned_tail_frames": 39, "delivered_frames": 12}
+                     "pinned_tail_frames": 39, "delivered_frames": 12,
+                     "width": 832, "height": 480, "fps": 24}
+GAP_SEED = 77                            # the one seed the recipe was reviewed at
+# The candidate's pins exactly as the reviewed run recorded them (obvpm
+# ba8145da): same key set, same values. source_id is filled per request.
+GAP_RESULT_PIN = {"source_kind": "clip", "source_start": 51, "source_frames": 39,
+                  "audio_window": 0, "mode": "both"}
+GAP_RESULT_PIN_KEYS = frozenset(GAP_RESULT_PIN) | {"source_id", "place"}
 GAP_CUTS = ({"in_frame": 0, "out_frame": 51},      # A: all of it
             {"in_frame": 12, "out_frame": 51})     # B: minus what is replaced
 GAP_ORIGINAL_TRIM = {"in_frame": 0, "out_frame": 51}   # both, as saved
@@ -418,7 +425,7 @@ def generation_profiles():
             "resolution": "480p", "width": GAP_CANVAS[0], "height": GAP_CANVAS[1],
             "fps": dict(GAP_FPS),
             "context_mode": "latent",
-            "new_frames": GAP_NEW_FRAMES,
+            "new_frames": GAP_NEW_FRAMES, "seed": GAP_SEED,
             "sampled_frames": GAP_SAMPLED_FRAMES,
             "held_prefix_frames": PIN_WINDOW, "held_suffix_frames": PIN_WINDOW,
             "pin_modes": {"before": "both", "after": "both"},
@@ -968,8 +975,9 @@ def validate_gap_request(req):
                    "never falls back to pixels")
     if gen.get("resolution") != "480p":
         bad.append("generation.resolution must be '480p'")
-    if not isinstance(gen.get("seed"), int) or isinstance(gen.get("seed"), bool):
-        bad.append("generation.seed must be an integer")
+    if type(gen.get("seed")) is not int or gen.get("seed") != GAP_SEED:
+        bad.append(f"generation.seed must be {GAP_SEED}; this profile was "
+                   "reviewed at that seed only")
     if not (gen.get("prompt") or "").strip():
         bad.append("generation.prompt must be non-empty")
     if out.get("fps") != GAP_FPS:
@@ -1071,10 +1079,34 @@ def check_gap_sources(sources, locals_, sidecars, headers, infos, plan,
                            "generation: " + "; ".join(bad))
 
 
-def verify_gap_result(header, pin_windows, sources):
+def verify_gap_result(header, raw_pins, pin_windows, sources):
     """A candidate is returned only if it is the profile's shape: 12 new
-    frames between two latent pins, A's before and B's after."""
+    frames between two latent pins, A's before and B's after.
+
+    raw_pins are the sidecar's own pin records, checked BEFORE verify_recipe
+    has reduced them: it keeps starts and lengths but drops mode, kind and
+    audio_window, and its reduced-window path is only a warning. For this
+    profile a different window or guidance mode is a different recipe, so
+    every field must be present and exact — nothing defaults to success.
+    """
     bad = []
+    want_ids = [(sources[0].get("media") or {}).get("sha256"),
+                (sources[1].get("media") or {}).get("sha256")]
+    if not isinstance(raw_pins, list) or len(raw_pins) != 2:
+        bad.append(f"expected 2 pins, got {raw_pins!r:.200}")
+        raw_pins = []
+    for i, (p, place) in enumerate(zip(raw_pins, ("before", "after"))):
+        if not isinstance(p, dict):
+            bad.append(f"pin {i} is not a record")
+            continue
+        if set(p) != GAP_RESULT_PIN_KEYS:
+            bad.append(f"pin {i} fields {sorted(p)} != {sorted(GAP_RESULT_PIN_KEYS)}")
+        want = dict(GAP_RESULT_PIN, source_id=want_ids[i], place=place)
+        for k, v in want.items():
+            got = p.get(k)
+            # exact type too: True == 1 and "51" is not 51
+            if type(got) is not type(v) or got != v:
+                bad.append(f"pin {i} {k} {got!r} != {v!r}")
     for k, v in GAP_RESULT_HEADER.items():
         try:
             got = int(header.get(k))
@@ -1438,7 +1470,7 @@ def op_continuation(op, req, jid, work_dir, hb, log, cancel_check, timeout_secon
                                 for s in sources],
                "pin_windows": pin_windows}
     if profile == GAP_PROFILE:
-        verify_gap_result(header, pin_windows, sources)
+        verify_gap_result(header, pins, pin_windows, sources)
         if ctx_out is None:
             raise FootageError(f"{GAP_OPERATION} candidate has no context bound "
                                "to its media; not returned")

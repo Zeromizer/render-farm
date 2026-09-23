@@ -105,6 +105,7 @@ class Capability(unittest.TestCase):
                                             {"in_frame": 12, "out_frame": 51}])
         self.assertEqual(p["replaces"], {"source": 1, "in_frame": 0, "out_frame": 12})
         self.assertEqual(p["pin_modes"], {"before": "both", "after": "both"})
+        self.assertEqual(p["seed"], 77)
 
     def test_no_profile_without_obvpm(self):
         with mock.patch.object(f, "_comfy_identity", return_value=("0.37.0", "c", None)), \
@@ -176,6 +177,9 @@ class RequestValidation(unittest.TestCase):
             (lambda r: r[G].__setitem__("resolution", "768p"), "resolution"),
             (lambda r: r[G].__setitem__("seed", None), "seed"),
             (lambda r: r[G].__setitem__("seed", True), "seed"),
+            (lambda r: r[G].__setitem__("seed", 78), "seed"),
+            (lambda r: r[G].__setitem__("seed", 77.0), "seed"),
+            (lambda r: r[G].pop("seed"), "seed"),
             (lambda r: r[G].__setitem__("prompt", "  "), "prompt"),
             (lambda r: r[O].__setitem__("fps", {"num": 30, "den": 1}), "output.fps"),
             (lambda r: r[O].pop("fps"), "output.fps"),
@@ -306,25 +310,95 @@ class AdapterWiring(unittest.TestCase):
                                             header(A_SHA), 39, 51)["mode"], "masked")
 
 
+REAL_RUN = "C:/ComfyUI/output/footage/diag-moving-gap-seed77-both-run-1790130336"
+
+
+def raw_pins():
+    return [{"source_id": A_SHA, "source_kind": "clip", "source_start": 51,
+             "source_frames": 39, "place": "before", "audio_window": 0, "mode": "both"},
+            {"source_id": B_SHA, "source_kind": "clip", "source_start": 51,
+             "source_frames": 39, "place": "after", "audio_window": 0, "mode": "both"}]
+
+
 class Result(unittest.TestCase):
     PINS = [{"take_id": "take-A", "placement": "before", "context_mode": "latent"},
             {"take_id": "take-B", "placement": "after", "context_mode": "latent"}]
     HDR = {"raw_frames": "90", "pinned_head_frames": "39",
-           "pinned_tail_frames": "39", "delivered_frames": "12"}
+           "pinned_tail_frames": "39", "delivered_frames": "12",
+           "width": "832", "height": "480", "fps": "24"}
+
+    def _refused(self, hdr=None, raw=(), pins=None):
+        with self.assertRaises(f.FootageError):
+            f.verify_gap_result(hdr or self.HDR, raw_pins() if raw == () else raw,
+                                pins or self.PINS, request()["sources"])
 
     def test_the_profile_candidate_is_accepted(self):
-        f.verify_gap_result(self.HDR, self.PINS, request()["sources"])
+        f.verify_gap_result(self.HDR, raw_pins(), self.PINS, request()["sources"])
 
     def test_a_candidate_of_the_wrong_shape_is_not_returned(self):
-        src = request()["sources"]
         for hdr, pins in ((dict(self.HDR, delivered_frames="13"), self.PINS),
                           (dict(self.HDR, pinned_tail_frames="0"), self.PINS),
+                          (dict(self.HDR, width="1344"), self.PINS),
+                          (dict(self.HDR, fps="30"), self.PINS),
+                          ({k: v for k, v in self.HDR.items() if k != "fps"}, self.PINS),
                           (self.HDR, self.PINS[::-1]),
                           (self.HDR, self.PINS[:1]),
                           (self.HDR, [self.PINS[0], dict(self.PINS[1], context_mode="pixel")])):
             with self.subTest(hdr=hdr, pins=pins):
-                with self.assertRaises(f.FootageError):
-                    f.verify_gap_result(hdr, pins, src)
+                self._refused(hdr=hdr, pins=pins)
+
+    @staticmethod
+    def _mutated(i, k, v):
+        raw = raw_pins()
+        if v is None:
+            raw[i].pop(k)
+        else:
+            raw[i][k] = v
+        return raw
+
+    def test_root_reported_mutations_are_refused_for_either_pin(self):
+        """The 12 variants 24a7604 accepted, for A or B independently."""
+        for i in (0, 1):
+            for k, v in (("source_start", 0), ("source_frames", 1),
+                         ("source_start", None), ("source_frames", None),
+                         ("mode", "masked"), ("mode", None)):
+                with self.subTest(pin=i, field=k, value=v):
+                    self._refused(raw=self._mutated(i, k, v))
+
+    def test_every_other_pin_departure_is_refused(self):
+        for i, k, v in ((0, "source_kind", "image"), (1, "source_kind", None),
+                        (0, "audio_window", 39), (1, "audio_window", None),
+                        (0, "audio_window", False), (0, "source_start", "51"),
+                        (1, "source_frames", 39.0), (1, "place", "before"),
+                        (0, "place", None), (0, "source_id", B_SHA),
+                        (1, "source_id", ""), (0, "mask_ramp_frames", 0)):
+            with self.subTest(pin=i, field=k, value=v):
+                self._refused(raw=self._mutated(i, k, v))
+        for bad in ([], raw_pins()[:1], raw_pins() + raw_pins()[:1],
+                    raw_pins()[::-1], None, "[]", [raw_pins()[0], "x"]):
+            with self.subTest(pins=bad):
+                self._refused(raw=bad)
+
+    @unittest.skipUnless(os.path.isdir(REAL_RUN), "retained moving-gap run not on this host")
+    def test_the_retained_reviewed_candidate_passes_and_a_moved_window_fails(self):
+        import glob
+        import json
+        side = sorted(glob.glob(os.path.join(REAL_RUN, "bridge-*_00001.mctx.safetensors")))[0]
+        hdr = f.read_mctx_header(side)
+        pins = json.loads(hdr["pins"]) if isinstance(hdr["pins"], str) else hdr["pins"]
+        src = request()["sources"]
+        src[0]["media"]["sha256"] = "6c32485171204f87692351c73609e76ec78ff0e8466396776dd473c10441e793"
+        src[1]["media"]["sha256"] = "8c5ddb9f32336736c9423ee733e7e061c8e0eb932c6ffda973d0edc5372c1f1c"
+        warnings = []
+        f.verify_gap_result(hdr, pins, f.verify_recipe(pins, src, warnings), src)
+        self.assertEqual(warnings, [])
+        for i in (0, 1):
+            for k, v in (("source_start", 0), ("mode", "masked")):
+                moved = [dict(p) for p in pins]
+                moved[i][k] = v
+                with self.subTest(pin=i, field=k):
+                    with self.assertRaises(f.FootageError):
+                        f.verify_gap_result(hdr, moved, f.verify_recipe(moved, src, []), src)
 
     def test_lineage_reports_saved_sequence_and_actual_worker_cuts(self):
         lin = f.gap_lineage(request())
