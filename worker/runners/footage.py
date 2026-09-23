@@ -169,10 +169,10 @@ GAP_CANVAS = (832, 480)
 GAP_FPS = {"num": 24, "den": 1}
 GAP_RAW_START = 51                       # both pins: raw[51,90) of their source
 
-# Empty until the contract and a site-queued proof are reviewed. While empty,
-# capabilities carries no generation_profiles key at all and run() refuses
-# repair_join outright.
-OFFERED_GENERATION_PROFILES = ()
+# Offered 2026-09-23 on the reviewed contract (1703fc1) for ONE site-queued
+# proof. Withdraw by emptying this: capabilities then carries no
+# generation_profiles key at all and run() refuses repair_join outright.
+OFFERED_GENERATION_PROFILES = (GAP_PROFILE,)
 
 
 class FootageError(RuntimeError):

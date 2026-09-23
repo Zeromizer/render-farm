@@ -81,15 +81,27 @@ def check(req=None, headers=None, infos=None, pl=None, digests=None):
 
 
 class Capability(unittest.TestCase):
-    def test_shipped_state_offers_no_profile_and_no_new_key(self):
-        """Until the contract is reviewed the manifest is byte-for-byte the
-        shape the site validates today."""
-        self.assertEqual(f.OFFERED_GENERATION_PROFILES, ())
+    def test_shipped_state_offers_exactly_this_one_profile(self):
+        """Released: the profile is offered, and ONLY it — general operations,
+        limits and 768p are exactly what they were before."""
+        self.assertEqual(f.OFFERED_GENERATION_PROFILES, (f.GAP_PROFILE,))
+        self.assertEqual(f.PROVEN_GENERATION_OPS, ("extend", "prepend"))
         with mock.patch.object(f, "_comfy_identity", return_value=("0.37.0", "c", "o")):
             cap = f.capabilities_block()
+        self.assertEqual(cap["operations"],
+                         ["capabilities", "probe", "assemble", "extend", "prepend"])
+        self.assertEqual(list(cap["generation_profiles"]), [f.GAP_PROFILE])
+        self.assertEqual(cap["max_generation_frames"], {"480p": 90, "768p": 0})
+        self.assertEqual(sorted(cap["generation_limits"]), ["extend", "prepend"])
+
+    def test_withdrawn_state_offers_no_profile_and_no_new_key(self):
+        """Emptying the flag restores the pre-release manifest byte-for-byte."""
+        with mock.patch.object(f, "_comfy_identity", return_value=("0.37.0", "c", "o")), \
+             mock.patch.object(f, "OFFERED_GENERATION_PROFILES", ()):
+            cap = f.capabilities_block()
         self.assertNotIn("generation_profiles", cap)
-        for op in ("bridge", "loop", f.GAP_OPERATION):
-            self.assertNotIn(op, cap["operations"])
+        self.assertEqual(cap["operations"],
+                         ["capabilities", "probe", "assemble", "extend", "prepend"])
 
     def test_offered_profile_is_advertised_without_widening_operations(self):
         with mock.patch.object(f, "_comfy_identity", return_value=("0.37.0", "c", "o")), \
@@ -116,8 +128,9 @@ class Capability(unittest.TestCase):
         job = {"id": "t", "params": {"footage": req}}
         return f.run(job, None, ".", None, lambda m: None, lambda: False, 60)
 
-    def test_run_refuses_repair_join_while_not_offered(self):
+    def test_run_refuses_repair_join_while_withdrawn(self):
         with mock.patch.object(f, "op_continuation") as spy, \
+             mock.patch.object(f, "OFFERED_GENERATION_PROFILES", ()), \
              mock.patch.object(f, "_comfy_identity", return_value=("0.37.0", "c", "o")):
             with self.assertRaises(f.FootageError) as cm:
                 self._run(request())
