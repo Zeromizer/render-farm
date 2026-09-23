@@ -145,13 +145,21 @@ def run_job(job):
     return remote
 
 
+def sweep_caches():
+    for name, fn in (("repos/work", git_cache.cleanup_old), ("assets", assets.cleanup_old),
+                     ("venvs", venvs.cleanup_old)):
+        try:
+            fn(log)
+        except Exception as e:
+            log(f"cleanup {name} error (continuing): {str(e)[:160]}")
+
+
 def main():
     from singleton import ensure_single_instance
     ensure_single_instance("worker")
     log(f"render worker starting (cache={config.CACHE_DIR})")
-    git_cache.cleanup_old(log)
-    assets.cleanup_old(log)
-    venvs.cleanup_old(log)
+    sweep_caches()
+    last_sweep = time.time()
     try:
         n = db.reclaim_stale()
         if n:
@@ -188,6 +196,10 @@ def main():
             time.sleep(config.POLL_SECONDS)
             continue
         if not job:
+            # Between jobs only: the worker is serial, so nothing is mid-render.
+            if time.time() - last_sweep > config.CLEANUP_EVERY_SECONDS:
+                sweep_caches()
+                last_sweep = time.time()
             time.sleep(config.POLL_SECONDS)
             continue
 

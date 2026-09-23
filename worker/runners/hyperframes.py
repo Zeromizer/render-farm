@@ -48,6 +48,7 @@ import shutil
 import zipfile
 
 import proc
+from git_cache import rmtree_robust
 
 DEFAULT_VERSION = "0.8.26"
 FORMAT_OUT = {
@@ -116,8 +117,15 @@ def _ffmpeg_dir():
     return os.path.dirname(found) if found else None
 
 
-def _env():
+def _env(tmp_dir=None):
     env = dict(os.environ)
+    if tmp_dir:
+        # On Windows the CLI stages every render in tmpdir()/hf-render-XXXX and
+        # leaves it behind when the render fails or is killed (15 GB seen from
+        # one day). Node's tmpdir() reads TEMP/TMP, so pointing them into the
+        # job's work dir keeps that scratch where run() deletes it and where
+        # git_cache.cleanup_old sweeps it after WORK_MAX_AGE_DAYS regardless.
+        env["TEMP"] = env["TMP"] = env["TMPDIR"] = tmp_dir
     env["HYPERFRAMES_NO_TELEMETRY"] = "1"
     env["HYPERFRAMES_NO_UPDATE_CHECK"] = "1"
     env["CI"] = "1"  # never prompt, never open a browser tab
@@ -140,7 +148,20 @@ def _ensure_browser(cli, project_dir, log, run_kw):
 
 
 def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
-    """Render and return (local_output_path, ext, content_type)."""
+    """Render and return (local_output_path, ext, content_type).
+
+    The CLI's scratch (hf-render-*, Chrome profiles) lives in <work_dir>/tmp and
+    is removed on success, failure and cancel alike."""
+    tmp_dir = os.path.join(work_dir, "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    try:
+        return _run(job, repo, work_dir, tmp_dir, heartbeat, log, cancel_check, timeout_seconds)
+    finally:
+        if not rmtree_robust(tmp_dir):
+            log(f"hyperframes: scratch {tmp_dir} only partially removed; the work sweep will retry")
+
+
+def _run(job, repo, work_dir, tmp_dir, heartbeat, log, cancel_check, timeout_seconds):
     params = job.get("params") or {}
     project_dir = os.path.join(repo, params["project_dir"]) if params.get("project_dir") else repo
     entry = params.get("entry") or "index.html"
@@ -155,7 +176,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
 
     still = params.get("output_kind") == "still"
     if still:
-        return _snapshot(cli, project_dir, entry, params, work_dir, heartbeat, log, run_kw)
+        return _snapshot(cli, project_dir, entry, params, work_dir, tmp_dir, heartbeat, log, run_kw)
 
     fmt = params.get("format") or "mp4"
     quality = params.get("quality") or "standard"
@@ -208,7 +229,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
             log(f"  {line[:400]}")
 
     log(f"rendering: {' '.join(cmd)}")
-    proc.run_streaming(cmd, cwd=project_dir, env=_env(), on_line=on_line, **run_kw)
+    proc.run_streaming(cmd, cwd=project_dir, env=_env(tmp_dir), on_line=on_line, **run_kw)
 
     if fmt == "png-sequence":
         files = sorted(os.path.join(dp, f) for dp, _, fs in os.walk(out_local) for f in fs)
@@ -226,7 +247,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     return out_local, ext, content_type
 
 
-def _snapshot(cli, project_dir, entry, params, work_dir, heartbeat, log, run_kw):
+def _snapshot(cli, project_dir, entry, params, work_dir, tmp_dir, heartbeat, log, run_kw):
     """One PNG at params.at seconds. The still counterpart of `remotion still`."""
     at = float(params.get("at") or 0)
     out_dir = os.path.join(work_dir, "snap")
@@ -248,7 +269,7 @@ def _snapshot(cli, project_dir, entry, params, work_dir, heartbeat, log, run_kw)
         shutil.copy2(os.path.join(project_dir, entry), index)
     log(f"snapshot: {' '.join(cmd)}" + (f" (entry {entry} swapped into index.html)" if swap else ""))
     try:
-        proc.run_streaming(cmd, cwd=project_dir, env=_env(),
+        proc.run_streaming(cmd, cwd=project_dir, env=_env(tmp_dir),
                            on_line=lambda l: log(f"  {_clean(l)[:400]}"), **run_kw)
     finally:
         if backup:

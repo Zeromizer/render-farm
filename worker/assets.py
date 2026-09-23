@@ -103,16 +103,42 @@ def ensure(manifest, repo, log):
             f"[{'cached' if cached else 'downloaded'}]")
 
 
-def cleanup_old(log):
-    """Delete cached assets (and stray .part files) untouched for too long."""
+def cleanup_old(log, now=None):
+    """Delete cached assets (and stray .part files) untouched for
+    ASSET_CACHE_MAX_AGE_DAYS, then evict least-recently-used ones until the
+    cache is under ASSET_CACHE_MAX_GB. _download() touches mtime on every hit,
+    so mtime is last use. Checkouts hold hardlinks, so eviction never breaks a
+    materialized asset."""
     if not os.path.isdir(config.ASSETS_DIR):
         return
-    now = time.time()
+    now = time.time() if now is None else now
+    kept = []
     for name in os.listdir(config.ASSETS_DIR):
         p = os.path.join(config.ASSETS_DIR, name)
         try:
-            if now - os.path.getmtime(p) > config.ASSET_CACHE_MAX_AGE_DAYS * 86400:
+            st = os.stat(p)
+            if not os.path.isfile(p):
+                continue
+            if now - st.st_mtime > config.ASSET_CACHE_MAX_AGE_DAYS * 86400:
                 log(f"cleanup: removing asset {p}")
                 os.remove(p)
+            else:
+                kept.append((st.st_mtime, st.st_size, p))
         except OSError:
             pass
+    cap = config.ASSET_CACHE_MAX_GB * 1e9
+    total = sum(size for _, size, _ in kept)
+    if total <= cap:
+        return
+    evicted = 0
+    for _, size, p in sorted(kept):  # oldest use first
+        if total <= cap:
+            break
+        try:
+            os.remove(p)
+            total -= size
+            evicted += 1
+        except OSError:
+            pass
+    log(f"cleanup: evicted {evicted} least-recently-used asset(s) to stay under "
+        f"{config.ASSET_CACHE_MAX_GB:g} GB")

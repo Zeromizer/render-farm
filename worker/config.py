@@ -32,7 +32,11 @@ RECLAIM_EVERY_POLLS = 20  # ~60s at POLL_SECONDS=3
 
 REPO_CACHE_MAX_AGE_DAYS = 14
 WORK_MAX_AGE_DAYS = 2
-ASSET_CACHE_MAX_AGE_DAYS = int(os.environ.get("ASSET_CACHE_MAX_AGE_DAYS", "30"))
+ASSET_CACHE_MAX_AGE_DAYS = float(os.environ.get("ASSET_CACHE_MAX_AGE_DAYS", "7"))
+# LRU cap on top of the age limit: least recently used (by mtime) go first.
+ASSET_CACHE_MAX_GB = float(os.environ.get("ASSET_CACHE_MAX_GB", "40"))
+# The cache sweeps ran only at worker start, and the worker runs for weeks.
+CLEANUP_EVERY_SECONDS = int(os.environ.get("CLEANUP_EVERY_SECONDS", str(6 * 3600)))
 SIGNED_URL_SECONDS = 7 * 24 * 3600
 
 # --- video_gen (MiniMax H3 via headless ComfyUI) ---
