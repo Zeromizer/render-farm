@@ -472,6 +472,11 @@ def op_assemble(req, work_dir, hb, log):
             "warnings": warnings}
 
 
+def _samples_48k(frames, fps):
+    """48 kHz sample index of video frame `frames` at rate `fps` (rounded)."""
+    return (2 * frames * 48000 * fps["den"] + fps["num"]) // (2 * fps["num"])
+
+
 def _cut(src, a, b, info, ofps, width, height, want, dest):
     """One trimmed, normalized part. Frame-exact: select by frame index rather
     than by timestamp, so a trim never lands a frame early or late."""
@@ -485,12 +490,23 @@ def _cut(src, a, b, info, ofps, width, height, want, dest):
         cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
     cmd += ["-vf", vf, "-frames:v", str(want),
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]
+    # The part's audio is exactly as long as its `want` video frames, so a
+    # concat of parts never drifts: pad a short source, cut a long one.
+    out_samples = _samples_48k(want, ofps)
     if info["has_audio"]:
-        start = a * 48000 * info["fps"]["den"] // info["fps"]["num"]
+        # Sample offsets are computed at 48 kHz, so the audio must BE at 48 kHz
+        # when they are applied. Trimming first and resampling on output cut a
+        # 32 kHz source 1.5x too far in (12 frames -> 0.75 s instead of 0.5 s)
+        # and never bounded the end, so audio and video disagreed on length.
+        s0 = _samples_48k(a, info["fps"])
+        s1 = _samples_48k(b, info["fps"])
         cmd += ["-map", "0:v:0", "-map", "0:a:0",
-                "-af", f"atrim=start_sample={start},asetpts=N/SR/TB"]
+                "-af", (f"aresample=48000,atrim=start_sample={s0}:end_sample={s1},"
+                        f"asetpts=N/SR/TB,apad=whole_len={out_samples},"
+                        f"atrim=end_sample={out_samples}")]
     else:
-        cmd += ["-map", "0:v:0", "-map", "1:a:0", "-shortest"]
+        cmd += ["-map", "0:v:0", "-map", "1:a:0",
+                "-af", f"atrim=end_sample={out_samples}"]
     cmd += ["-c:a", "aac", "-ar", "48000", "-ac", "2", dest]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
     if r.returncode != 0:
@@ -502,9 +518,21 @@ def _concat(parts, dest, log):
     with open(lst, "w") as f:
         for p in parts:
             f.write(f"file '{p.replace(chr(92), '/')}'\n")
+    # Video is stream-copied through the concat demuxer (frame-exact, no
+    # re-encode). Audio is NOT: every AAC part carries 1024 samples of encoder
+    # priming that its MP4 edit list hides, and the concat demuxer ignores
+    # those edit lists, so a copied join grew by ~21 ms per part and slid the
+    # sound off its frames. Opening each part as its own input applies its
+    # edit list; the concat filter then joins exact-length audio.
+    inputs = []
+    for p in parts:
+        inputs += ["-i", p]
+    joined = "".join(f"[{i + 1}:a]" for i in range(len(parts))) + f"concat=n={len(parts)}:v=0:a=1[a]"
     r = subprocess.run(
         [segments._tool("ffmpeg"), "-v", "error", "-y", "-f", "concat", "-safe", "0",
-         "-i", lst, "-c", "copy", "-fflags", "+genpts", dest],
+         "-i", lst] + inputs +
+        ["-filter_complex", joined, "-map", "0:v:0", "-map", "[a]", "-c:v", "copy",
+         "-c:a", "aac", "-ar", "48000", "-ac", "2", "-fflags", "+genpts", dest],
         capture_output=True, text=True, timeout=1800)
     if r.returncode != 0:
         raise FootageError(f"concat failed: {r.stderr.strip()[:400]}")
