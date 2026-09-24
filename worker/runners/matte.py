@@ -6,7 +6,9 @@ params (jsonb):
     source: {bucket, path}  the clip (platform resolves this from an asset_id,
                             and checks org ownership, so path is trusted here)
     model                 one of matte/matte.py MODELS
-    output                webm_alpha | mask_mp4 | png_sequence
+    output                webm_alpha | mask_mp4 | png_sequence | png
+                          (png = the source is ONE still image; the result is
+                          its RGBA cut-out)
     start_s / end_s       optional window; absent means the whole clip
     fps                   optional; absent means every frame at source rate
     scale                 optional long-edge px; absent means source resolution
@@ -35,7 +37,9 @@ MATTE_DIR = os.path.join(_WORKER_DIR, "matte")
 
 EXT = {"webm_alpha": ("webm", "video/webm"),
        "mask_mp4": ("mp4", "video/mp4"),
-       "png_sequence": ("zip", "application/zip")}
+       "png_sequence": ("zip", "application/zip"),
+       # A still image in, one RGBA png out: sticker cut-outs for explainers.
+       "png": ("png", "image/png")}
 
 
 def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):

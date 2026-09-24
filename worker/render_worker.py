@@ -52,7 +52,7 @@ from heartbeat import Heartbeat
 import queue_status
 from runners import (asset_check, audio_gen, blender, footage, frame_extract, hyperframes, matte,
                      planar_patch, python_script, reference_extract, remotion, video_gen,
-                     video_split)
+                     video_split, voiceover)
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            "python": python_script.run,
@@ -83,12 +83,16 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # Non-linear footage timeline: probe/assemble are CPU-only and
            # answer with a manifest, never a media file, so they keep the
            # separate collector video_gen's MP4 one would misfile.
-           "footage": footage.run}
+           "footage": footage.run,
+           # Narration with per-word timings: the TTS studio's OmniVoice /
+           # Chatterbox (loaded per job) or edge-tts, timed by faster-whisper
+           # and mapped back onto the written script. Explainers key off it.
+           "voiceover": voiceover.run}
 
 # Engines that work on a storage object, not a repo — the clone is skipped and
 # repo_url is a "-" placeholder (the column is NOT NULL).
 NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split",
-            "matte", "video_gen", "planar_patch", "audio_gen", "footage"}
+            "matte", "video_gen", "planar_patch", "audio_gen", "footage", "voiceover"}
 
 
 def log(msg):

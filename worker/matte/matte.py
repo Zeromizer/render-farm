@@ -6,7 +6,9 @@ local output file, and prints PROGRESS/PHASE lines that runners/matte.py turns
 into farm_render_jobs.progress and .phase.
 
 usage:
-  python matte.py <video> <out_path> --model <name> --output <kind> [...]
+  python matte.py <video|image> <out_path> --model <name> --output <kind> [...]
+
+  --output png takes ONE still image and writes one RGBA png (sticker cut-outs).
 
 Three things here are load-bearing and easy to get wrong:
 
@@ -48,7 +50,7 @@ MODELS = {
     "birefnet-general", "birefnet-general-lite", "birefnet-portrait",
     "bria-rmbg", "u2net_human_seg", "isnet-general-use",
 }
-OUTPUTS = {"webm_alpha", "mask_mp4", "png_sequence"}
+OUTPUTS = {"webm_alpha", "mask_mp4", "png_sequence", "png"}
 
 
 def emit(kind, text):
@@ -324,7 +326,37 @@ def proof_sheet(rgba_dir, out_png, start_s, fps, model, anchor, tiles=8):
     return out_png
 
 
+def load_still(src, out_dir):
+    """One image in, one src-000000.png out - the still-image path of "png".
+
+    Deliberately PIL rather than ffmpeg: platform assets arrive extensionless
+    (sha256/<hex>), which PIL sniffs by content, and ffmpeg's image2 demuxer
+    picks a codec by extension. Any existing alpha is flattened onto WHITE,
+    because generated stickers are asked for on a plain white ground and a
+    black flatten would give the segmenter a different picture than the one
+    the prompt described.
+    """
+    from PIL import Image
+
+    os.makedirs(out_dir, exist_ok=True)
+    with Image.open(src) as im:
+        im.load()
+        if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+            rgba = im.convert("RGBA")
+            ground = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+            rgb = Image.alpha_composite(ground, rgba).convert("RGB")
+        else:
+            rgb = im.convert("RGB")
+    dst = os.path.join(out_dir, "src-000000.png")
+    rgb.save(dst)
+    return [dst], rgb.size
+
+
 def encode(kind, rgba_dir, mask_dir, out_path, fps, ffmpeg):
+    if kind == "png":
+        # A still: the single refined RGBA frame IS the deliverable.
+        shutil.copyfile(os.path.join(rgba_dir, "r-000000.png"), out_path)
+        return
     if kind == "png_sequence":
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
             for p in sorted(glob.glob(os.path.join(rgba_dir, "r-*.png"))):
@@ -376,8 +408,13 @@ def main():
 
     ffmpeg = find_ffmpeg_tool("ffmpeg")
     ffprobe = find_ffmpeg_tool("ffprobe")
-    src_w, src_h, src_fps = probe(a.video, ffprobe)
-    out_fps = a.fps or src_fps
+    still = a.output == "png"
+    if still:
+        src_w = src_h = 0
+        src_fps = out_fps = 1.0
+    else:
+        src_w, src_h, src_fps = probe(a.video, ffprobe)
+        out_fps = a.fps or src_fps
     print(f"[matte] source {src_w}x{src_h} @ {src_fps:.3f} fps -> out {out_fps:.3f} fps", flush=True)
     if a.temporal_median and a.temporal_median > 1:
         print(f"[matte] WARNING temporal_median={a.temporal_median}: a per-pixel median "
@@ -386,8 +423,11 @@ def main():
     work = os.path.dirname(os.path.abspath(a.out_path))
     frames_dir = os.path.join(work, "_frames")
     emit("PHASE", "extracting frames")
-    frames = extract_frames(a.video, frames_dir, ffmpeg, a.start_s, a.end_s,
-                            a.fps, a.scale, src_w, src_h)
+    if still:
+        frames, (src_w, src_h) = load_still(a.video, frames_dir)
+    else:
+        frames = extract_frames(a.video, frames_dir, ffmpeg, a.start_s, a.end_s,
+                                a.fps, a.scale, src_w, src_h)
     if not frames:
         raise SystemExit("no frames extracted - check start_s/end_s against the clip length")
     print(f"[matte] {len(frames)} frames", flush=True)
@@ -416,11 +456,14 @@ def main():
     # refined RGBA frames, so it shows the alpha the consumer actually gets -
     # after drop_detached, after feather - and those directories do not survive
     # this function.
-    emit("PHASE", "proof sheet")
-    proof = proof_sheet(rgba_dir, os.path.splitext(a.out_path)[0] + "-proof.png",
-                        a.start_s, out_fps, a.model, anchor)
-    if proof:
-        print(f"[matte] PROOF {proof}", flush=True)
+    # A still needs no proof sheet: the cut-out PNG is itself the picture a
+    # reviewer would look at, and the sheet's tiles assume a clip.
+    if not still:
+        emit("PHASE", "proof sheet")
+        proof = proof_sheet(rgba_dir, os.path.splitext(a.out_path)[0] + "-proof.png",
+                            a.start_s, out_fps, a.model, anchor)
+        if proof:
+            print(f"[matte] PROOF {proof}", flush=True)
 
     emit("PHASE", "encoding")
     encode(a.output, rgba_dir, os.path.join(work, "_mask"),
