@@ -9,3 +9,6 @@ out/
 # video_gen smoke test artefacts
 worker/videogen/smoke-*.log
 worker/videogen/smoke_*.mp4
+
+# worker drain flag (render_worker.py RESTART_FLAG)
+worker/restart-requested

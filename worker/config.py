@@ -42,6 +42,11 @@ COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
 # of a video job; "0" to leave them alone.
 VIDEO_GEN_PAUSE_TTS = os.environ.get("VIDEO_GEN_PAUSE_TTS", "1") not in ("0", "false", "no")
 TTS_STUDIO_DIR = os.environ.get("TTS_STUDIO_DIR", r"C:\Coding\Voice Output")
+# Before an H3 job touches ComfyUI, wait until this much physical RAM is available
+# (free + standby) so the --fast-disk weights don't thrash the pagefile
+# (videogen/ram_gate.py). "0" disables. Gives up and starts anyway after the max wait.
+VIDEO_GEN_MIN_AVAIL_RAM_GB = float(os.environ.get("VIDEO_GEN_MIN_AVAIL_RAM_GB", "12"))
+VIDEO_GEN_RAM_WAIT_MAX_MINUTES = int(os.environ.get("VIDEO_GEN_RAM_WAIT_MAX_MINUTES", "20"))
 VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES = int(os.environ.get("VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES", "60"))
 
 for _d in (REPOS_DIR, WORK_DIR, ASSETS_DIR):

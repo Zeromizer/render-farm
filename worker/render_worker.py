@@ -11,6 +11,9 @@ import traceback
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
+# `type nul > worker\restart-requested` = finish the current job, then exit so the
+# supervisor restarts the worker on the checked-out code (no mid-job kill).
+RESTART_FLAG = os.path.join(_HERE, "restart-requested")
 
 
 class _Tee:
@@ -182,6 +185,11 @@ def main():
                 queue_status.annotate(log)   # "queued: N ahead, starts in ~M min" on waiting rows
             except Exception as e:
                 log(f"queue annotate error (ignored): {str(e)[:120]}")
+        if os.path.exists(RESTART_FLAG):
+            # Clean deploy: exit between jobs, the supervisor respawns us on the new code.
+            os.remove(RESTART_FLAG)
+            log("restart requested: exiting between jobs")
+            sys.exit(0)
         try:
             job = db.claim_job()
             claim_err_logged = False
