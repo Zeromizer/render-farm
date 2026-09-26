@@ -334,7 +334,102 @@ def _easing(progress, times):
     return "linear"
 
 
-SUDDEN_STEP = 0.3      # frame-to-frame context dissimilarity (1 - corr) that counts as a jump
+CURVE_MIN_POINTS = 5   # a move needs this many samples before its curve is worth fitting
+CURVE_MAX_RMSE = 0.08  # ...and must fit at least this well to ship
+CURVE_MAX_STEP = 0.75  # ...and no single frame step may carry more of it than this
+# standard curves, preferred when they fit nearly as well as the free fit
+NAMED_CURVES = {
+    "linear": [0.0, 0.0, 1.0, 1.0],
+    "ease": [0.25, 0.1, 0.25, 1.0],
+    "ease_in": [0.42, 0.0, 1.0, 1.0],
+    "ease_out": [0.0, 0.0, 0.58, 1.0],
+    "ease_in_out": [0.42, 0.0, 0.58, 1.0],
+    "ease_in_cubic": [0.32, 0.0, 0.67, 0.0],
+    "ease_out_cubic": [0.33, 1.0, 0.68, 1.0],
+    "ease_in_out_cubic": [0.65, 0.0, 0.35, 1.0],
+    "ease_out_quint": [0.22, 1.0, 0.36, 1.0],
+    "ease_out_expo": [0.16, 1.0, 0.3, 1.0],
+    "ease_out_back": [0.34, 1.56, 0.64, 1.0],
+}
+
+
+def _bezier_y(params, t, iters=22):
+    """CSS cubic-bezier(x1, y1, x2, y2) evaluated at times t (0..1), for many
+    parameter sets at once: params (P, 4), t (n,) -> (P, n). x(u) is
+    monotonic when x1, x2 are in [0, 1], so u is found by bisection."""
+    x1, y1, x2, y2 = (params[:, k:k + 1] for k in range(4))
+    lo = np.zeros((params.shape[0], t.size))
+    hi = np.ones_like(lo)
+    for _ in range(iters):
+        u = (lo + hi) / 2
+        x = 3 * (1 - u) ** 2 * u * x1 + 3 * (1 - u) * u ** 2 * x2 + u ** 3
+        below = x < t[None, :]
+        lo = np.where(below, u, lo)
+        hi = np.where(below, hi, u)
+    u = (lo + hi) / 2
+    return 3 * (1 - u) ** 2 * u * y1 + 3 * (1 - u) * u ** 2 * y2 + u ** 3
+
+
+def fit_bezier(times, progress, reverse=False):
+    """The CSS cubic-bezier that best follows a measured progress curve
+    (0 = not started, 1 = settled; overshoot allowed). Coarse grid, then a
+    finer one around the best. `reverse` reads an exit: the frames were
+    walked backwards, so real time is 1 - t and 'how far it has left' is
+    1 - progress. Returns ([x1, y1, x2, y2], rmse, standard name or None),
+    or None when there are too few samples or no curve fits well: a wrong
+    curve is worse than none."""
+    by_t = {}
+    for tt, pp in zip(times, progress):   # one sample per frame time, the later one wins
+        if math.isfinite(tt) and math.isfinite(pp):
+            by_t[round(float(tt), 4)] = float(pp)
+    t = np.array(list(by_t.keys()))
+    p = np.array(list(by_t.values()))
+    if t.size < CURVE_MIN_POINTS or t.max() - t.min() <= 0:
+        return None
+    tn = (t - t.min()) / (t.max() - t.min())
+    if reverse:
+        tn, p = 1 - tn, 1 - p
+    order = np.argsort(tn)
+    tn, p = tn[order], p[order]
+    # the move over the MEASURED window, 0 at its first frame and 1 at its
+    # last: the first frame is usually already part-way (a fade is ~17%
+    # visible by the frame it is first seen) and forcing 0 there bends a
+    # straight line into an S. The curve is replayed over the measured duration.
+    lo, hi = float(p[0]), float(p[-1])
+    if hi - lo < 0.3:
+        return None
+    p = np.clip((p - lo) / (hi - lo), -0.3, 1.6)
+    # nearly all of it in one frame step is a jump, not a curve — typically a
+    # window that opened early over footage (flat, then the text lands); a
+    # curve fitted to that would teach "hold, then snap" (real pop overshoot
+    # takes ~70% in its first frame, so the bar sits above that)
+    if np.max(np.abs(np.diff(p))) > CURVE_MAX_STEP:
+        return None
+
+    def best_of(xs1, ys1, xs2, ys2):
+        grid = np.array(np.meshgrid(xs1, ys1, xs2, ys2, indexing="ij")).reshape(4, -1).T
+        err = np.sqrt(np.mean((_bezier_y(grid, tn) - p[None, :]) ** 2, axis=1))
+        k = int(np.argmin(err))
+        return grid[k], float(err[k])
+
+    xs, ys = np.linspace(0, 1, 11), np.linspace(-0.4, 1.6, 11)
+    (a, b, c, d), _ = best_of(xs, ys, xs, ys)
+    fine = lambda v, lo, hi, step: np.clip(np.linspace(v - step, v + step, 5), lo, hi)
+    (a, b, c, d), err = best_of(fine(a, 0, 1, 0.1), fine(b, -0.4, 1.6, 0.2), fine(c, 0, 1, 0.1), fine(d, -0.4, 1.6, 0.2))
+    if err > CURVE_MAX_RMSE:
+        return None
+    # bezier parameters are not unique (a straight line fits as [0.85, 0.9,
+    # 0.95, 0.9] too): prefer a standard curve that fits nearly as well, so the
+    # number a builder reads is one it recognises
+    named = np.array(list(NAMED_CURVES.values()), dtype=float)
+    n_err = np.sqrt(np.mean((_bezier_y(named, tn) - p[None, :]) ** 2, axis=1))
+    k = int(np.argmin(n_err))
+    if n_err[k] <= min(CURVE_MAX_RMSE, err + 0.015):
+        return list(NAMED_CURVES.values())[k], round(float(n_err[k]), 3), list(NAMED_CURVES)[k]
+    return [round(float(v), 2) for v in (a, b, c, d)], round(err, 3), None
+
+
+SUDDEN_STEP = 0.3     # frame-to-frame context dissimilarity (1 - corr) that counts as a jump
 
 
 def _sudden_context(grays, text, onset_i, settled_i):
@@ -559,6 +654,26 @@ def analyse_transition(frames, times, text, fps, entering, cuts=()):
     elif frames_n >= 3:
         typ, conf, extra = "fade", 0.7, {"easing": _easing([min(1, pres[i] / final) for i in span], t_span)}
 
+    # the measured curve, as a CSS cubic-bezier over the measured duration:
+    # position for a slide/whip, scale for a pop/slam, presence for the rest
+    curve = None
+    if typ in ("slide", "whip"):
+        curve = ([el[i] for i in span if found(i)] + [el[span[-1]]],
+                 [1 - min(1.0, off(i)[0] / moved) for i in span if found(i)] + [1.0])
+    elif typ in ("scale_up", "scale_down") and abs(1 - scale0) > 0.1:
+        pts = [(el[i], (track[i][3] - scale0) / (1 - scale0)) for i in span if found(i) and not track[i][4]]
+        curve = ([q[0] for q in pts] + [el[span[-1]]], [q[1] for q in pts] + [1.0])
+    elif typ in ("fade", "wipe", "stagger", "blur_in"):
+        curve = (t_span, [pres[i] / final for i in span])
+    # only the words' own move, over a steady background: a move riding the
+    # edit is the edit's curve, and busy footage makes the signal wobble
+    # enough to fit a plausible-looking wrong curve
+    if curve is not None and not busy and kind == "text":
+        fit = fit_bezier(*curve, reverse=not entering)
+        if fit:
+            extra["bezier"], extra["curve_rmse"], name = fit
+            if name:
+                extra["curve"] = name
     if busy:
         conf *= 0.7
     # per-word arrival, seconds after the move starts: a fact whatever the label
