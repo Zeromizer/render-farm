@@ -729,16 +729,43 @@ def _iou(a, b):
     return inter / max(area, 1e-9)
 
 
-def _track_text(tracks, text, bbox, conf, t):
+def _same_words(prev, text):
+    """One reading continuing another: a re-read or OCR garble of the same words
+    (similar), a word-by-word build (one contains the other), or a count-up (both
+    mostly digits). A different word swapped into the same spot is none of these."""
     import difflib
 
+    a, b = prev.lower(), text.lower()
+    if difflib.SequenceMatcher(None, a, b).ratio() > 0.6:
+        return True
+    short, long_ = sorted((a, b), key=len)
+    if len(short) >= 3 and short in long_:
+        return True
+
+    def digits(x):
+        alnum = [c for c in x if c.isalnum()]
+        n = sum(c.isdigit() for c in alnum)
+        return n >= 3 and n >= 0.5 * len(alnum)
+
+    return digits(a) and digits(b)
+
+
+def _track_text(tracks, text, bbox, conf, t):
+    """Join a reading to the open track it continues. The words must continue
+    (_same_words): overlapping boxes alone once merged every punchline swapped
+    into the same spot into one track, and the longest reading hid the rest
+    (job 58274d99 v1: HIGH, BUY?, HEARING inside "SINGAPORE?"). Nor may a line of
+    small print absorb display type over it: box heights within 1.7x."""
     best, score = None, 0.0
+    h = bbox[3] - bbox[1]
     for tr in tracks:
         if t - tr["t1"] > 1.5:  # track went dark, leave it closed
             continue
-        sim = difflib.SequenceMatcher(None, tr["texts"][-1][1].lower(), text.lower()).ratio()
-        prefixy = tr["texts"][-1][1].lower() in text.lower() or text.lower() in tr["texts"][-1][1].lower()
-        s = _iou(tr["boxes"][-1], bbox) + (0.6 if (sim > 0.6 or prefixy) else 0)
+        last = tr["boxes"][-1]
+        lh = last[3] - last[1]
+        if not _same_words(tr["texts"][-1][1], text) or max(h, lh) > 1.7 * max(min(h, lh), 1e-6):
+            continue
+        s = _iou(last, bbox) + 0.6
         if s > score:
             best, score = tr, s
     if best is not None and score >= 0.5:
@@ -756,7 +783,8 @@ def _finish_track(tr):
     boxes = np.array(tr["boxes"])
     bbox = [round(float(v), 3) for v in
             (boxes[:, 0].min(), boxes[:, 1].min(), boxes[:, 2].max(), boxes[:, 3].max())]
-    final = max(tr["texts"], key=lambda p: len(p[1]))[1]
+    # the longest reading; the latest of equals, so a count-up ends on its final value
+    final = max(tr["texts"], key=lambda p: (len(p[1]), p[0]))[1]
     # when the words were first complete: a word-by-word build or a count-up is
     # read in pieces from t0, and only its last reading is what stays
     last = tr["texts"][-1][1].lower()
