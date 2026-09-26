@@ -786,9 +786,10 @@ def _finish_track(tr):
     # the longest reading; the latest of equals, so a count-up ends on its final value
     final = max(tr["texts"], key=lambda p: (len(p[1]), p[0]))[1]
     # when the words were first complete: a word-by-word build or a count-up is
-    # read in pieces from t0, and only its last reading is what stays
-    last = tr["texts"][-1][1].lower()
-    t_full = next(t for t, x in tr["texts"] if difflib.SequenceMatcher(None, x.lower(), last).ratio() >= 0.9)
+    # read in pieces from t0. Measured against the final text, not the last
+    # reading, which during a blur-out is a fragment ("$124,", "ELL") and made a
+    # phrase look complete only as it left (job 58274d99 v4).
+    t_full = next(t for t, x in tr["texts"] if difflib.SequenceMatcher(None, x.lower(), final.lower()).ratio() >= 0.9)
     cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
     zone = f"{_third(cy, 'top', 'centre', 'bottom')}-{_third(cx, 'left', 'centre', 'right')}"
     return {
