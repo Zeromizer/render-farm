@@ -69,6 +69,13 @@ PROGRESS_AT = {"probe": 5, "frames": 15, "shots": 35, "audio": 50, "motion": 65,
                "grade": 72, "text": 82, "kinetic": 92, "composition": 95}
 SAMPLE_FPS = 2.0
 MAX_FRAMES = 300
+# The text pass samples denser than the shared frames: at 2 fps a word on screen
+# for half a second is seen once and dropped as noise, and those are exactly the
+# kinetic punchlines a reading-time check needs (job 58274d99 v1 lost SELL.,
+# HIGH, BUY?, CUT YOUR PRICE and TITAN MOTORING that way). Capped by frame count,
+# so a long reference falls back towards SAMPLE_FPS.
+OCR_FPS = 6.0
+OCR_MAX_FRAMES = 360
 BEAT_TOLERANCE_S = 0.08
 SAFE_TOP = 0.12     # vertical-ad safe zone: avoid top 12% and bottom 20%
 SAFE_BOTTOM = 0.80
@@ -656,6 +663,8 @@ def stage_text(ctx):
     if ctx["ocr_fps"] and ctx["ocr_fps"] < ctx["sample_rate_fps"]:
         step = max(1, round(ctx["sample_rate_fps"] / ctx["ocr_fps"]))
         frames, times = frames[::step], times[::step]
+    else:
+        frames, times = _ocr_frames(ctx, frames, times)
 
     reader = easyocr.Reader(["en"], gpu=True, verbose=False)
     tracks = []  # {text, t0, t1, boxes:[bbox], texts:[(t,text)], confs:[..]}
@@ -682,6 +691,23 @@ def stage_text(ctx):
         "safe_zone_ratio": round(len(inside) / len(blocks), 2) if blocks else None,
         "words_per_second_peak": wps_peak,
     }
+
+
+def _ocr_frames(ctx, frames, times):
+    """Frames for the text pass: its own denser sampling (OCR_FPS, at most
+    OCR_MAX_FRAMES), or the shared frames when that would be no denser."""
+    rate = float(ctx["ocr_fps"] or min(OCR_FPS, OCR_MAX_FRAMES / max(ctx["duration"], 0.1)))
+    if rate <= ctx["sample_rate_fps"] * 1.2:
+        return frames, times
+    ocr_dir = os.path.join(ctx["out_dir"], "ocr_frames")
+    os.makedirs(ocr_dir, exist_ok=True)
+    _run([FFMPEG, "-y", "-v", "error", "-i", ctx["video"],
+          "-vf", f"fps={rate:.6f}", "-q:v", "2",
+          os.path.join(ocr_dir, "o_%04d.jpg")])
+    files = sorted(f for f in os.listdir(ocr_dir) if f.startswith("o_"))
+    if not files:
+        return frames, times
+    return [os.path.join(ocr_dir, f) for f in files], [i / rate for i in range(len(files))]
 
 
 def _iou(a, b):
@@ -772,7 +798,11 @@ def _words_per_second_peak(blocks, duration):
     return round(float(per_sec.max()), 1)
 
 
-KINETIC_MAX_EVENTS = 30
+KINETIC_MAX_EVENTS = 40
+# Text shorter than this share of the frame height is small print (a phone
+# screen, a document page): shown, not animated type. It only gets the event
+# slots real type leaves over.
+KINETIC_SMALL_PRINT = 0.02
 KINETIC_PER_SHEET = 5
 KINETIC_LABEL_W = 150
 
@@ -807,10 +837,23 @@ def stage_kinetic(ctx):
             picked.append(i)
     picked.sort(key=lambda i: blocks[i]["t0"])
     capped = 0
-    if len(picked) > KINETIC_MAX_EVENTS:  # spread over the clip, not its first half
-        keep = np.linspace(0, len(picked) - 1, KINETIC_MAX_EVENTS).round().astype(int)
-        capped = len(picked) - KINETIC_MAX_EVENTS
-        picked = [picked[k] for k in sorted(set(keep.tolist()))]
+    if len(picked) > KINETIC_MAX_EVENTS:
+        # real type first, small print in whatever slots are left; each spread
+        # over the clip, not its first half
+        def spread(ids, n):
+            if n <= 0 or not ids:
+                return []
+            if len(ids) <= n:
+                return ids
+            keep = np.linspace(0, len(ids) - 1, n).round().astype(int)
+            return [ids[k] for k in sorted(set(keep.tolist()))]
+
+        big = [i for i in picked if blocks[i].get("size_ratio", 1) >= KINETIC_SMALL_PRINT]
+        small = [i for i in picked if blocks[i].get("size_ratio", 1) < KINETIC_SMALL_PRINT]
+        chosen = spread(big, KINETIC_MAX_EVENTS)
+        chosen += spread(small, KINETIC_MAX_EVENTS - len(chosen))
+        capped = len(picked) - len(chosen)
+        picked = sorted(chosen, key=lambda i: blocks[i]["t0"])
 
     jobs = [(ctx["video"], blocks[i], fps, duration, cuts) for i in picked]
     workers = max(1, min(6, (os.cpu_count() or 2) - 2, len(jobs)))
