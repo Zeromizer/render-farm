@@ -45,6 +45,9 @@ PRESENT = 0.85         # presence at/above this = fully there
 ABSENT = 0.15          # presence at/below this = not there
 MATCH_OK = 0.72        # template score that counts as "found"
 SCALES = (0.3, 0.45, 0.6, 0.75, 0.88, 1.0, 1.12, 1.3, 1.6, 2.0, 2.6)
+# a match this good is the text; stop trying scales (they are tried from 1.0
+# outwards, and most frames of a move are near settled)
+EARLY_MATCH = 0.95
 
 
 # ----------------------------------------------------------------- frames
@@ -214,11 +217,12 @@ def sharpness(gray_crop, mask):
     return float(lap[mask].mean()) if mask.any() else 0.0
 
 
-def locate(frame_gray, text, band_pad=0.2, streak=False):
+def locate(frame_gray, text, band_pad=0.2, streak=False, scales=SCALES):
     """Where the settled pattern is in this frame, and at what scale: masked
     TM_CCOEFF_NORMED over the text's row (whole width — whips come from
     off-screen). With streak=True the template is also tried motion-blurred
     along x and y at scale 1, for a whip too smeared to match sharp.
+    `scales` narrows the sweep (analyse_transition tracks the last frame's).
     Returns (score, cx, cy, scale, streak_axis or None)."""
     H, W = frame_gray.shape
     x0, y0, x1, y1 = text.box
@@ -226,7 +230,7 @@ def locate(frame_gray, text, band_pad=0.2, streak=False):
     m = text.shape.astype(np.uint8)
     cy_anchor = (y0 + y1) / 2
     best = (-1.0, (x0 + x1) / 2, cy_anchor, 1.0, None)
-    variants = [(s, None, 0) for s in SCALES]
+    variants = [(s, None, 0) for s in sorted(scales, key=lambda v: abs(math.log(v)))]
     if streak:
         variants += [(1.0, "x", k) for k in (9, 17, 31)] + [(1.0, "y", k) for k in (7, 13, 23)]
     for s, axis, k in variants:
@@ -252,6 +256,8 @@ def locate(frame_gray, text, band_pad=0.2, streak=False):
         _, mx, _, loc = cv2.minMaxLoc(res)
         if mx > best[0]:
             best = (float(mx), loc[0] + tw / 2, ry0 + loc[1] + th / 2, s, axis)
+        if best[0] >= EARLY_MATCH:
+            return best
     if streak:
         e = locate_edge(frame_gray, text, band_pad)
         if e[0] > best[0]:
@@ -471,13 +477,20 @@ def analyse_transition(frames, times, text, fps, entering, cuts=()):
     first_seen = _first(pres, lambda v: v > 0.05)
     start = max(0, (first_seen if first_seen is not None else n - 1) - int(0.5 * fps))
     track = {}
+    near = None  # the last frame's scale and its neighbours, while it matched
     for i in range(start, n):
-        sc, cx, cy, s, axis = locate(grays[i], text)
+        sc = -1.0
+        if near:
+            sc, cx, cy, s, axis = locate(grays[i], text, scales=near)
+        if sc < MATCH_OK:  # the scale jumped, or nothing to track yet: full sweep
+            sc, cx, cy, s, axis = locate(grays[i], text)
         if sc < MATCH_OK and pres[i] < PRESENT:
             sc2, cx2, cy2, s2, ax2 = locate(grays[i], text, streak=True)
             if sc2 > max(sc, 0.62):
                 sc, cx, cy, s, axis = sc2, cx2, cy2, s2, ax2
         track[i] = (sc, cx, cy, s, axis)
+        k = SCALES.index(s) if (sc >= MATCH_OK and axis is None and s in SCALES) else None
+        near = SCALES[max(0, k - 1):k + 2] if k is not None else None
 
     def found(i):
         sc, _, _, _, axis = track.get(i, (-1, 0, 0, 1, None))

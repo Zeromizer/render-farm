@@ -842,9 +842,12 @@ def _words_per_second_peak(blocks, duration):
 
 
 KINETIC_MAX_EVENTS = 30
-# Text shorter than this share of the frame height is small print (a phone
-# screen, a document page): shown, not animated type. It only gets the event
-# slots real type leaves over.
+# Event slots go to display type first (at least KINETIC_DISPLAY of the frame
+# height: the punchlines), then captions, then small print (under
+# KINETIC_SMALL_PRINT: a phone screen, a document page), each tier spread over
+# the clip. A render can carry 45 blocks of real type; spread evenly, the cap
+# dropped BUY? and TITAN (job 58274d99 v1).
+KINETIC_DISPLAY = 0.05
 KINETIC_SMALL_PRINT = 0.02
 KINETIC_PER_SHEET = 5
 KINETIC_LABEL_W = 150
@@ -881,8 +884,8 @@ def stage_kinetic(ctx):
     picked.sort(key=lambda i: blocks[i]["t0"])
     capped = 0
     if len(picked) > KINETIC_MAX_EVENTS:
-        # real type first, small print in whatever slots are left; each spread
-        # over the clip, not its first half
+        # display type, then captions, then small print; each spread over the
+        # clip, not its first half
         def spread(ids, n):
             if n <= 0 or not ids:
                 return []
@@ -891,10 +894,12 @@ def stage_kinetic(ctx):
             keep = np.linspace(0, len(ids) - 1, n).round().astype(int)
             return [ids[k] for k in sorted(set(keep.tolist()))]
 
-        big = [i for i in picked if blocks[i].get("size_ratio", 1) >= KINETIC_SMALL_PRINT]
-        small = [i for i in picked if blocks[i].get("size_ratio", 1) < KINETIC_SMALL_PRINT]
-        chosen = spread(big, KINETIC_MAX_EVENTS)
-        chosen += spread(small, KINETIC_MAX_EVENTS - len(chosen))
+        size = lambda i: blocks[i].get("size_ratio", 1)  # noqa: E731
+        chosen = []
+        for tier in ([i for i in picked if size(i) >= KINETIC_DISPLAY],
+                     [i for i in picked if KINETIC_SMALL_PRINT <= size(i) < KINETIC_DISPLAY],
+                     [i for i in picked if size(i) < KINETIC_SMALL_PRINT]):
+            chosen += spread(tier, KINETIC_MAX_EVENTS - len(chosen))
         capped = len(picked) - len(chosen)
         picked = sorted(chosen, key=lambda i: blocks[i]["t0"])
 
