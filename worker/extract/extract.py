@@ -690,7 +690,8 @@ def stage_text(ctx):
             bbox = (min(xs) / W, min(ys) / H, max(xs) / W, max(ys) / H)
             _track_text(tracks, text.strip(), bbox, float(conf), t)
 
-    blocks = [_finish_track(tr) for tr in tracks
+    parts = [part for tr in tracks for part in _split_resets(tr)]
+    blocks = [_finish_track(tr) for tr in parts
               if (tr["t1"] - tr["t0"]) >= 0.4 or len(tr["texts"]) >= 2]
     inside = [b for b in blocks if SAFE_TOP <= (b["bbox"][1] + b["bbox"][3]) / 2 <= SAFE_BOTTOM]
     wps_peak = _words_per_second_peak(blocks, ctx["duration"])
@@ -729,10 +730,12 @@ def _iou(a, b):
     return inter / max(area, 1e-9)
 
 
-def _same_words(prev, text):
+def _same_words(prev, text, counting=True):
     """One reading continuing another: a re-read or OCR garble of the same words
     (similar), a word-by-word build (one contains the other), or a count-up (both
-    mostly digits). A different word swapped into the same spot is none of these."""
+    mostly digits, while `counting`: the number was still changing). A different
+    word swapped into the same spot is none of these, and nor is a new price
+    after one that held."""
     import difflib
 
     a, b = prev.lower(), text.lower()
@@ -747,7 +750,7 @@ def _same_words(prev, text):
         n = sum(c.isdigit() for c in alnum)
         return n >= 3 and n >= 0.5 * len(alnum)
 
-    return digits(a) and digits(b)
+    return counting and digits(a) and digits(b)
 
 
 def _track_text(tracks, text, bbox, conf, t):
@@ -763,18 +766,58 @@ def _track_text(tracks, text, bbox, conf, t):
             continue
         last = tr["boxes"][-1]
         lh = last[3] - last[1]
-        if not _same_words(tr["texts"][-1][1], text) or max(h, lh) > 1.7 * max(min(h, lh), 1e-6):
+        counting = t - tr["changed"] < 0.5
+        if not _same_words(tr["texts"][-1][1], text, counting) or max(h, lh) > 1.7 * max(min(h, lh), 1e-6):
             continue
         s = _iou(last, bbox) + 0.6
         if s > score:
             best, score = tr, s
     if best is not None and score >= 0.5:
+        if text.lower() != best["texts"][-1][1].lower():
+            best["changed"] = t
         best["t1"] = t
         best["boxes"].append(bbox)
         best["texts"].append((t, text))
         best["confs"].append(conf)
     else:
-        tracks.append({"t0": t, "t1": t, "boxes": [bbox], "texts": [(t, text)], "confs": [conf]})
+        tracks.append({"t0": t, "t1": t, "changed": t, "boxes": [bbox], "texts": [(t, text)], "confs": [conf]})
+
+
+def _final_text(texts):
+    """What a track said once complete: the reading seen most often among the
+    longest (a held phrase is read the same way many times; a garble as it fades,
+    "buv?" for BUY?, once), then the longest, then the latest (a count-up with no
+    hold ends on its final value)."""
+    from collections import Counter
+
+    m = max(len(x) for _, x in texts)
+    longest = [(t, x) for t, x in texts if len(x) >= m - 1]
+    counts = Counter(x for _, x in longest)
+    return max(longest, key=lambda p: (counts[p[1]], len(p[1]), p[0]))[1]
+
+
+def _split_resets(tr):
+    """One track per text: split where a reading much shorter than the text held
+    so far starts a build that ends somewhere else — the next price built digit
+    by digit where the last one sat ("$12" after $124,888, growing to $129,888).
+    A fragment as a text fades out never grows into anything, so it stays."""
+    import difflib
+
+    texts = tr["texts"]
+    cuts, start = [], 0
+    for k in range(1, len(texts)):
+        held = _final_text(texts[start:k])
+        if len(texts[k][1]) > len(held) - 2:
+            continue
+        after = _final_text(texts[k:])
+        if len(after) >= len(held) - 1 and difflib.SequenceMatcher(None, after.lower(), held.lower()).ratio() < 0.9:
+            cuts.append(k)
+            start = k
+    if not cuts:
+        return [tr]
+    bounds = [0] + cuts + [len(texts)]
+    return [{"t0": texts[a][0], "t1": texts[b - 1][0], "changed": texts[a][0], "boxes": tr["boxes"][a:b],
+             "texts": texts[a:b], "confs": tr["confs"][a:b]} for a, b in zip(bounds, bounds[1:])]
 
 
 def _finish_track(tr):
@@ -783,8 +826,7 @@ def _finish_track(tr):
     boxes = np.array(tr["boxes"])
     bbox = [round(float(v), 3) for v in
             (boxes[:, 0].min(), boxes[:, 1].min(), boxes[:, 2].max(), boxes[:, 3].max())]
-    # the longest reading; the latest of equals, so a count-up ends on its final value
-    final = max(tr["texts"], key=lambda p: (len(p[1]), p[0]))[1]
+    final = _final_text(tr["texts"])
     # when the words were first complete: a word-by-word build or a count-up is
     # read in pieces from t0. Measured against the final text, not the last
     # reading, which during a blur-out is a fragment ("$124,", "ELL") and made a
