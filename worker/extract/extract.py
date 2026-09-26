@@ -64,9 +64,9 @@ def _find_ffmpeg_tool(name):
 FFMPEG = None
 FFPROBE = None  # resolved once in main()
 
-ALL_STAGES = ["probe", "frames", "shots", "audio", "motion", "grade", "text", "composition"]
+ALL_STAGES = ["probe", "frames", "shots", "audio", "motion", "grade", "text", "kinetic", "composition"]
 PROGRESS_AT = {"probe": 5, "frames": 15, "shots": 35, "audio": 50, "motion": 65,
-               "grade": 75, "text": 90, "composition": 95}
+               "grade": 72, "text": 82, "kinetic": 92, "composition": 95}
 SAMPLE_FPS = 2.0
 MAX_FRAMES = 300
 BEAT_TOLERANCE_S = 0.08
@@ -772,6 +772,125 @@ def _words_per_second_peak(blocks, duration):
     return round(float(per_sec.max()), 1)
 
 
+KINETIC_MAX_EVENTS = 30
+KINETIC_PER_SHEET = 5
+KINETIC_LABEL_W = 150
+
+
+def stage_kinetic(ctx):
+    """HOW the words move: each text event's entrance and exit measured at the
+    native frame rate (kinetic.py), plus strip sheets kf_words_NN.jpg — one
+    IN row and one OUT row per event — for the annotate pass to name the
+    mechanism by eye. The runner uploads kf_* next to the keyframes, so the
+    sheets land at refs/<id>/kf_words_NN.jpg with no runner change."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    import kinetic
+
+    text = (ctx.get("sections") or {}).get("text") or {}
+    if text.get("status") != "ok":
+        raise RuntimeError("needs the text stage")
+    blocks = text.get("blocks") or []
+    duration, fps = ctx["duration"], ctx["fps"]
+    cuts = [b[0] for b in (ctx.get("shot_bounds") or [])[1:]]
+
+    # skip labels up for most of the clip (a watermark, a price bar) and OCR
+    # junk (zigzags read as 'YYYYYY'): neither animates
+    persistent = junk = 0
+    picked = []
+    for i, b in enumerate(blocks):
+        if b["t1"] - b["t0"] >= max(6.0, 0.8 * duration):
+            persistent += 1
+        elif not kinetic.looks_like_text(b["text"]):
+            junk += 1
+        else:
+            picked.append(i)
+    picked.sort(key=lambda i: blocks[i]["t0"])
+    capped = 0
+    if len(picked) > KINETIC_MAX_EVENTS:  # spread over the clip, not its first half
+        keep = np.linspace(0, len(picked) - 1, KINETIC_MAX_EVENTS).round().astype(int)
+        capped = len(picked) - KINETIC_MAX_EVENTS
+        picked = [picked[k] for k in sorted(set(keep.tolist()))]
+
+    jobs = [(ctx["video"], blocks[i], fps, duration, cuts) for i in picked]
+    workers = max(1, min(6, (os.cpu_count() or 2) - 2, len(jobs)))
+    if workers > 1:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(kinetic.analyse_event_job, jobs))
+    else:
+        results = [kinetic.analyse_event_job(j) for j in jobs]
+
+    events, rows = [], []
+    for n, (i, r) in enumerate(zip(picked, results)):
+        b = blocks[i]
+        ev = {"i": n, "block": i, "t0": b["t0"], "t1": b["t1"], "zone": b.get("zone"),
+              "words": len(b["text"].split())}
+        if "error" in r:  # unmeasured; any strips still go on the sheet
+            ev["error"] = r["error"]
+        else:
+            ev["entry"] = {k: v for k, v in r["entry"].items() if not k.startswith("_")}
+            ev["exit"] = {k: v for k, v in r["exit"].items() if not k.startswith("_")}
+        s_in, s_out = r.get("_strip", (None, None))
+        if s_in is not None or s_out is not None:
+            rows.append((n, b, s_in, s_out))
+        events.append(ev)
+
+    sheets = []
+    for k in range(0, len(rows), KINETIC_PER_SHEET):
+        group = rows[k:k + KINETIC_PER_SHEET]
+        name = f"kf_words_{len(sheets) + 1:02d}.jpg"
+        cv2.imwrite(os.path.join(ctx["out_dir"], name), _kinetic_sheet(group), [cv2.IMWRITE_JPEG_QUALITY, 82])
+        for pos, (n, *_rest) in enumerate(group, start=1):
+            events[n]["sheet"], events[n]["sheet_row"] = name, pos
+        sheets.append(name)
+
+    ok = [e for e in events if "error" not in e]
+    moves = [e["entry"] for e in ok if e["entry"].get("t_start") is not None]
+    carried = {c: sum(1 for m in moves if m.get("carried_by") == c) for c in ("cut", "scene")}
+    own = [m for m in moves if not m.get("carried_by") and m.get("type") != "cut"]
+    hints = {}
+    for m in own:
+        hints[m.get("type", "unknown")] = hints.get(m.get("type", "unknown"), 0) + 1
+    return {
+        "version": 1,
+        "events": events,
+        "sheets": sheets,
+        "summary": {
+            "analysed": len(ok),
+            "failed": len(events) - len(ok),
+            "entries_measured": len(moves),
+            "carried_by": carried,
+            "own_entries": len(own),
+            "entry_hints": hints,
+            "median_entry_s": round(float(np.median([m["duration_s"] for m in own])), 3) if own else None,
+        },
+        "skipped": {"persistent": persistent, "junk": junk, "capped": capped},
+    }
+
+
+def _kinetic_sheet(group):
+    """Stack each event's IN strip over its OUT strip, a label panel on the
+    left (#n = the event's index in kinetic.events, its time and first words)."""
+    blocks_img = []
+    for n, b, s_in, s_out in group:
+        for tag, s in (("IN", s_in), ("OUT", s_out)):
+            if s is None:
+                continue
+            label = np.zeros((s.shape[0], KINETIC_LABEL_W, 3), np.uint8)
+            t = b["t0"] if tag == "IN" else b["t1"]
+            snippet = "".join(c for c in b["text"] if 32 <= ord(c) < 127)[:16]
+            for y, line in ((14, f"#{n} {tag}"), (30, f"{t:.2f}s"), (46, snippet)):
+                if y < s.shape[0] - 2:
+                    cv2.putText(label, line, (4, y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+            blocks_img.append(cv2.hconcat([label, s]))
+        blocks_img.append(None)  # separator between events
+    w = max(im.shape[1] for im in blocks_img if im is not None)
+    padded = [np.full((6, w, 3), 70, np.uint8) if im is None else
+              cv2.copyMakeBorder(im, 0, 0, 0, w - im.shape[1], cv2.BORDER_CONSTANT, value=(16, 16, 16))
+              for im in blocks_img]
+    return cv2.vconcat(padded[:-1])
+
+
 def stage_composition(ctx):
     kfs = ctx.get("keyframes") or []
     if not kfs:
@@ -802,11 +921,11 @@ def stage_composition(ctx):
 STAGE_FNS = {
     "probe": stage_probe, "frames": stage_frames, "shots": stage_shots,
     "audio": stage_audio, "motion": stage_motion, "grade": stage_grade,
-    "text": stage_text, "composition": stage_composition,
+    "text": stage_text, "kinetic": stage_kinetic, "composition": stage_composition,
 }
 SECTION_FOR = {"probe": "probe", "shots": "shots", "audio": "audio",
                "motion": "motion", "grade": "grade", "text": "text",
-               "composition": "composition"}
+               "kinetic": "kinetic", "composition": "composition"}
 
 
 def main():
@@ -847,6 +966,8 @@ def main():
     wanted = set(stages) | {"probe"}
     if wanted & {"audio", "motion", "grade", "composition"}:
         wanted |= {"shots"}
+    if "kinetic" in wanted:  # measures the text stage's events, carried-by-cut needs shots
+        wanted |= {"text", "shots"}
     if "text" in wanted:
         wanted |= {"frames"}
     stages = [s for s in ALL_STAGES if s in wanted]
@@ -864,6 +985,7 @@ def main():
             spec["status"] = "partial"
         dt = round(time.monotonic() - t0, 2)
         spec["timings"][s] = dt
+        ctx.setdefault("sections", {})[s] = section
         if s != "frames":  # frames is plumbing, not a schema section
             spec[SECTION_FOR[s]] = section
         print(f"STAGE {s} {dt}s {section['status']}")
