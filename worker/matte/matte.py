@@ -10,7 +10,7 @@ usage:
 
   --output png takes ONE still image and writes one RGBA png (sticker cut-outs).
 
-Three things here are load-bearing and easy to get wrong:
+Four things here are load-bearing and easy to get wrong:
 
 1. THE PROVIDER ASSERTION. onnxruntime silently falls back to CPU when the
    CUDA libraries are missing. On CPU this model costs ~9.5 s/frame, and the
@@ -30,6 +30,18 @@ Three things here are load-bearing and easy to get wrong:
    erodes it - the same class of artefact that ruled out sparse keying. It is
    right for a static subject and wrong for a moving one, so the caller must
    ask for it explicitly.
+
+4. THE SESSION. CUDA with a capped arena, never the default arena; TensorRT
+   fp32 instead only when opted in (MATTE_TRT=1) AND a pre-built engine for
+   the model is in the cache. Measured on the 4080 (birefnet-portrait,
+   1080x1920, 2026-09-27): the default kNextPowerOfTwo arena grows to
+   ~15.5 GB, past what the 16 GB card has free, and session.run falls from
+   0.27 s to 1.0-1.8 s/frame. The 10 GB cap keeps it at 0.27 s (8 GB OOMs in
+   the aspp_deforms decoder) with masks bit-identical to the old session.
+   TensorRT fp32 runs it in 0.12 s at ~4.4 GB but is not bit-identical (see
+   TRT_ENABLED), which is why it is opt-in. An engine takes ~5 min to build,
+   so a job NEVER builds one: warmup_trt.py does, at deploy, and a job without
+   a ready engine uses capped CUDA. Nothing about TensorRT may fail a job.
 """
 import argparse
 import glob
@@ -51,6 +63,25 @@ MODELS = {
     "bria-rmbg", "u2net_human_seg", "isnet-general-use",
 }
 OUTPUTS = {"webm_alpha", "mask_mp4", "png_sequence", "png"}
+
+# Session config (see 4. above). TensorRT is OFF unless MATTE_TRT=1: capped CUDA
+# gives masks bit-identical to the old default-arena session, TensorRT fp32 does
+# not quite (mean |d| 0.004/255 raw, but after refine 9 of 150 frames of a person
+# clip moved a ~1,600 px blob in an ambiguous dark gap; disabling TF32 made it
+# worse, not better - it is kernel-level float noise, not a setting). Shawn chose
+# identical masks (2026-09-27). The engines and warmup_trt.py stay so it can be
+# switched on with MATTE_TRT=1 in the worker .env.
+GPU_MEM_LIMIT_GB = float(os.environ.get("MATTE_GPU_MEM_LIMIT_GB", "10"))
+TRT_ENABLED = os.environ.get("MATTE_TRT", "0") == "1"
+TRT_WORKSPACE_GB = 6
+# Under the render-farm cache, NOT the job work dir (deleted after every job)
+# and NOT the venv (rebuilt whenever requirements.txt changes). No cache sweep
+# touches it: those are repos/, work/, assets/ and venvs/ only.
+TRT_ROOT = os.path.join(
+    os.environ.get("RENDER_CACHE_DIR")
+    or os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "render-farm"),
+    "trt")
+_trt_libs_error = "not checked"
 
 
 def emit(kind, text):
@@ -75,7 +106,13 @@ def require_cuda():
     was COMPILED with, not what can load. It reported CUDAExecutionProvider on
     a process where CUDA could not initialise at all. That is why the real
     assertion is on the session in segment(), not on this list.
+
+    The TensorRT libraries (the tensorrt_cu13_libs wheel) go on the search path
+    first, the same way and for the same reason; if that fails, the job carries
+    on and make_session() uses capped CUDA.
     """
+    global _trt_libs_error
+    _trt_libs_error = _add_trt_dlls() if TRT_ENABLED else "off (MATTE_TRT=1 enables)"
     import onnxruntime as ort
 
     if hasattr(ort, "preload_dlls"):
@@ -90,6 +127,108 @@ def require_cuda():
             "render behind it on a single-job worker."
         )
     return providers
+
+
+def _add_trt_dlls():
+    """nvinfer_10.dll etc. onto the DLL path, before onnxruntime is imported.
+    Returns None when done, else why not (the job then runs capped CUDA)."""
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("tensorrt_libs")
+        if spec is None or not spec.origin:
+            return "tensorrt_libs is not installed"
+        libs = os.path.dirname(spec.origin)
+        os.add_dll_directory(libs)
+        os.environ["PATH"] = libs + os.pathsep + os.environ.get("PATH", "")
+        return None
+    except Exception as e:  # noqa: BLE001 - TensorRT must never fail a job
+        return f"{type(e).__name__}: {e}"[:200]
+
+
+def cuda_options():
+    return {"cudnn_conv_algo_search": "HEURISTIC",
+            "gpu_mem_limit": int(GPU_MEM_LIMIT_GB * 1024 ** 3),
+            "arena_extend_strategy": "kSameAsRequested"}
+
+
+def trt_options(model):
+    # fp32 on purpose: fp16 is 2.4x faster again but moves 0.17% of mask pixels
+    # (edges, dark gaps); fp32 matches the CUDA masks.
+    return {"trt_fp16_enable": False,
+            "trt_engine_cache_enable": True,
+            "trt_engine_cache_path": os.path.join(TRT_ROOT, model),
+            "trt_max_workspace_size": TRT_WORKSPACE_GB * 1024 ** 3}
+
+
+def trt_fingerprint(model):
+    """What a cached engine was built against. An engine that does not match is
+    rebuilt by onnxruntime on session creation - minutes inside a user's job -
+    so a job only offers TensorRT when warmup_trt.py recorded this exact set."""
+    from importlib import metadata
+
+    import onnxruntime as ort
+
+    # rembg's own model location (BaseSession.u2net_home)
+    home = os.path.expanduser(
+        os.getenv("U2NET_HOME", os.path.join(os.getenv("XDG_DATA_HOME", "~"), ".u2net")))
+    st = os.stat(os.path.join(home, f"{model}.onnx"))
+    return {"model": model, "model_bytes": st.st_size, "model_mtime": int(st.st_mtime),
+            "onnxruntime": ort.__version__, "tensorrt": metadata.version("tensorrt_cu13_libs"),
+            "precision": "fp32", "workspace_gb": TRT_WORKSPACE_GB}
+
+
+def trt_ready(model):
+    """(True, None) when a warmed-up engine for this model is in the cache."""
+    d = os.path.join(TRT_ROOT, model)
+    try:
+        with open(os.path.join(d, "ready.json"), encoding="utf-8") as f:
+            ready = json.load(f)
+        if not glob.glob(os.path.join(d, "*.engine")):
+            return False, "no engine file"
+        if ready.get("fingerprint") != trt_fingerprint(model):
+            return False, "engine built for a different model/runtime; rerun warmup_trt.py"
+        return True, None
+    except FileNotFoundError:
+        return False, "no warmed-up engine (warmup_trt.py)"
+    except Exception as e:  # noqa: BLE001
+        return False, f"{type(e).__name__}: {e}"[:200]
+
+
+def make_session(model, build=False):
+    """(session, ep, why_not_tensorrt). ep is "tensorrt" or "cuda".
+
+    TensorRT only when an engine is ready (or build=True, which only
+    warmup_trt.py passes); anything else about it failing falls through to the
+    capped CUDA session. CPU is still refused, as before."""
+    import gc
+
+    from rembg import new_session
+
+    why = _trt_libs_error
+    if why is None and not build:
+        _, why = trt_ready(model)
+    if why is None:
+        try:
+            s = new_session(model, providers=[("TensorrtExecutionProvider", trt_options(model)),
+                                              ("CUDAExecutionProvider", cuda_options())])
+            actual = s.inner_session.get_providers()
+            if actual and actual[0] == "TensorrtExecutionProvider":
+                return s, "tensorrt", None
+            # onnxruntime drops a provider it cannot create and falls back on its
+            # own, WITHOUT our CUDA options: rebuild the capped one below.
+            why = f"tensorrt did not take: providers={actual}"
+            del s
+            gc.collect()
+        except Exception as e:  # noqa: BLE001 - TensorRT must never fail a job
+            why = f"tensorrt session failed: {type(e).__name__}: {e}"[:300]
+    s = new_session(model, providers=[("CUDAExecutionProvider", cuda_options())])
+    # rembg does not surface the session's providers, so confirm the real one
+    # rather than trusting the request we just made.
+    actual = getattr(getattr(s, "inner_session", None), "get_providers", list)()
+    if actual and "CUDAExecutionProvider" not in actual:
+        raise RuntimeError(f"rembg session did not take the GPU: providers={actual}")
+    return s, "cuda", why
 
 
 def probe(video, ffprobe):
@@ -127,19 +266,15 @@ def extract_frames(video, out_dir, ffmpeg, start_s, end_s, fps, scale, src_w, sr
 
 
 def segment(frames, alpha_dir, model, providers):
-    """Per-frame alpha from rembg. Returns the list of alpha png paths."""
+    """Per-frame alpha from rembg. Returns (alpha png paths, ep that ran)."""
     import numpy as np
     from PIL import Image
-    from rembg import new_session, remove
+    from rembg import remove
 
     os.makedirs(alpha_dir, exist_ok=True)
-    session = new_session(model, providers=["CUDAExecutionProvider"])
-    # rembg does not surface the session's providers, so confirm the real one
-    # rather than trusting the request we just made.
-    actual = getattr(getattr(session, "inner_session", None), "get_providers", list)()
-    if actual and "CUDAExecutionProvider" not in actual:
-        raise RuntimeError(f"rembg session did not take the GPU: providers={actual}")
-    emit("PHASE", f"segmenting 0/{len(frames)}")
+    session, ep, why = make_session(model)
+    print(f"[matte] ep={ep}" + (f" (tensorrt skipped: {why})" if why else ""), flush=True)
+    emit("PHASE", f"segmenting 0/{len(frames)} ({ep})")
 
     out = []
     for i, src in enumerate(frames):
@@ -155,8 +290,8 @@ def segment(frames, alpha_dir, model, providers):
         out.append(dst)
         if i % 5 == 0 or i == len(frames) - 1:
             emit("PROGRESS", str(int((i + 1) / len(frames) * 100)))
-            emit("PHASE", f"segmenting {i + 1}/{len(frames)}")
-    return out
+            emit("PHASE", f"segmenting {i + 1}/{len(frames)} ({ep})")
+    return out, ep
 
 
 def anchor_edge(alpha_paths, sample=12):
@@ -434,11 +569,13 @@ def main():
 
     import time
     t0 = time.time()
-    alphas = segment(frames, os.path.join(work, "_alpha"), a.model, providers)
+    alphas, ep = segment(frames, os.path.join(work, "_alpha"), a.model, providers)
     per_frame = (time.time() - t0) / len(frames)
     # The number the platform asked for, on its own line so it is greppable.
+    # Includes session creation (~5 s for a cached engine), so short clips read
+    # slower per frame than long ones.
     print(f"[matte] MEASURED {per_frame:.3f} s/frame for {a.model} at "
-          f"{src_w}x{src_h} over {len(frames)} frames", flush=True)
+          f"{src_w}x{src_h} over {len(frames)} frames ep={ep}", flush=True)
 
     anchor = None
     if a.drop_detached:

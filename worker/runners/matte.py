@@ -112,6 +112,17 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     for line in measured:
         log(line.strip())
     log(f"matte done: {kind} -> {os.path.getsize(out_local)} bytes")
+    # Which session actually ran, readable from the row afterwards: run_job
+    # writes this as the final phase instead of a bare "done".
+    # "[matte] MEASURED 0.235 s/frame for <model> at WxH over N frames ep=tensorrt"
+    if measured:
+        words = measured[-1].split()
+        ep = next((w[3:] for w in words if w.startswith("ep=")), "?")
+        try:
+            spf = words[words.index("MEASURED") + 1]
+        except (ValueError, IndexError):
+            spf = "?"
+        job["_done_phase"] = f"done: {ep} {spf} s/frame"
 
     # The proof sheet goes up as a SIBLING of the real output, at a path the
     # platform can derive from output_path without being told: replace the

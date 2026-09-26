@@ -145,7 +145,9 @@ def run_job(job):
         "signed_url": signed,
         "signed_url_expires_at": db.now_iso(),  # informational; MCP re-mints anyway
         "progress": 100,
-        "phase": "done",
+        # a runner may leave a one-line summary here (matte: "done: tensorrt
+        # 0.235 s/frame"); status, not phase, is what says the job finished
+        "phase": job.get("_done_phase") or "done",
         "completed_at": db.now_iso(),
     })
     shutil.rmtree(work_dir, ignore_errors=True)
