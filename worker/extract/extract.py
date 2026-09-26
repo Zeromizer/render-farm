@@ -76,6 +76,11 @@ MAX_FRAMES = 300
 # so a long reference falls back towards SAMPLE_FPS.
 OCR_FPS = 6.0
 OCR_MAX_FRAMES = 360
+# ...on frames scaled to this height: EasyOCR's detector misses very tall
+# condensed display type at full 1920 px (BUY? held 1.4 s and was never read),
+# and a third of the pixels roughly halves the pass. Small print suffers; it is
+# not what this pass is for.
+OCR_HEIGHT = 1280
 BEAT_TOLERANCE_S = 0.08
 SAFE_TOP = 0.12     # vertical-ad safe zone: avoid top 12% and bottom 20%
 SAFE_BOTTOM = 0.80
@@ -668,7 +673,10 @@ def stage_text(ctx):
 
     reader = easyocr.Reader(["en"], gpu=True, verbose=False)
     tracks = []  # {text, t0, t1, boxes:[bbox], texts:[(t,text)], confs:[..]}
-    W, H = ctx["w"], ctx["h"]
+    # boxes come back in the pixels of the frames read (the OCR frames are
+    # scaled, and a rotated phone clip's frames are upright)
+    first = cv2.imread(frames[0])
+    H, W = first.shape[:2] if first is not None else (ctx["h"], ctx["w"])
     for path, t in zip(frames, times):
         try:
             dets = reader.readtext(path, paragraph=False)
@@ -695,14 +703,15 @@ def stage_text(ctx):
 
 def _ocr_frames(ctx, frames, times):
     """Frames for the text pass: its own denser sampling (OCR_FPS, at most
-    OCR_MAX_FRAMES), or the shared frames when that would be no denser."""
+    OCR_MAX_FRAMES, at most OCR_HEIGHT tall), or the shared frames when that
+    would be no denser."""
     rate = float(ctx["ocr_fps"] or min(OCR_FPS, OCR_MAX_FRAMES / max(ctx["duration"], 0.1)))
     if rate <= ctx["sample_rate_fps"] * 1.2:
         return frames, times
     ocr_dir = os.path.join(ctx["out_dir"], "ocr_frames")
     os.makedirs(ocr_dir, exist_ok=True)
     _run([FFMPEG, "-y", "-v", "error", "-i", ctx["video"],
-          "-vf", f"fps={rate:.6f}", "-q:v", "2",
+          "-vf", f"fps={rate:.6f},scale=-2:'min({OCR_HEIGHT},ih)'", "-q:v", "2",
           os.path.join(ocr_dir, "o_%04d.jpg")])
     files = sorted(f for f in os.listdir(ocr_dir) if f.startswith("o_"))
     if not files:
@@ -742,15 +751,21 @@ def _track_text(tracks, text, bbox, conf, t):
 
 
 def _finish_track(tr):
+    import difflib
+
     boxes = np.array(tr["boxes"])
     bbox = [round(float(v), 3) for v in
             (boxes[:, 0].min(), boxes[:, 1].min(), boxes[:, 2].max(), boxes[:, 3].max())]
     final = max(tr["texts"], key=lambda p: len(p[1]))[1]
+    # when the words were first complete: a word-by-word build or a count-up is
+    # read in pieces from t0, and only its last reading is what stays
+    last = tr["texts"][-1][1].lower()
+    t_full = next(t for t, x in tr["texts"] if difflib.SequenceMatcher(None, x.lower(), last).ratio() >= 0.9)
     cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
     zone = f"{_third(cy, 'top', 'centre', 'bottom')}-{_third(cx, 'left', 'centre', 'right')}"
     return {
         "text": final,
-        "t0": round(tr["t0"], 2), "t1": round(tr["t1"], 2),
+        "t0": round(tr["t0"], 2), "t1": round(tr["t1"], 2), "t_full": round(t_full, 2),
         "bbox": bbox,
         "size_ratio": round(float((boxes[:, 3] - boxes[:, 1]).mean()), 3),
         "zone": zone,
@@ -798,7 +813,7 @@ def _words_per_second_peak(blocks, duration):
     return round(float(per_sec.max()), 1)
 
 
-KINETIC_MAX_EVENTS = 40
+KINETIC_MAX_EVENTS = 30
 # Text shorter than this share of the frame height is small print (a phone
 # screen, a document page): shown, not animated type. It only gets the event
 # slots real type leaves over.
