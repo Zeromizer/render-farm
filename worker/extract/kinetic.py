@@ -95,7 +95,7 @@ class Text:
     """The settled text block: its pixels (core), the background ring around
     them, its polarity and its settled contrast."""
 
-    def __init__(self, settled_frames, empty_frames, box):
+    def __init__(self, settled_frames, empty_frames, box, n_words=None):
         x0, y0, x1, y1 = box
         self.box = box
         crops = np.stack([_gray(f)[y0:y1, x0:x1] for f in settled_frames])
@@ -120,7 +120,7 @@ class Text:
         self.c_settled = self._contrast(self.settled, self.core, self.ring)
         self.ok = self.c_settled > 15
         self.sharp = sharpness(self.settled, self.core)
-        self.words = word_columns(self.core)
+        self.words = merge_to_count(word_columns(self.core), n_words)
         # the scene around the text: a box one text-height above and below and
         # a quarter-width either side, the text itself masked out. If THIS
         # arrives with the text, the text is riding a scene transition.
@@ -137,8 +137,11 @@ class Text:
         self.ctx_steady = min(self.ctx_similarity_crop(c) for c in ctx) if len(ctx) else 0.0
 
     def ctx_similarity_crop(self, crop):
-        a = crop[self.ctx_mask]
-        b = self.ctx_settled[self.ctx_mask]
+        return self.ctx_pair(crop, self.ctx_settled)
+
+    def ctx_pair(self, a, b):
+        """Similarity of two context crops over the context mask."""
+        a, b = a[self.ctx_mask], b[self.ctx_mask]
         if a.size < 30 or a.std() < 3 or b.std() < 3:
             return 1.0 if a.size >= 30 and abs(a.mean() - b.mean()) < 12 else 0.0
         return float(np.corrcoef(a, b)[0, 1])
@@ -191,6 +194,19 @@ def word_columns(mask):
     if start is not None:
         spans.append((start, len(cols)))
     return [s for s in spans if s[1] - s[0] >= 3]
+
+
+def merge_to_count(spans, n):
+    """Column spans split on pixel gaps can cut one word in two (wide
+    letter-spacing, a thin glyph, a stroke lost in the background). When the
+    OCR says the line has n words, close the narrowest gaps until there are n."""
+    spans = list(spans)
+    if not n or n < 1:
+        return spans
+    while len(spans) > n:
+        k = min(range(len(spans) - 1), key=lambda i: spans[i + 1][0] - spans[i][1])
+        spans[k:k + 2] = [(spans[k][0], spans[k + 1][1])]
+    return spans
 
 
 def sharpness(gray_crop, mask):
@@ -318,6 +334,25 @@ def _easing(progress, times):
     return "linear"
 
 
+SUDDEN_STEP = 0.3      # frame-to-frame context dissimilarity (1 - corr) that counts as a jump
+
+
+def _sudden_context(grays, text, onset_i, settled_i):
+    """Did the scene around the text JUMP during the move? A whip, push, flash
+    or cut changes it in one or two big frame-to-frame steps; a walking or
+    handheld camera changes it as much in total but in small, even steps, and
+    that must not read as 'carried by the scene' (found on 'Great text
+    animation', a presenter filmed walking: 7 false scene flags)."""
+    cx0, cy0, cx1, cy1 = text.ctx_box
+    crops = [g[cy0:cy1, cx0:cx1] for g in grays]
+    steps = [1.0 - text.ctx_pair(crops[i - 1], crops[i]) for i in range(1, len(crops))]
+    # steps[j - 1] is the change INTO frame j
+    inside = steps[max(0, onset_i - 1):max(onset_i, settled_i)]
+    outside = [v for j, v in enumerate(steps, start=1) if j < onset_i - 1 or j > settled_i + 1]
+    base = float(np.median(outside)) if outside else 0.0
+    return bool(inside) and max(inside) >= max(SUDDEN_STEP, 4 * base)
+
+
 def analyse_transition(frames, times, text, fps, entering, cuts=()):
     """One entrance (entering=True) or exit. For an exit the frames are
     reversed so both read 'absent -> settled' and share the logic."""
@@ -414,7 +449,8 @@ def analyse_transition(frames, times, text, fps, entering, cuts=()):
         before = ctx[max(0, onset_i - 1)]
         c_low = _last(ctx, lambda v: v < 0.8)
         ctx_settle = (c_low + 1) if c_low is not None else 0
-        if before < 0.55 and abs(ctx_settle - settled_i) <= max(3, frames_n // 2 + 2):
+        if (before < 0.55 and abs(ctx_settle - settled_i) <= max(3, frames_n // 2 + 2)
+                and _sudden_context(grays, text, onset_i, settled_i)):
             kind = "scene"
     # ...or the WHOLE picture changes suddenly as the text arrives (a flash,
     # push or whip of the shot), which the local context can miss on a flat
@@ -540,10 +576,36 @@ def analyse_transition(frames, times, text, fps, entering, cuts=()):
 
 # ----------------------------------------------------------------- strips
 
-def strip(frames, times, box, t_from, t_to, n=8, tile_w=200):
-    """n frames spread over [t_from, t_to] (padded a frame each side), cropped
-    to the text row with a margin either side wide enough to show a move
-    from off the text's spot, tiled left to right with their timestamps."""
+STRIP_MOVE_TILES = 6   # the move itself: every frame when it is this short, else this many spread over it
+
+
+def strip_times(times, t_from, t_to):
+    """Which frames to show for a move over [t_from, t_to]: two before it,
+    the move at the native rate (every frame of a short move — a 130 ms
+    blur-fade is 4 frames at 30 fps — or STRIP_MOVE_TILES spread over a
+    longer one), then one just after and two later (+0.25 s, +0.5 s) so a
+    move whose measured end is early is still in view. Returns frame indices,
+    in time order, without repeats."""
+    if not times:
+        return []
+    step = abs(times[1] - times[0]) if len(times) > 1 else 1 / 30
+    span = max(0.0, t_to - t_from)
+    k = int(round(span / step))
+    move = ([t_from + j * step for j in range(k + 1)] if k + 1 <= STRIP_MOVE_TILES
+            else [t_from + span * j / (STRIP_MOVE_TILES - 1) for j in range(STRIP_MOVE_TILES)])
+    targets = [t_from - 2 * step, t_from - step] + move + [t_to + step, t_to + 0.25, t_to + 0.5]
+    picked = []
+    for tt in targets:
+        i = min(range(len(times)), key=lambda j: abs(times[j] - tt))
+        if i not in picked:
+            picked.append(i)
+    return sorted(picked, key=lambda i: times[i])
+
+
+def strip(frames, times, box, t_from, t_to, tile_w=160):
+    """The frames strip_times picks, cropped to the text row with a margin
+    either side wide enough to show a move from off the text's spot, tiled
+    left to right with their timestamps burned in."""
     if not frames:
         return None
     H, W = frames[0].shape[:2]
@@ -552,21 +614,15 @@ def strip(frames, times, box, t_from, t_to, n=8, tile_w=200):
     cy0, cy1 = max(0, y0 - bh), min(H, y1 + bh)
     mx = max(int(0.35 * bw), 2 * bh)
     cx0, cx1 = max(0, x0 - mx), min(W, x1 + mx)
-    # from two frames before the move to at least half a second after its
-    # start: if the measured end is early or late the move is still in view
-    step = 1.0 / 30
-    a, b = t_from - 2 * step, max(t_to + step, t_from + 0.5)
-    targets = [a + (b - a) * k / (n - 1) for k in range(n)]
     tiles = []
-    for tt in targets:
-        i = min(range(len(times)), key=lambda j: abs(times[j] - tt))
+    for i in strip_times(times, t_from, t_to):
         c = frames[i][cy0:cy1, cx0:cx1]
-        h = max(1, min(260, int(c.shape[0] * tile_w / c.shape[1])))
+        h = max(1, min(240, int(c.shape[0] * tile_w / c.shape[1])))
         c = cv2.resize(c, (tile_w, h), interpolation=cv2.INTER_AREA)
         cv2.rectangle(c, (0, 0), (44, 13), (0, 0, 0), -1)
         cv2.putText(c, f"{times[i]:.2f}", (3, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (255, 255, 255), 1, cv2.LINE_AA)
         tiles.append(c)
-    return cv2.hconcat(tiles)
+    return cv2.hconcat(tiles) if tiles else None
 
 
 # ----------------------------------------------------------------- one event
@@ -651,7 +707,7 @@ def analyse_event(video, block, native_fps, duration, cuts=(), want_strip=True):
         return float(np.corrcoef(c.ravel(), ref.ravel())[0, 1]) < 0.7
 
     empties = [f for f in candidates if looks_empty(f)]
-    text = Text(pool, empties, box) if empties else None
+    text = Text(pool, empties, box, n_words=len(block["text"].split())) if empties else None
     error = ("on screen for the whole clip" if not empties
              else None if text.ok else "text not separable from the background")
 
@@ -671,7 +727,7 @@ def analyse_event(video, block, native_fps, duration, cuts=(), want_strip=True):
         # the 2 fps OCR says it happened in, for the annotator to judge by eye
         s_in = (strip(ent_frames, ent_times, box, entry.get("t_start", t0 - 0.5), entry.get("t_end", t0 + 0.1))
                 if not at_start else None)
-        s_out = (strip(ex_frames, ex_times, box, exit_.get("t_start", t1 - 0.1), exit_.get("t_end", t1 + 0.5), n=6)
+        s_out = (strip(ex_frames, ex_times, box, exit_.get("t_start", t1 - 0.1), exit_.get("t_end", t1 + 0.5))
                  if len(ex_frames) >= 4 else None)
         out["_strip"] = (s_in, s_out)
     return out
