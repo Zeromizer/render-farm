@@ -43,6 +43,66 @@ def system_stats():
     return httpx.get(_url("/system_stats"), timeout=10).json()
 
 
+def server_process():
+    """The python that serves COMFYUI_URL, as a dict (pid, launcher_pid,
+    private_gb, working_gb, cmdline), or None. PowerShell rather than psutil
+    to keep the worker venv as it is; this runs between jobs, not per frame."""
+    port = int(config.COMFYUI_URL.rsplit(":", 1)[-1].split("/")[0])
+    ps = (f"$c = Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; "
+          "if ($c) { $p = Get-Process -Id $c.OwningProcess; "
+          "$w = Get-CimInstance Win32_Process -Filter \"ProcessId=$($p.Id)\"; "
+          "'{0}|{1}|{2}|{3}|{4}' -f $p.Id, $w.ParentProcessId, $p.PrivateMemorySize64, $p.WorkingSet64, $w.CommandLine }")
+    out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                         timeout=60, creationflags=subprocess.CREATE_NO_WINDOW).stdout.strip()
+    if not out:
+        return None
+    pid, parent, priv, ws, cmd = out.split("|", 4)
+    return {"pid": int(pid), "launcher_pid": int(parent), "private_gb": int(priv) / (1 << 30),
+            "working_gb": int(ws) / (1 << 30), "cmdline": cmd}
+
+
+def recycle_if_bloated(log, above_gb=None):
+    """Restart an IDLE ComfyUI that is holding too much host RAM, then bring it
+    straight back so the next job does not pay (or race) the startup.
+
+    WHY: an H3 run leaves its weights/host buffers in the ComfyUI process and
+    neither /free nor --cache-none gives them back (2026-09-27: 17.6 GB private
+    while idle, Available stuck at ~10 GB, so every next video_gen sat in the
+    12 GB RAM gate). Called by the worker between jobs, so no job can be using
+    ComfyUI at that moment; the queue check below is belt and braces for
+    anything else that talks to it. Returns True if it restarted.
+    """
+    above_gb = config.COMFYUI_RECYCLE_ABOVE_GB if above_gb is None else above_gb
+    if above_gb <= 0 or not is_up():
+        return False
+    p = server_process()
+    if not p or "main.py" not in p["cmdline"]:
+        log(f"comfyui recycle: no ComfyUI main.py on {config.COMFYUI_URL} ({p and p['cmdline'][:80]})")
+        return False
+    if p["private_gb"] <= above_gb:
+        log(f"comfyui holds {p['private_gb']:.1f} GB private ({p['working_gb']:.1f} GB in RAM); keeping it")
+        return False
+    q = httpx.get(_url("/queue"), timeout=10).json()
+    if q.get("queue_running") or q.get("queue_pending"):
+        log(f"comfyui holds {p['private_gb']:.1f} GB but is busy; not restarting")
+        return False
+    log(f"comfyui holds {p['private_gb']:.1f} GB private ({p['working_gb']:.1f} GB in RAM) while idle, "
+        f"over {above_gb:g} GB; restarting it")
+    # the venv launcher stub and the real python it spawned (the stub's tree
+    # covers both; the second call is for a stub that already went)
+    for pid in (p["launcher_pid"], p["pid"]):
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    deadline = time.monotonic() + 30
+    while is_up() and time.monotonic() < deadline:
+        time.sleep(1)
+    ensure_server(log)
+    after = server_process()
+    if after:
+        log(f"comfyui restarted: pid {after['pid']}, {after['private_gb']:.1f} GB private")
+    return True
+
+
 def ensure_server(log, wait_seconds=240):
     """Start run-headless.bat if nothing answers on COMFYUI_URL; block until it does."""
     if is_up():

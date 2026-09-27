@@ -47,6 +47,10 @@ TTS_STUDIO_DIR = os.environ.get("TTS_STUDIO_DIR", r"C:\Coding\Voice Output")
 # (videogen/ram_gate.py). "0" disables. Gives up and starts anyway after the max wait.
 VIDEO_GEN_MIN_AVAIL_RAM_GB = float(os.environ.get("VIDEO_GEN_MIN_AVAIL_RAM_GB", "12"))
 VIDEO_GEN_RAM_WAIT_MAX_MINUTES = int(os.environ.get("VIDEO_GEN_RAM_WAIT_MAX_MINUTES", "20"))
+# After a job that used ComfyUI, restart it (idle only) when its python holds more
+# private memory than this: /free does not give back the host RAM an H3 run leaves
+# behind (videogen/comfy_client.recycle_if_bloated). "0" disables.
+COMFYUI_RECYCLE_ABOVE_GB = float(os.environ.get("COMFYUI_RECYCLE_ABOVE_GB", "8"))
 VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES = int(os.environ.get("VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES", "60"))
 
 for _d in (REPOS_DIR, WORK_DIR, ASSETS_DIR):

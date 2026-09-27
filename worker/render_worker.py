@@ -56,6 +56,11 @@ import queue_status
 from runners import (asset_check, audio_gen, blender, footage, frame_extract, hyperframes, matte,
                      planar_patch, python_script, reference_extract, remotion, video_gen,
                      video_split, voiceover)
+from videogen import comfy_client
+
+# Engines whose runners drive the headless ComfyUI; after one of these the
+# worker checks ComfyUI's host RAM (comfy_client.recycle_if_bloated).
+COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover"}
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            "python": python_script.run,
@@ -162,6 +167,12 @@ def main():
     assets.cleanup_old(log)
     venvs.cleanup_old(log)
     try:
+        # A ComfyUI left bloated by jobs the previous worker ran (no job of ours
+        # is running yet, so this is the same between-jobs moment as the loop's).
+        comfy_client.recycle_if_bloated(log)
+    except Exception as e:  # noqa: BLE001
+        log(f"comfyui recycle error (continuing): {str(e)[:160]}")
+    try:
         n = db.reclaim_stale()
         if n:
             log(f"reclaimed {n} stale job(s)")
@@ -219,6 +230,13 @@ def main():
             db.update_job(jid, {"status": "failed", "error": str(e)[:2000],
                                 "phase": "failed", "completed_at": db.now_iso()})
             log(f"failed {jid}: {str(e)[:300]}")
+        # Here, between jobs, nothing of ours is using ComfyUI, so restarting it
+        # cannot fail a job (2026-09-27: a restart from outside the worker did).
+        if job["engine"] in COMFY_ENGINES:
+            try:
+                comfy_client.recycle_if_bloated(log)
+            except Exception as e:  # noqa: BLE001 - housekeeping must not stop the loop
+                log(f"comfyui recycle error (ignored): {str(e)[:200]}")
 
 
 if __name__ == "__main__":
