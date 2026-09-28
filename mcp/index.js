@@ -7,6 +7,8 @@ import { z } from "zod";
 import { insertJob, getJob, listJobs, cancelJob, summarize } from "./lib/jobs.js";
 import { downloadResult } from "./lib/download.js";
 import { syncAssets } from "./lib/assets.js";
+import { sb } from "./lib/supabase.js";
+import { prepareVideoGenImages } from "./lib/farm-image.js";
 
 const server = new McpServer({ name: "render-farm", version: "1.0.0" });
 
@@ -151,13 +153,17 @@ server.tool(
         "format", "fps", "variables", "workers", "gpu", "at", "video_gen"]) {
         if (args[k] !== undefined) params[k] = args[k];
       }
+      // Camera-size stills blow the desktop's RAM in LoadImage; send copies no
+      // bigger than H3 uses (lib/farm-image.js).
+      const shrunk = [];
+      if (params.video_gen) params.video_gen = await prepareVideoGenImages(sb, params.video_gen, (m) => shrunk.push(m));
       const job = await insertJob({
         engine: args.engine, repo_url: args.repo_url || "-", git_ref: args.ref,
         params, priority: args.priority,
         timeout_minutes: args.timeout_minutes ?? (args.engine === "video_gen"
           ? (args.video_gen?.turntable ? (turntableIsFourAnchor(args.video_gen.turntable) ? 180 : 150) : 60) : undefined),
       });
-      return json({ job_id: job.id, status: job.status });
+      return json({ job_id: job.id, status: job.status, ...(shrunk.length ? { resized_images: shrunk } : {}) });
     } catch (e) { return fail(e); }
   }
 );
