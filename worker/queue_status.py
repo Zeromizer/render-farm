@@ -18,6 +18,7 @@ import time
 from datetime import datetime
 
 import db
+from fetch_lane import LANE_ENGINES
 from videogen import estimate
 
 OTHER_ENGINE_SECONDS = 180.0
@@ -76,6 +77,8 @@ def annotate(log):
     rows = (db.sb.table("farm_render_jobs")
             .select("id,engine,params,priority,created_at,claimed_at,status,progress,phase,cancel_requested")
             .in_("status", ["pending", "processing"]).order("priority").order("created_at").execute().data)
+    # The fetch lane's jobs never wait in this queue (worker/fetch_lane.py).
+    rows = [r for r in rows if r["engine"] not in LANE_ENGINES]
     running = [r for r in rows if r["status"] == "processing"]
     pending = [r for r in rows if r["status"] == "pending" and not r.get("cancel_requested")]
     wait = sum(_remaining(r) for r in running)

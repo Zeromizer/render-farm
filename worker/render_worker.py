@@ -48,6 +48,7 @@ import time
 import assets
 import config
 import db
+import fetch_lane
 import git_cache
 import proc
 import venvs
@@ -178,6 +179,12 @@ def main():
             log(f"reclaimed {n} stale job(s)")
     except Exception as e:
         log(f"reclaim error (continuing): {str(e)[:160]}")
+    try:
+        # Provider downloads (Seedance clips from a Beijing CDN the platform's
+        # servers cannot reach) run beside this loop, never queued behind it.
+        fetch_lane.start(log)
+    except Exception as e:  # noqa: BLE001
+        log(f"fetch lane not started (continuing): {str(e)[:160]}")
     try:
         # Tells the platform which subjects have planar_patch artwork on this box.
         planar_patch.publish_library_index(log)

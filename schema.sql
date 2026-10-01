@@ -49,6 +49,11 @@ create table if not exists farm_engine_capabilities (
 revoke all on table public.farm_engine_capabilities from public, anon, authenticated;
 grant select, insert, update, delete on table public.farm_engine_capabilities to service_role;
 alter table public.farm_engine_capabilities enable row level security;
+-- url_fetch (2026-10-02) is gated again, but the other way round: the render loop
+-- passes no capabilities, so it never claims it, and worker/fetch_lane.py takes
+-- those rows itself beside the loop instead of queueing them behind a render.
+insert into farm_engine_capabilities (engine, capability) values ('url_fetch', 'fetch-lane')
+  on conflict (engine) do nothing;
 
 -- Atomic claim: one worker owns the job; SKIP LOCKED makes concurrent workers safe.
 -- Priority before age so reference_extract jobs (200) never starve renders (100).
