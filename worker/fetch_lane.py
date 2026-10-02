@@ -24,10 +24,13 @@ path every platform upload uses, so the platform files the asset from it
 without downloading the bytes again.
 """
 import hashlib
+import ipaddress
 import os
+import socket
 import tempfile
 import threading
 import time
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -41,28 +44,83 @@ LANE_ENGINES = {ENGINE}
 POLL_SECONDS = 2
 MAX_BYTES = 1024 * 1024 * 1024
 ATTEMPTS = 3
+MAX_REDIRECTS = 5
+
+# This PC sits beside ComfyUI (127.0.0.1:8188), the relay bridge, the router
+# and the rest of the home network, and whatever a url_fetch job points at is
+# uploaded to the assets bucket. So a url must be https, on a provider host,
+# and resolve to a public address — checked again on every redirect hop, or an
+# allowed host could bounce the request to 127.0.0.1 (render-pc review,
+# 2026-10-02). Empty FETCH_ALLOWED_HOST_SUFFIXES lifts the host list only.
+ALLOWED_HOST_SUFFIXES = tuple(
+    s.strip().lower().lstrip(".")
+    for s in os.environ.get("FETCH_ALLOWED_HOST_SUFFIXES", "volces.com,volccdn.com,supabase.co").split(",")
+    if s.strip()
+)
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
+class Refused(RuntimeError):
+    """A url this lane will not fetch. Never retried."""
+
+
+def check_url(url):
+    """Raise Refused unless url is https, on an allowed host, resolving only to public addresses."""
+    parts = urlsplit(url)
+    if parts.scheme != "https":
+        raise Refused(f"url refused: https only (got {parts.scheme or 'no'} scheme)")
+    host = (parts.hostname or "").lower().rstrip(".")
+    if not host:
+        raise Refused("url refused: no host")
+    if ALLOWED_HOST_SUFFIXES and not any(host == s or host.endswith("." + s) for s in ALLOWED_HOST_SUFFIXES):
+        raise Refused(f"url refused: {host} is not a provider host ({', '.join(ALLOWED_HOST_SUFFIXES)})")
+    try:
+        infos = socket.getaddrinfo(host, parts.port or 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        raise RuntimeError(f"cannot resolve {host}: {e}") from e
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified or (ip.version == 4 and ip in _CGNAT)):
+            raise Refused(f"url refused: {host} resolves to a non-public address ({ip})")
+
+
+def _fetch_once(url, dest, beat):
+    h, size = hashlib.sha256(), 0
+    timeout = httpx.Timeout(120.0, connect=20.0)
+    current = url
+    for _ in range(MAX_REDIRECTS + 1):
+        check_url(current)
+        with httpx.stream("GET", current, timeout=timeout, follow_redirects=False) as r:
+            if r.is_redirect:
+                location = r.headers.get("location")
+                if not location:
+                    raise RuntimeError("redirect without a location")
+                current = urljoin(current, location)
+                continue
+            r.raise_for_status()
+            with open(dest, "wb") as f:
+                for chunk in r.iter_bytes(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_BYTES:
+                        raise RuntimeError("file is larger than 1 GiB")
+                    h.update(chunk)
+                    f.write(chunk)
+                    beat()
+        if size == 0:
+            raise RuntimeError("empty response")
+        return h.hexdigest(), size
+    raise Refused(f"url refused: more than {MAX_REDIRECTS} redirects")
 
 
 def _download(url, dest, beat):
-    """Stream url to dest, returning (sha256, size). Retries a flapping connect."""
+    """Stream url to dest, returning (sha256, size). Retries a flapping connect, never a refusal."""
     last = None
     for attempt in range(1, ATTEMPTS + 1):
         try:
-            h, size = hashlib.sha256(), 0
-            timeout = httpx.Timeout(120.0, connect=20.0)
-            with httpx.stream("GET", url, timeout=timeout, follow_redirects=True) as r:
-                r.raise_for_status()
-                with open(dest, "wb") as f:
-                    for chunk in r.iter_bytes(1024 * 1024):
-                        size += len(chunk)
-                        if size > MAX_BYTES:
-                            raise RuntimeError("file is larger than 1 GiB")
-                        h.update(chunk)
-                        f.write(chunk)
-                        beat()
-            if size == 0:
-                raise RuntimeError("empty response")
-            return h.hexdigest(), size
+            return _fetch_once(url, dest, beat)
+        except Refused:
+            raise
         except Exception as e:  # noqa: BLE001 - retried, then reported
             last = e
             if attempt < ATTEMPTS:
