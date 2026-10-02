@@ -37,6 +37,10 @@ alter table farm_render_jobs add column if not exists priority int not null defa
 drop index if exists farm_render_jobs_status_idx;
 create index if not exists farm_render_jobs_status_idx on farm_render_jobs (status, priority, created_at);
 
+-- A video job's still (outputs/<id>.jpg, ~40 KB), written by the worker from the
+-- file it already has, so no viewer opens the master just to draw a tile.
+alter table farm_render_jobs add column if not exists poster_path text;
+
 -- Engines a worker may only claim when it advertises the capability of the
 -- same name. Added 2026-09-11 for the aftereffects engine, which was retired
 -- on 2026-09-12; the table and the p_capabilities parameter stay (harmless,

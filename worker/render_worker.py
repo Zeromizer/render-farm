@@ -48,6 +48,7 @@ import time
 import assets
 import config
 import db
+from still import make_still
 import fetch_lane
 import git_cache
 import proc
@@ -144,10 +145,21 @@ def run_job(job):
         remote = db.upload_output(jid, out_local, ext, content_type)
         signed = db.create_signed_url(remote)
 
+        # The video's still, from the file already on this disk (worker/still.py):
+        # the platform shows it instead of opening the master. Best effort.
+        poster = None
+        still_local = make_still(out_local, ext, os.path.join(work_dir, "still.jpg"), log)
+        if still_local:
+            try:
+                poster = db.upload_file(f"outputs/{jid}.jpg", still_local, "image/jpeg")
+            except Exception as e:
+                log(f"still: upload failed ({str(e)[:160]})")
+
     db.update_job(jid, {
         "status": "done",
         "output_path": remote,
         "output_ext": ext,
+        **({"poster_path": poster} if poster else {}),
         "signed_url": signed,
         "signed_url_expires_at": db.now_iso(),  # informational; MCP re-mints anyway
         "progress": 100,
