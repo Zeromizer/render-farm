@@ -11,10 +11,14 @@ like worker/fetch_lane.py; the loop stops using claim_farm_job() so it never
 takes a light job. Stale reclaim is unchanged: a job whose lane died goes back
 to pending and is taken again.
 
-Admission: a light job starts only while the box has room, so it cannot push an
-H3 run into the 2026-09-14 commit-limit wedge (WinError 1455): available RAM,
-commit headroom and free VRAM all above the LIGHT_LANE_MIN_* settings. When
-there is no room the lane waits and the job stays pending.
+Admission: while the render loop is running a job, a light job starts only if
+the box has room beside it, so it cannot push that job into the 2026-09-14
+commit-limit wedge (WinError 1455): available RAM, commit headroom and free
+VRAM all above the LIGHT_LANE_MIN_* settings. While the loop is idle a light
+job always starts, exactly as it would have in the single loop: the box idles
+at ~14.5 GB available (WSL, browser, an idle ComfyUI), so gating the idle case
+on 16 GB starved every light job (2026-10-05, three planar_patch/hyperframes
+jobs sat pending for 18 min).
 
 Pause during video_gen: measured 2026-10-05 (768p 5 s t2v, job 3b475951), H3
 pins available RAM at ~2 GB and free VRAM at ~0.5 GB from ~30 s in to the end,
@@ -52,7 +56,7 @@ main_engine = [None]
 _stop = threading.Event()
 _idle = threading.Event()
 _idle.set()
-_waiting_logged = [False]
+_waiting_logged = [None]   # the reason last logged, so each new one is logged once
 
 
 def _commit_free_gb():
@@ -82,6 +86,8 @@ def _free_vram_mib():
 
 def room():
     """(ok, reason): whether the box has room to start a light job now."""
+    if main_engine[0] is None:
+        return True, ""
     if main_engine[0] in PAUSE_DURING:
         return False, f"render loop is running {main_engine[0]}"
     avail = psutil.virtual_memory().available / (1 << 30)
@@ -118,14 +124,14 @@ def _loop(process_job, restart_flag, log):
                 continue
             ok, why = room()
             if not ok:
-                if not _waiting_logged[0]:
+                if _waiting_logged[0] != why.split(" ")[0:2]:
                     log(f"waiting for room: {why}")
-                    _waiting_logged[0] = True
+                    _waiting_logged[0] = why.split(" ")[0:2]
                 _stop.wait(POLL_SECONDS * 5)
                 continue
             if _waiting_logged[0]:
                 log("room again, claiming")
-                _waiting_logged[0] = False
+                _waiting_logged[0] = None
             _idle.clear()
             if _stop.is_set():  # drain() started after the top-of-loop check
                 _idle.set()
