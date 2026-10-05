@@ -53,6 +53,14 @@ VIDEO_GEN_RAM_WAIT_MAX_MINUTES = int(os.environ.get("VIDEO_GEN_RAM_WAIT_MAX_MINU
 COMFYUI_RECYCLE_ABOVE_GB = float(os.environ.get("COMFYUI_RECYCLE_ABOVE_GB", "8"))
 VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES = int(os.environ.get("VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES", "60"))
 
+# --- light lane (worker/light_lane.py): CPU engines beside the render loop ---
+LIGHT_LANE = os.environ.get("LIGHT_LANE", "0") in ("1", "true", "yes")
+# A light job starts only while all three hold, so it cannot push a running H3
+# job into the commit-limit wedge (WinError 1455, 2026-09-14).
+LIGHT_LANE_MIN_AVAIL_RAM_GB = float(os.environ.get("LIGHT_LANE_MIN_AVAIL_RAM_GB", "16"))
+LIGHT_LANE_MIN_COMMIT_GB = float(os.environ.get("LIGHT_LANE_MIN_COMMIT_GB", "8"))
+LIGHT_LANE_MIN_FREE_VRAM_MIB = int(os.environ.get("LIGHT_LANE_MIN_FREE_VRAM_MIB", "2048"))
+
 for _d in (REPOS_DIR, WORK_DIR, ASSETS_DIR):
     os.makedirs(_d, exist_ok=True)
 

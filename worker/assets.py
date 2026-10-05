@@ -21,6 +21,7 @@ import httpx
 
 import config
 import db
+import locks
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -39,6 +40,12 @@ def _safe_dest(repo, rel):
 
 def _download(sha256, size, log):
     """Ensure ASSETS_DIR/<sha256> exists; return its path."""
+    # Both job lanes may fetch the same asset; they must not share a .part file.
+    with locks.named(f"asset:{sha256}"):
+        return _download_unlocked(sha256, size, log)
+
+
+def _download_unlocked(sha256, size, log):
     cache_path = os.path.join(config.ASSETS_DIR, sha256)
     if os.path.exists(cache_path):
         os.utime(cache_path)  # mtime = last use, drives eviction

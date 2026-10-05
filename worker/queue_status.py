@@ -12,13 +12,18 @@ ETAs: a running job's remaining time is projected from its elapsed time and
 progress (a flat per-engine guess made a 30-min matte at 90% look 18 s from
 done). Pending jobs use videogen.estimate for video_gen and, for the other
 engines, the median runtime of their recent finished jobs.
+
+With the light lane on (worker/light_lane.py) its engines form their own
+queue: a hyperframes job waits only behind light jobs, never behind an H3.
 """
 import statistics
 import time
 from datetime import datetime
 
+import config
 import db
 from fetch_lane import LANE_ENGINES
+from light_lane import LIGHT_ENGINES
 from videogen import estimate
 
 OTHER_ENGINE_SECONDS = 180.0
@@ -79,6 +84,22 @@ def annotate(log):
             .in_("status", ["pending", "processing"]).order("priority").order("created_at").execute().data)
     # The fetch lane's jobs never wait in this queue (worker/fetch_lane.py).
     rows = [r for r in rows if r["engine"] not in LANE_ENGINES]
+    if config.LIGHT_LANE:
+        queues = [[r for r in rows if r["engine"] in LIGHT_ENGINES],
+                  [r for r in rows if r["engine"] not in LIGHT_ENGINES]]
+    else:
+        queues = [rows]
+    n = sum(_annotate_queue(q, log) for q in queues)
+    # forget finished ids
+    live = {r["id"] for r in rows}
+    for k in list(_last):
+        if k not in live:
+            _last.pop(k, None)
+    return n
+
+
+def _annotate_queue(rows, log):
+    """One claimer's queue: rows in claim order, its running job(s) ahead of them."""
     running = [r for r in rows if r["status"] == "processing"]
     pending = [r for r in rows if r["status"] == "pending" and not r.get("cancel_requested")]
     wait = sum(_remaining(r) for r in running)
@@ -95,9 +116,4 @@ def annotate(log):
             except Exception as e:  # noqa: BLE001
                 log(f"queue annotate {r['id'][:8]}: {str(e)[:120]}")
         wait += _seconds(r)
-    # forget finished ids
-    live = {r["id"] for r in rows}
-    for k in list(_last):
-        if k not in live:
-            _last.pop(k, None)
     return len(pending)

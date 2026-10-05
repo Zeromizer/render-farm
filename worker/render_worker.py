@@ -4,9 +4,11 @@ GPU (Remotion / Blender), uploads results to the 'renders' bucket.
 pythonw-safe (tees output to worker.log). Crash-only: uncaught errors exit the
 process and the supervisor restarts it; stale jobs are reclaimed via RPC.
 """
+import contextlib
 import os
 import shutil
 import sys
+import threading
 import traceback
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -51,9 +53,12 @@ import db
 from still import make_still
 import fetch_lane
 import git_cache
+import light_lane
+import locks
 import proc
 import venvs
 from heartbeat import Heartbeat
+from job_stats import JobStats
 import queue_status
 from runners import (asset_check, audio_gen, blender, footage, frame_extract, hyperframes, matte,
                      planar_patch, python_script, reference_extract, remotion, video_gen,
@@ -109,7 +114,7 @@ def log(msg):
     print(f"[{db.now_iso()}] {msg}", flush=True)
 
 
-def run_job(job):
+def run_job(job, log=log):
     jid = job["id"]
     engine = job["engine"]
     runner = RUNNERS.get(engine)
@@ -123,23 +128,28 @@ def run_job(job):
     def cancel_check():
         return db.cancel_requested(jid)
 
+    # A checkout is shared by every job on that repo, in either lane
+    # (worker/light_lane.py): hold it from checkout until the render is done.
+    repo_lock = (contextlib.nullcontext() if engine in NO_CLONE
+                 else locks.named(f"repo:{git_cache.repo_dir(job['repo_url'])}"))
     with Heartbeat(jid) as hb:
-        if engine in NO_CLONE:
-            db.set_phase(jid, "downloading", 1)
-            repo = None
-        else:
-            db.set_phase(jid, "cloning", 1)
-            repo = git_cache.checkout(job["repo_url"], job.get("git_ref") or "main", log)
+        with repo_lock:
+            if engine in NO_CLONE:
+                db.set_phase(jid, "downloading", 1)
+                repo = None
+            else:
+                db.set_phase(jid, "cloning", 1)
+                repo = git_cache.checkout(job["repo_url"], job.get("git_ref") or "main", log)
 
-            manifest = (job.get("params") or {}).get("assets")
-            if manifest:
-                db.set_phase(jid, "syncing_assets", 2)
-                assets.ensure(manifest, repo, log)
+                manifest = (job.get("params") or {}).get("assets")
+                if manifest:
+                    db.set_phase(jid, "syncing_assets", 2)
+                    assets.ensure(manifest, repo, log)
 
-        db.set_phase(jid, "rendering", 2)
-        out_local, ext, content_type = runner(
-            job, repo, work_dir, hb, log, cancel_check, timeout_seconds
-        )
+            db.set_phase(jid, "rendering", 2)
+            out_local, ext, content_type = runner(
+                job, repo, work_dir, hb, log, cancel_check, timeout_seconds
+            )
 
         db.set_phase(jid, "uploading", 99)
         remote = db.upload_output(jid, out_local, ext, content_type)
@@ -203,6 +213,17 @@ def main():
     except Exception as e:
         log(f"patch library index not published (continuing): {str(e)[:160]}")
 
+    light = None
+    heavy_exclude = set()
+    if config.LIGHT_LANE:
+        try:
+            heavy_exclude = light_lane.LIGHT_ENGINES | db.gated_engines()
+            light = light_lane.start(process_job, RESTART_FLAG,
+                                     lambda m: log(f"[light] {m}"))
+        except Exception as e:  # noqa: BLE001 - without the lane the loop takes every engine
+            heavy_exclude = set()
+            log(f"light lane not started (continuing single-lane): {str(e)[:160]}")
+
     claim_err_logged = False
     polls = 0
     while True:
@@ -219,11 +240,15 @@ def main():
                 log(f"queue annotate error (ignored): {str(e)[:120]}")
         if os.path.exists(RESTART_FLAG):
             # Clean deploy: exit between jobs, the supervisor respawns us on the new code.
+            if light is not None:
+                light_lane.drain(log)
             os.remove(RESTART_FLAG)
             log("restart requested: exiting between jobs")
             sys.exit(0)
         try:
-            job = db.claim_job()
+            # With the light lane on, this loop leaves its engines to it; the RPC
+            # cannot filter by engine, so it claims with a conditional update.
+            job = db.claim_conditional(exclude=heavy_exclude) if light is not None else db.claim_job()
             claim_err_logged = False
         except Exception as e:
             if not claim_err_logged:
@@ -234,29 +259,45 @@ def main():
         if not job:
             time.sleep(config.POLL_SECONDS)
             continue
+        process_job(job, log)
 
-        jid = job["id"]
-        log(f"claimed {jid} engine={job['engine']} repo={job['repo_url']}@{job.get('git_ref')}")
+
+def process_job(job, log):
+    """Run one claimed job to its final status. Called by this loop and by the
+    light lane's thread (worker/light_lane.py), each with its own log."""
+    jid = job["id"]
+    lane = "light" if threading.current_thread().name == "light-lane" else "main"
+    log(f"claimed {jid} engine={job['engine']} repo={job['repo_url']}@{job.get('git_ref')}")
+    if lane == "main":
+        # Tells the light lane what is running here; it stays off the box
+        # during engines that need all of it (light_lane.PAUSE_DURING).
+        light_lane.main_engine[0] = job["engine"]
+        if config.LIGHT_LANE and job["engine"] in light_lane.PAUSE_DURING:
+            light_lane.wait_for_light(log)
+    try:
+        # RAM/VRAM/GPU/CPU this job cost, to the log and job_stats.jsonl
+        with JobStats(jid, job["engine"], log, lane=lane):
+            remote = run_job(job, log)
+        log(f"done {jid} -> {remote}")
+    except proc.Canceled:
+        db.update_job(jid, {"status": "canceled", "phase": "canceled",
+                            "completed_at": db.now_iso()})
+        log(f"canceled {jid}")
+    except Exception as e:
+        traceback.print_exc()
+        db.update_job(jid, {"status": "failed", "error": str(e)[:2000],
+                            "phase": "failed", "completed_at": db.now_iso()})
+        log(f"failed {jid}: {str(e)[:300]}")
+    # Here, between jobs, nothing of ours is using ComfyUI, so restarting it
+    # cannot fail a job (2026-09-27: a restart from outside the worker did).
+    # ComfyUI engines are never light-lane engines, so this is still the loop.
+    if job["engine"] in COMFY_ENGINES:
         try:
-            remote = run_job(job)
-            log(f"done {jid} -> {remote}")
-        except proc.Canceled:
-            db.update_job(jid, {"status": "canceled", "phase": "canceled",
-                                "completed_at": db.now_iso()})
-            log(f"canceled {jid}")
-        except Exception as e:
-            traceback.print_exc()
-            db.update_job(jid, {"status": "failed", "error": str(e)[:2000],
-                                "phase": "failed", "completed_at": db.now_iso()})
-            log(f"failed {jid}: {str(e)[:300]}")
-        # Here, between jobs, nothing of ours is using ComfyUI, so restarting it
-        # cannot fail a job (2026-09-27: a restart from outside the worker did).
-        if job["engine"] in COMFY_ENGINES:
-            try:
-                comfy_client.recycle_if_bloated(log)
-            except Exception as e:  # noqa: BLE001 - housekeeping must not stop the loop
-                log(f"comfyui recycle error (ignored): {str(e)[:200]}")
-
+            comfy_client.recycle_if_bloated(log)
+        except Exception as e:  # noqa: BLE001 - housekeeping must not stop the loop
+            log(f"comfyui recycle error (ignored): {str(e)[:200]}")
+    if lane == "main":
+        light_lane.main_engine[0] = None
 
 if __name__ == "__main__":
     main()
