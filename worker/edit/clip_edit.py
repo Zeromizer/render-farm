@@ -337,19 +337,26 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
         if k2 in vmask and vmask[k2] != "full" and all(vmask.get(g) and vmask[g] != "full" for g in group)                 and abs(area(k2) - area(k)) > 0.15 * max(area(k), area(k2)) and group[-1] < n:
             targets.extend(group)
     targets = sorted(set(targets))
-    by_src = {}
-    for t in targets:
-        by_src.setdefault(min(src, key=lambda a: abs(a - t)), []).append(t)
+    # carry only what was cleaned: outside its box the source frame is plain footage, and the
+    # background's motion does not move the subject (it dragged the hero car's own front into
+    # the box). Each target takes the source whose cleaned box covers most of its own box.
+    motion = {a: _bg_motion(frames, a, targets, vmask) for a in src}
     pasted = {}
-    ones = np.full((fh, fw), 255, np.uint8)
-    for a, ts in by_src.items():
-        H = _bg_motion(frames, a, ts, vmask)
-        for t in ts:
+    for t in targets:
+        box_t = _box_mask(vmask[t], fh, fw)
+        best = None
+        for a in src:
+            cleaned = _box_mask(vmask[a], fh, fw)
             if t == a:
-                pasted[t] = (src[a], ones)
-            else:   # where the camera has moved past the cleaned frame's edge there is nothing to carry
-                pasted[t] = (cv2.warpPerspective(src[a], H[t], (fw, fh), borderMode=cv2.BORDER_REPLICATE),
-                             cv2.warpPerspective(ones, H[t], (fw, fh), flags=cv2.INTER_NEAREST))
+                cand = (src[a], cleaned)
+            else:
+                Hm = motion[a][t]
+                cand = (cv2.warpPerspective(src[a], Hm, (fw, fh), borderMode=cv2.BORDER_REPLICATE),
+                        cv2.warpPerspective(cleaned, Hm, (fw, fh), flags=cv2.INTER_NEAREST))
+            cov = int(cv2.countNonZero(cv2.bitwise_and(cand[1], box_t)))
+            if best is None or cov > best[0]:
+                best = (cov, cand)
+        pasted[t] = best[1]
     out = {}
     for a, (img, valid) in pasted.items():
         box = _box_mask(vmask[a], fh, fw)

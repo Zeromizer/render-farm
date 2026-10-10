@@ -148,14 +148,16 @@ class RoundTripTest(unittest.TestCase):
     def test_region_anchor(self):
         # the cleaned frame is the plain background, shifted 3 px the way an image model's
         # redraw can be; it must line up, land in the box on its frames, and those frames
-        # must go to H3 unmasked but for a band at the box edge
+        # must go to H3 unmasked but for a band at the box edge (a moving object on a still
+        # camera needs a cleaned frame per stretch: each carries only its own cleaned box)
         rng = np.random.default_rng(3)
         bg = cv2.GaussianBlur(rng.integers(0, 255, (180, 320, 3), dtype=np.uint8), (0, 0), 2)
         img = os.path.join(self.d, "clean.png")
         cv2.imwrite(img, np.roll(bg, 3, axis=1))
         keys = [{"frame": 0, "box": [40, 70, 90, 110]}, {"frame": 40, "box": [120, 70, 170, 110]}]
         rep = self._run("anchor", {"mode": "region", "clip": self.a, "regions": [{"keys": keys}],
-                                   "anchors": [{"frame": 20, "image": img}], "anchor_every": 10}, 41)
+                                   "anchors": [{"frame": f, "image": img} for f in (0, 17, 34)],
+                                   "anchor_every": 10}, 41)
         self.assertEqual(rep["warnings"], [])
         w = os.path.join(self.d, "anchor")
         plan = json.load(open(os.path.join(w, "plan.json")))
