@@ -225,6 +225,20 @@ def _read_masks(path, n=None):
     return out
 
 
+def _tracks_meet(ma, mb, gap=3, iou=0.3):
+    """True when two tracked-mask sequences are the same object: somewhere within `gap`
+    frames of each other their masks overlap by `iou`."""
+    sa = [i for i, m in enumerate(ma) if m.sum() >= 16]
+    sb = set(i for i, m in enumerate(mb) if m.sum() >= 16)
+    for i in sa[::2]:
+        for j in range(i - gap, i + gap + 1):
+            if j in sb:
+                inter = float((ma[i] & mb[j]).sum())
+                if inter and inter / float((ma[i] | mb[j]).sum()) >= iou:
+                    return True
+    return False
+
+
 def _object_masks(r, fh, fw, n, lo, hi):
     """A tracked-object region: pick, among the objects SAM 3 tracked for the noun, the one
     under the agent's hint (a box or point at a time), and return {frame: (bounding box with
@@ -250,10 +264,21 @@ def _object_masks(r, fh, fw, n, lo, hi):
     def score(ms):
         near = [ms[j] for j in range(max(0, a - 3), min(len(ms), a + 4))]
         return max(float((m & hint).sum()) for m in near) if near else 0.0
-    best = max(cands, key=score)
-    if score(best) <= 0:
+    first = max(range(len(cands)), key=lambda c: score(cands[c]))
+    if score(cands[first]) <= 0:
         raise RuntimeError(f"none of the tracked {r.get('object', 'objects')} is under the hint at frame {a}; "
                            f"draw the hint box on the object at a time it is visible")
+    # SAM re-detects every few frames and can hand the same object a new track id (one man was
+    # tracks 0 and 3); join every track that overlaps the chosen one within a few frames
+    group, todo = {first}, [first]
+    while todo:
+        c = todo.pop()
+        for d in range(len(cands)):
+            if d not in group and _tracks_meet(cands[c], cands[d]):
+                group.add(d)
+                todo.append(d)
+    best = [np.logical_or.reduce([cands[c][i] if i < len(cands[c]) else np.zeros((fh, fw), bool) for c in group])
+            for i in range(max(len(cands[c]) for c in group))]
     out = {}
     for i in range(max(lo, r["start_frame"]), min(hi, r["end_frame"], len(best) - 1) + 1):
         m = best[i]

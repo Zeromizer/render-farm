@@ -135,7 +135,7 @@ def run_graph_all(graph, dest_dir, timeout_s=1800):
     raise RuntimeError(f"timed out after {timeout_s}s")
 
 
-def track_objects(t, spec, work):
+def track_objects(t, spec, work, out=None):
     """Object regions: SAM 3.1 per-object mask videos, as the runner does."""
     import re
     regions = spec.get("regions") or []
@@ -151,6 +151,9 @@ def track_objects(t, spec, work):
         paths = run_graph_all(graphs_sam3.build(src, noun, f"clip_edit_try/{t['name']}_sam{k}"), d)
         found[noun] = sorted(paths, key=lambda q: int(re.search(r"_obj(\d+)", q).group(1)))
         log(f"   sam {noun!r}: {len(paths)} objects in {time.monotonic() - t0:.0f}s")
+        if out:   # the per-object mask videos, to see what SAM tracked
+            for q in paths:
+                shutil.copy(q, os.path.join(out, f"sam{k}_" + re.search(r"_obj\d+", q).group(0)[1:] + ".mp4"))
     httpx.post(COMFY + "/free", json={"unload_models": True, "free_memory": True}, timeout=60)
     for r in regions:
         if r.get("object"):
@@ -196,7 +199,7 @@ def run_test(t, out_root, work_root):
     spec["regions"] = json.loads(json.dumps(spec.get("regions") or [])) or spec.get("regions")
     if not spec["regions"]:
         spec.pop("regions")
-    track_objects(t, spec, work)
+    track_objects(t, spec, work, out)
     if t.get("krea_clean"):
         spec["anchors"] = krea_clean(t, spec, work, out)
     log(f"== {name}: prep {json.dumps({k: v for k, v in spec.items() if k not in ('clip', 'clip_b')})[:400]}")

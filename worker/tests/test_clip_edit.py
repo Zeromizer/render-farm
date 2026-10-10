@@ -250,6 +250,18 @@ class RoundTripTest(unittest.TestCase):
         mb, _ = CE.L.read_clip(os.path.join(self.d, "object_box", "gen_mask.mp4"))
         gb = cv2.resize(mb[10 - pb["window"][0]], (320, 180), interpolation=cv2.INTER_NEAREST)[..., 1]
         self.assertGreater(int(gb[72 + 3, 62 + 6]), 127)
+        # SAM handed the same object a new track id at frame 18: the hint on the later track
+        # still edits frame 5
+        blank = np.zeros_like(m0[0])
+        pa, pb2 = os.path.join(w, "frag_a.mp4"), os.path.join(w, "frag_b.mp4")
+        CE.L.write_clip(pa, [m if i <= 20 else blank for i, m in enumerate(m0)], 24, lossless=True)
+        CE.L.write_clip(pb2, [m if i >= 18 else blank for i, m in enumerate(m0)], 24, lossless=True)
+        wf = os.path.join(self.d, "object_frag")
+        os.makedirs(wf, exist_ok=True)
+        CE.prep({"mode": "region", "clip": self.a, "crop": "full", "work_dir": wf,
+                 "regions": [{"object": "card", "object_masks": [p1, pa, pb2], "point": [100, 90], "frame": 30}]})
+        pf = json.load(open(os.path.join(wf, "plan.json")))
+        self.assertIn("5", pf["vmask"])
         with self.assertRaises(RuntimeError):      # a hint on nothing tracked
             CE.prep({"mode": "region", "clip": self.a, "work_dir": os.path.join(self.d, "object_bad"),
                      "regions": [{"object": "card", "object_masks": [p0], "box": [0, 150, 20, 170], "frame": 5}]})
