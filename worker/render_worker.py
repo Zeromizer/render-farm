@@ -60,14 +60,14 @@ import venvs
 from heartbeat import Heartbeat
 from job_stats import JobStats
 import queue_status
-from runners import (asset_check, audio_gen, blender, footage, frame_extract, hyperframes, matte,
-                     planar_patch, python_script, reference_extract, remotion, video_gen,
+from runners import (asset_check, audio_gen, blender, footage, frame_extract, hyperframes, lettering_fix,
+                     matte, planar_patch, python_script, reference_extract, remotion, video_gen,
                      video_split, voiceover)
 from videogen import comfy_client
 
 # Engines whose runners drive the headless ComfyUI; after one of these the
 # worker checks ComfyUI's host RAM (comfy_client.recycle_if_bloated).
-COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover"}
+COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix"}
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            "python": python_script.run,
@@ -91,6 +91,10 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # Tracked corner-pin of clean artwork (plate, badge) onto a finished
            # clip: fixes the text H3 gets wrong without regenerating. CPU only.
            "planar_patch": planar_patch.run,
+           # Correct plates/badges by letting H3 propagate the REAL lettering from a
+           # reference photo through the clip (masked inpaint, ComfyUI-vlo nodes).
+           # Reads as the model's own pixels where a corner pin reads as pasted on.
+           "lettering_fix": lettering_fix.run,
            # An instrumental music bed from a description (YuE2 + instrumental
            # LoRA) in the same headless ComfyUI video_gen uses. Feeds the
            # platform's music library; a minute or two per bed.
@@ -107,7 +111,7 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
 # Engines that work on a storage object, not a repo — the clone is skipped and
 # repo_url is a "-" placeholder (the column is NOT NULL).
 NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split",
-            "matte", "video_gen", "planar_patch", "audio_gen", "footage", "voiceover"}
+            "matte", "video_gen", "planar_patch", "audio_gen", "footage", "voiceover", "lettering_fix"}
 
 
 def log(msg):

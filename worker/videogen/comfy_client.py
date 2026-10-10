@@ -130,6 +130,11 @@ def ensure_server(log, wait_seconds=240):
                      f"(see {os.path.join(config.COMFYUI_DIR, 'comfyui-headless.log')})")
 
 
+def object_info():
+    """GET /object_info: every node class the server has loaded (used to check custom packs)."""
+    return httpx.get(_url("/object_info"), timeout=60).json()
+
+
 def upload_input(local_path, subfolder="video_gen"):
     """Put a file in ComfyUI/input/<subfolder>/ and return the name a Load* node wants."""
     with open(local_path, "rb") as f:
