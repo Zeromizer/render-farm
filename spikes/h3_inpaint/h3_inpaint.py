@@ -19,7 +19,7 @@ job JSON it:
      feathered mask, so every pixel outside the mask is untouched,
   5. writes the patched clip, a side-by-side compare, and report.json.
 
-Usage: python h3_inpaint.py <job.json> <out_dir>
+Usage: python h3_inpaint.py <job.json> <out_dir> [source_override]
 Needs ComfyUI-vlo (8a7092a) in C:\\ComfyUI\\custom_nodes.
 """
 import glob
@@ -478,7 +478,8 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     ensure_comfy()
     require_nodes()
-    src_path = job["source"]
+    # optional 3rd arg: absolute source path already on the render PC
+    src_path = sys.argv[3] if len(sys.argv) > 3 else job["source"]
     src_frames = read_frames(src_path)
     log(f"source {src_path}: {len(src_frames)} frames {src_frames[0].shape[1]}x{src_frames[0].shape[0]}")
     report = []
