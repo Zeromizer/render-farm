@@ -120,13 +120,13 @@ def free():
         pass
 
 
-def sam_graph(image, noun, prefix):
+def sam_graph(image, noun, prefix, threshold=0.4):
     return {
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": SAM}},
         "2": {"class_type": "LoadImage", "inputs": {"image": image}},
         "3": {"class_type": "CLIPTextEncode", "inputs": {"text": noun, "clip": ["1", 1]}},
         "4": {"class_type": "SAM3_Detect", "inputs": {"model": ["1", 0], "image": ["2", 0], "conditioning": ["3", 0],
-                                                      "threshold": 0.4, "refine_iterations": 2, "individual_masks": False}},
+                                                      "threshold": threshold, "refine_iterations": 2, "individual_masks": False}},
         "5": {"class_type": "MaskToImage", "inputs": {"mask": ["4", 0]}},
         "6": {"class_type": "SaveImage", "inputs": {"images": ["5", 0], "filename_prefix": prefix}},
     }
@@ -255,6 +255,26 @@ def pick_cars(mask, cars, w0, h0):
     return out
 
 
+def car_masks_for(still_p, mask_dir, cars, default_noun, w0, h0):
+    """Each car's own SAM pass (its noun: "white SUV", "red sedan"...), then the piece under its
+    point. One pass for all cars missed the weaker one (only the best-scoring car came back)."""
+    import cv2
+    import numpy as np
+    si = upload(still_p)
+    masks = []
+    for i, c in enumerate(cars):
+        dest = os.path.join(mask_dir, f"mask_{i}.png")
+        run(sam_graph(si, c.get("noun", default_noun), f"route_try/sam{i}", float(c.get("threshold", 0.3))), dest, ".png")
+        m = cv2.resize(cv2.imread(dest, cv2.IMREAD_GRAYSCALE), (w0, h0), interpolation=cv2.INTER_NEAREST)
+        masks.append(pick_cars(m, [c], w0, h0)[0])
+    for i in range(len(masks)):
+        for j in range(i):
+            inter = ((masks[i] > 0) & (masks[j] > 0)).sum()
+            if inter > 0.5 * min((masks[i] > 0).sum(), (masks[j] > 0).sum()):
+                raise RuntimeError(f"cars {j} and {i} found the same object; give them distinct nouns or points")
+    return masks
+
+
 def build_reference(still, plate, car_masks, cars, n, w, h, out):
     """Cut-and-drag clip: each car moved along its route over the clean plate, turned to face
     its direction of travel, and the mask of where they all are."""
@@ -357,11 +377,19 @@ def main():
     H0, W0 = still.shape[:2]
     w, h, n = int(job.get("width", 832)), int(job.get("height", 480)), int(job.get("frames", 121))
     try:
-        # 1. car mask
-        si = upload(still_p)
-        t = run(sam_graph(si, job.get("noun", "car"), "route_try/sam"), os.path.join(out, "mask.png"), ".png")
-        mask = cv2.imread(os.path.join(out, "mask.png"), cv2.IMREAD_GRAYSCALE)
-        mask = cv2.resize(mask, (W0, H0), interpolation=cv2.INTER_NEAREST)
+        # 1. car mask(s)
+        cars = job.get("cars")
+        t0 = time.monotonic()
+        if cars:
+            car_masks = car_masks_for(still_p, out, cars, job.get("noun", "car"), W0, H0)
+            mask = np.max(np.stack(car_masks), axis=0)
+            cv2.imwrite(os.path.join(out, "mask.png"), mask)
+        else:
+            si = upload(still_p)
+            run(sam_graph(si, job.get("noun", "car"), "route_try/sam"), os.path.join(out, "mask.png"), ".png")
+            mask = cv2.imread(os.path.join(out, "mask.png"), cv2.IMREAD_GRAYSCALE)
+            mask = cv2.resize(mask, (W0, H0), interpolation=cv2.INTER_NEAREST)
+        t = time.monotonic() - t0
         log(f"sam: {t:.0f}s, car covers {float((mask > 127).mean()):.3f}")
         free()
         # 2. clean plate: Krea redraws the car's area (plus room for its shadow)
@@ -378,10 +406,7 @@ def main():
         log(f"plate: {t:.0f}s")
         free()
         # 3. cut-and-drag reference
-        cars = job.get("cars")
-        if cars:
-            car_masks = pick_cars(mask, cars, W0, H0)
-        else:
+        if not cars:
             cars = [{"route": job["route"], "hold": int(job.get("hold", 6)), "ease": job.get("ease", "inout")}]
             car_masks = [mask]
         first, frames, masks = build_reference(still, plate, car_masks, cars, n, w, h, out)
