@@ -256,16 +256,24 @@ def prep(spec):
         # follow-crop: a 16:9 window on the union of the boxes, centred and sized per frame
         # (it zooms with the car, so H3 sees the area at a steady size), smoothed so H3
         # sees a steady camera
-        W, Hc = canvas_for(16 / 9, length, CROP_AREA, 10 ** 9)
-        cen, size = [], []
+        unions = {}
         for i in win:
             bs = vmask.get(i)
-            if not bs:
+            if bs:
+                a = np.array(bs)
+                unions[i] = [a[:, 0].min(), a[:, 1].min(), a[:, 2].max(), a[:, 3].max()]
+        # the window takes the area's shape (a tall area in a portrait clip gets a portrait
+        # canvas), within H3-friendly 1:2 .. 2:1 and the frame's own shape
+        asp = float(np.median([(u[2] - u[0]) / max(1.0, u[3] - u[1]) for u in unions.values()]))
+        asp = min(max(asp, 0.5, min(1.0, fw / fh) * 0.5), 2.0)
+        W, Hc = canvas_for(asp, length, CROP_AREA, 10 ** 9)
+        cen, size = [], []
+        for i in win:
+            u = unions.get(i)
+            if u is None:
                 cen.append(None)
                 size.append(None)
                 continue
-            a = np.array(bs)
-            u = [a[:, 0].min(), a[:, 1].min(), a[:, 2].max(), a[:, 3].max()]
             cen.append(((u[0] + u[2]) / 2, (u[1] + u[3]) / 2))
             size.append(max((u[2] - u[0]) * 1.6, (u[3] - u[1]) * 1.6 * W / Hc, 200.0))
         known = [k for k, c in enumerate(cen) if c is not None]
