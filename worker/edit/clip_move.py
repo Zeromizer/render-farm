@@ -329,20 +329,24 @@ def _spline(route_px):
     return dense, seg, np.concatenate([[0], np.cumsum(seg)])
 
 
-def poses(route_px, n, start, hold, arrive, ease="inout"):
-    """(x, y, heading) per frame: still until start + hold, along the spline by arc length
-    (smoothstep ease) to arrive at `arrive`, then still at the end. Frames before start get
-    the first point (the caller does not use them)."""
+def poses(route_px, n, start, hold, arrive, ease="inout", v0=0.0):
+    """(x, y, heading) per frame: still until start + hold, along the spline by arc length to
+    arrive at `arrive`, then still at the end. ease inout: from v0 px/frame (0 = from rest:
+    smoothstep; a car already driving keeps its speed) easing to a stop; linear: constant
+    speed. Frames before start get the first point (the caller does not use them)."""
     dense, seg, s = _spline(route_px)
     total = s[-1]
     go = start + hold
     moving = max(1, arrive - go)
+    m0 = min(max(0.0, v0) * moving, 3.0 * total)  # Hermite slope in u; <= 3x the mean stays monotone
     out = []
     for f in range(n):
         u = min(1.0, max(0.0, (f - go) / moving))
         if ease == "inout":
-            u = u * u * (3 - 2 * u)
-        out.append(_along(dense, s, seg, u * total))
+            d = (3 * u * u - 2 * u ** 3) * total + (u ** 3 - 2 * u * u + u) * m0
+        else:
+            d = u * total
+        out.append(_along(dense, s, seg, d))
     return out
 
 
@@ -368,15 +372,16 @@ def _pchip(xk, yk, x, m0=None, m1=None):
     return h00 * yk[k] + h10 * h[k] * m[k] + h01 * yk[k + 1] + h11 * h[k] * m[k + 1]
 
 
-def poses_timed(route_px, key_frames, n, go, ease="inout"):
+def poses_timed(route_px, key_frames, n, go, ease="inout", v0=0.0):
     """(x, y, heading) per frame for a timed route: route_px[0] is the car at the start (it
     leaves at frame go), route_px[i] is reached at key_frames[i - 1]. Distance along the
-    spline follows a monotone curve through those times (from rest with ease inout, stopping
-    at the last point), still before go and after the last key."""
+    spline follows a monotone curve through those times (with ease inout from v0 px/frame -
+    0 = from rest - stopping at the last point), still before go and after the last key."""
     dense, seg, s = _spline(route_px)
     xs = [float(go)] + [float(k) for k in key_frames]
     ys = [0.0] + [float(s[min(i * PER, len(s) - 1)]) for i in range(1, len(route_px))]
-    slow = 0.0 if ease == "inout" else None
+    first = (ys[1] - ys[0]) / max(1e-6, xs[1] - xs[0])
+    m0, m1 = (min(max(0.0, v0), 3.0 * first), 0.0) if ease == "inout" else (None, None)
     out = []
     for f in range(n):
         if f <= xs[0]:
@@ -384,7 +389,7 @@ def poses_timed(route_px, key_frames, n, go, ease="inout"):
         elif f >= xs[-1]:
             d = ys[-1]
         else:
-            d = float(np.clip(_pchip(xs, ys, f, slow, slow), 0, ys[-1]))
+            d = float(np.clip(_pchip(xs, ys, f, m0, m1), 0, ys[-1]))
         out.append(_along(dense, s, seg, d))
     return out
 
@@ -660,6 +665,15 @@ def _route_keys(spec, n):
     return sorted(keys)
 
 
+def _v0(route, v_dir, speed, driving, hold):
+    """The speed the drag starts at: the car's own, along the way the route starts (none if it
+    turns back on itself, or after a wait)."""
+    if not driving or hold or v_dir is None:
+        return 0.0
+    r_dir = math.atan2(route[1][1] - route[0][1], route[1][0] - route[0][0])
+    return speed * max(0.0, math.cos(r_dir - v_dir))
+
+
 def build(spec):
     work = spec["work_dir"]
     plan = _load(os.path.join(work, "plan.json"))
@@ -727,7 +741,19 @@ def build(spec):
     # pixels). Plain points are 0-1 of the start frame; timed ones 0-1 of the frame at their time.
     m0 = old[s0]
     ang, (cx, cy) = car_axis(m0)
-    hold = max(0, _frame_of(spec, "hold_frames", "hold_s", int(round(0.25 * FPS))))
+    # how fast the car is going at s0, on the ground (px/frame): a car already driving leaves
+    # at that speed with no wait; a parked one waits hold_s (default 0.25 s) and pulls away
+    a_f, b_f = (max(0, s0 - 6), s0) if s0 >= 3 else (s0, min(n - 1, s0 + 6))
+    ca = centroid(tracks[k][a_f]) if tracks[k][a_f].any() else None
+    cb = centroid(tracks[k][b_f]) if tracks[k][b_f].any() else None
+    v_dir, speed = None, 0.0
+    if ca and cb and b_f > a_f:
+        wa, wb = to_world(a_f, *ca), to_world(b_f, *cb)
+        speed = math.hypot(wb[0] - wa[0], wb[1] - wa[1]) / (b_f - a_f)
+        v_dir = math.atan2(wb[1] - wa[1], wb[0] - wa[0])
+    driving = speed > px(0.6, W)
+    log(f"MEASURED car speed at the start: {speed:.1f} px/frame on the ground ({'driving' if driving else 'parked'})")
+    hold = max(0, _frame_of(spec, "hold_frames", "hold_s", 0 if driving else int(round(0.25 * FPS))))
     keys = _route_keys(spec, n)
     if keys is None:
         pts = [(float(x) * W, float(y) * H) for x, y in spec["route"]]
@@ -738,7 +764,7 @@ def build(spec):
         route = [(cx, cy)] + pts
         arrive = _frame_of(spec, "arrive_frame", "arrive_s", n - 1)
         arrive = min(max(arrive, s0 + hold + 6), n - 1)
-        ps = poses(route, length, s0, hold, arrive, spec.get("ease", "inout"))
+        ps = poses(route, length, s0, hold, arrive, spec.get("ease", "inout"), _v0(route, v_dir, speed, driving, hold))
     else:
         wk = [(f, *to_world(f, x * W, y * H)) for f, x, y in keys]
         if wk and wk[0][0] <= s0 + 2 and math.hypot(wk[0][1] - cx, wk[0][2] - cy) < 0.04 * W:
@@ -753,7 +779,8 @@ def build(spec):
             frames_k.append(min(last, length - 1))
         route = [(cx, cy)] + [(x, y) for _, x, y in wk]
         arrive = frames_k[-1]
-        ps = poses_timed(route, frames_k, length, s0 + hold, spec.get("ease", "inout"))
+        ps = poses_timed(route, frames_k, length, s0 + hold, spec.get("ease", "inout"),
+                         _v0(route, v_dir, speed, driving, hold))
     turn = spec.get("turn", True) is not False
     # the nose: the way the car was going in the source (old track after s0, else before),
     # else the way the new route starts

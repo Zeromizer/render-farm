@@ -98,6 +98,16 @@ class GeometryTest(unittest.TestCase):
         self.assertAlmostEqual(ps[16][2], 0.0, delta=0.3)              # heading east first
         self.assertAlmostEqual(ps[39][2], math.pi / 2, delta=0.3)      # then south
 
+    def test_poses_keep_a_driving_car_moving(self):
+        ps = CM.poses([(0, 0), (200, 0)], 60, start=0, hold=0, arrive=50, v0=6.0)
+        self.assertAlmostEqual(ps[1][0] - ps[0][0], 6.0, delta=0.8)    # leaves at its own speed
+        self.assertAlmostEqual(ps[50][0], 200, delta=0.5)              # and still arrives on time
+        self.assertTrue(all(b[0] >= a[0] - 1e-6 for a, b in zip(ps, ps[1:])))
+        rest = CM.poses([(0, 0), (200, 0)], 60, start=0, hold=0, arrive=50)
+        self.assertLess(rest[1][0] - rest[0][0], 0.5)                  # v0 0: from rest, as before
+        pt = CM.poses_timed([(0, 0), (100, 0), (150, 0)], [20, 50], 60, go=0, v0=5.0)
+        self.assertAlmostEqual(pt[1][0] - pt[0][0], 5.0, delta=0.8)
+
     def test_poses_timed_hits_each_point_on_time(self):
         route = [(0, 0), (100, 0), (100, 100), (0, 100)]
         ps = CM.poses_timed(route, [20, 50, 70], 90, go=5)
