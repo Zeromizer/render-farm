@@ -75,7 +75,9 @@ def write_clip(path, frames, fps, audio_from=None, audio_start=0.0, lossless=Fal
     else:
         cmd += ["-c:v", "libx264", "-crf", "14", "-preset", "medium", "-pix_fmt", "yuv420p"]
     if audio_from:
-        cmd += ["-c:a", "aac", "-b:a", "192k", "-shortest"]
+        # -t, not -shortest: a source whose audio ends a hair early must not cost the
+        # clip its last frame (a 158-frame take came back as 157)
+        cmd += ["-c:a", "aac", "-b:a", "192k", "-t", f"{len(frames) / fps:.4f}"]
     cmd += [path]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     for f in frames:
