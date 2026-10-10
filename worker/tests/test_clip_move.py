@@ -184,7 +184,8 @@ class GeometryTest(unittest.TestCase):
         road = np.full((200, 400, 3), (90, 95, 100), np.uint8)
         frame = road.copy()
         frame[80:110, 150:210] = (40, 200, 220)                       # the old car
-        frame[110:124, 160:215] = (36, 38, 40)                        # its hard shadow, road tint
+        frame[110:118, 160:215] = (36, 38, 40)                        # its hard shadow, road tint
+        frame[118:124, 160:215] = (32, 40, 56)                        # and warm, the way H3 draws it
         frame[60:90, 222:262] = (245, 245, 245)                       # a white car right beside it
         m = np.zeros((200, 400), bool)
         m[80:110, 150:210] = True

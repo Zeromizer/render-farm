@@ -594,11 +594,12 @@ def remove_old(frame, old_m, plate, w_ref):
     tight = cv2.dilate(m, _disk(round(6 * sc))) > 0
     base = fr.astype(np.float32)
     plf = pl.astype(np.float32)
-    # the old car's own hard shadow beside its body: darker than the road, same tint. The
-    # LTX plate showed it was kept as "another object" and left a dark crescent (2026-10-11)
+    # the old car's own hard shadow beside its body: clearly darker than the road, about its
+    # tint (H3's shadows run warm: (56,40,32) on (89,87,87) asphalt). Kept as "another object"
+    # it left a dark crescent on the LTX plate (2026-10-11)
     bs, ps = base.sum(2), plf.sum(2)
     tint = np.abs(base / (bs[..., None] + 1) - plf / (ps[..., None] + 1)).max(2)
-    shade = (bs < ps - 45) & (tint < 0.06) & (cv2.dilate(m, _disk(round(36 * sc))) > 0)
+    shade = (bs < ps - 45) & (bs < 0.85 * ps) & (tint < 0.12) & (cv2.dilate(m, _disk(round(36 * sc))) > 0)
     other = (np.abs(base - plf).max(2) > 45) & ~tight & ~shade
     other = cv2.dilate(other.astype(np.uint8), _disk(round(4 * sc))) > 0
     a = cv2.GaussianBlur((reg & ~other).astype(np.float32), (0, 0), 10 * sc)[..., None]
