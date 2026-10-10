@@ -419,6 +419,30 @@ def _gen_audio(take, length):
     return read_audio(take, length / FPS)
 
 
+def motion_residuals(frames, lo, hi, scale=0.25):
+    """Per frame pair in [lo, hi]: what is left after warping frame i+1 onto frame i with
+    optical flow (mean abs grey level, quarter resolution). A fast camera move warps away;
+    a cut, a dissolve between two different shots or a lighting pop does not. Measured on
+    real takes 2026-10-10: smooth extends 2-3x the clip's own median, a headlight pop 11x,
+    bridges that cut 10-60x (a plain frame difference rated a fast push-in as a jump and
+    missed cuts inside the generated stretch)."""
+    g = [cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), None, fx=scale, fy=scale,
+                    interpolation=cv2.INTER_AREA).astype(np.float32) for f in frames[lo:hi + 1]]
+    h, w = g[0].shape
+    gx, gy = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+    out = []
+    for a, b in zip(g, g[1:]):
+        flow = cv2.calcOpticalFlowFarneback(a, b, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        warped = cv2.remap(b, gx + flow[..., 0], gy + flow[..., 1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        out.append(float(np.abs(warped - a)[4:-4, 4:-4].mean()))
+    return out
+
+
+def continuity(jump):
+    """smooth (< 5x the clip's own residual) | pop (a visible flash or jump) | cut (> 20x)."""
+    return "smooth" if jump < 5 else "pop" if jump < 20 else "cut"
+
+
 def compose_take(work, plan, take, out_path):
     """Put one H3 take back on the timeline. Returns (frames, audio, metrics)."""
     tl, _ = L.read_clip(os.path.join(work, "timeline.mp4"))
@@ -482,10 +506,21 @@ def compose_take(work, plan, take, out_path):
         g[w0:w0 + len(gaud)] = gaud[:max(0, min(len(gaud), len(aud) - w0))]
         aud = aud * (1 - on[:, None]) + g * on[:, None]
 
-    # metrics: seam jump vs the clip's own motion, flicker inside the mask
-    diffs = [float(np.abs(out[i + 1].astype(np.int16) - out[i].astype(np.int16)).mean()) for i in range(lo, hi)]
-    med = float(np.median(diffs)) if diffs else 0.0
-    seam_jump = max([diffs[int(s - 0.5) - lo] / max(med, 0.5) for s in seams], default=0.0)
+    # metrics: the largest frame-to-frame jump anywhere in or at the edges of the edited
+    # stretch, against the original footage's own motion (a bridge between very different
+    # framings comes back as a hard cut INSIDE the generated frames, which a seams-only
+    # measure missed), and flicker inside the mask
+    seam_jump, jump_at, med = 0.0, None, 0.0
+    span = sorted(gen_set & set(range(lo, hi + 1)))
+    if span:
+        r0, r1 = max(lo, span[0] - 1 - HANDOFF), min(hi, span[-1] + 1 + HANDOFF)
+        res = motion_residuals(out, lo, hi)
+        orig = [d for k, d in enumerate(res) if not (r0 <= lo + k <= r1)]
+        med = float(np.median(orig or res))
+        for i in range(r0, r1):
+            v = res[i - lo] / max(med, 0.3)
+            if v > seam_jump:
+                seam_jump, jump_at = v, i
     flick = []
     for i in range(lo, hi):
         v0, v1 = vmask.get(i), vmask.get(i + 1)
@@ -495,7 +530,8 @@ def compose_take(work, plan, take, out_path):
             if x1 - x0 > 4 and y1 - y0 > 4:
                 flick.append(float(np.abs(out[i + 1][y0:y1, x0:x1].astype(np.int16)
                                           - out[i][y0:y1, x0:x1].astype(np.int16)).mean()))
-    metrics = {"seam_jump": round(seam_jump, 3), "motion_median": round(med, 3),
+    metrics = {"seam_jump": round(seam_jump, 3), "jump_frame": jump_at, "continuity": continuity(seam_jump),
+               "residual_median": round(med, 3),
                "mask_flicker": round(float(np.mean(flick)), 3) if flick else 0.0}
     if plan.get("pad_tail"):
         out = out[:len(out) - plan["pad_tail"]]
