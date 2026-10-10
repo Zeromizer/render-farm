@@ -136,6 +136,14 @@ def main():
         with open(clip, "wb") as f:
             for chunk in r.iter_bytes(1 << 20):
                 f.write(chunk)
+    plate_video = None
+    if p.get("plate_video"):  # SPIKE: an LTX clean-plate video to use in place of the median plate
+        plate_video = os.path.join(work, "plate_video.mp4")
+        with httpx.stream("GET", p["plate_video"], timeout=T, follow_redirects=True) as r:
+            r.raise_for_status()
+            with open(plate_video, "wb") as f:
+                for chunk in r.iter_bytes(1 << 20):
+                    f.write(chunk)
     ensure_comfy()
     t_all = time.monotonic()
     stream("prep", {"clip": clip, "work_dir": work}, work)
@@ -167,7 +175,7 @@ def main():
         takes.append(dest)
     stream("compose", {"work_dir": work, "clip": clip, "takes": takes, "take_masks": take_masks, "seeds": seeds,
                        "out": os.path.join(out, "edit.mp4"), "proof": os.path.join(out, "edit-proof.png"),
-                       "report": os.path.join(out, "edit-report.json")}, work)
+                       "report": os.path.join(out, "edit-report.json"), "plate_video": plate_video}, work)
     log(f"total {time.monotonic() - t_all:.0f}s")
     for f in ("route.png", "plate.png"):
         shutil.copy(os.path.join(work, f), out)

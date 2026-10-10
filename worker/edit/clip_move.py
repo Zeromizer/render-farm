@@ -661,6 +661,8 @@ def compose(spec):
     rd.close()
     plate = clean_plate(sample, sample_m, px(60, fw), sample_o if other_small is not None else None, px(30, fw))
     del sample, sample_m, sample_o
+    # SPIKE: a per-frame plate video (the LTX clean-plate IC-LoRA) in place of the median
+    plate_video = spec.get("plate_video")
 
     outs = {}
     for r in good:
@@ -679,10 +681,16 @@ def compose(spec):
                          for c, d in zip(car_small, drawn_m)]
         dest = os.path.join(work, f"take{r['take']}.mp4")
         src, raw = Reader(spec["clip"]), Reader(spec["takes"][i])
+        pv = Reader(plate_video) if plate_video else None
         wr = Writer(dest, fw, fh, FPS, audio_from=spec["clip"], frames=n)
+        pf = plate
         for f in range(n):
             fr = src.next()
             rf = raw.next()
+            if pv is not None:
+                pf = pv.next()  # a plate video a few frames short holds its last frame
+                if (pf.shape[1], pf.shape[0]) != (fw, fh):
+                    pf = cv2.resize(pf, (fw, fh), interpolation=cv2.INTER_LANCZOS4)
             if f < s0:
                 wr.write(fr)
                 continue
@@ -693,13 +701,15 @@ def compose(spec):
             for j in range(max(s0, f - 1), min(n, f + 2)):
                 u |= car_small[j]
             cm = cv2.resize(u.astype(np.uint8), (fw, fh), interpolation=cv2.INTER_LINEAR) > 0
-            out = paste_car(remove_old(fr, om, plate, fw), rf, cm, fw)
+            out = paste_car(remove_old(fr, om, pf, fw), rf, cm, fw)
             wr.write(np.clip(out, 0, 255).astype(np.uint8))
             if f % 24 == 0:
                 emit("PROGRESS", int(100 * (f + 1) / n))
         wr.close()
         src.close()
         raw.close()
+        if pv is not None:
+            pv.close()
         outs[r["take"]] = dest
     shutil.copyfile(outs[best], spec["out"])
     proof_sheet(spec["proof"], work, spec["clip"], outs[best], s0, n)
