@@ -540,14 +540,16 @@ def proof_sheet(spec, plan, original, fixed, best, results):
         own = [i for i in masks if i in tracks[e]] or masks
         picks = [own[int(round(t * (len(own) - 1)))] for t in np.linspace(0, 1, 6)] + [plan["anchor_run"][0]]
         b = plan["anchor_boxes"][e]
+        bw, bh = b[2] - b[0], b[3] - b[1]
+        k = max(bh * 3.0, 50) / max(bw * 2.2, 80)   # one tile shape per element; crops scale with the car
+        sz = (tile_w, int(tile_w * k))
         top, bot = [], []
         for i in picks:
             p = tracks[e].get(i, b)
-            w, h = p[2] - p[0], p[3] - p[1]
-            cw, ch = min(max(w * 2.2, 80), fw), min(max(h * 3.0, 50, cw * 0.3), fh)
+            cw = min(max((p[2] - p[0]) * 2.2, 80), fw)
+            ch = min(cw * k, fh)
             cx, cy = (p[0] + p[2]) / 2, (p[1] + p[3]) / 2
             x0 = int(min(max(0, cx - cw / 2), fw - cw)); y0 = int(min(max(0, cy - ch / 2), fh - ch))
-            sz = (tile_w, int(tile_w * ch / cw))
             o = cv2.resize(original[i][y0:y0 + int(ch), x0:x0 + int(cw)], sz, interpolation=cv2.INTER_CUBIC)
             f = cv2.resize(fixed[i][y0:y0 + int(ch), x0:x0 + int(cw)], sz, interpolation=cv2.INTER_CUBIC)
             for t, lab in ((o, f"{i} before"), (f, f"{i} fixed" if i not in range(plan['anchor_run'][0], plan['anchor_run'][1] + 1) else f"{i} anchor")):

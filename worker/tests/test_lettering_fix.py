@@ -127,6 +127,21 @@ class PixelHelpersTest(unittest.TestCase):
         self.assertAlmostEqual((x0 + x1) / 2, 320, delta=3)
         self.assertAlmostEqual((y0 + y1) / 2, 210, delta=3)
 
+    def test_proof_sheet_with_growing_boxes(self):
+        """Per-frame boxes change size (push-in): every tile must still share one shape."""
+        import tempfile
+        import cv2
+        import numpy as np
+        frames = [np.full((360, 640, 3), 90, np.uint8) for _ in range(20)]
+        tracks = {str(i): [300 - i, 200 - i / 2, 340 + i, 215 + i / 2] for i in range(20)}
+        plan = {"names": ["plate"], "masks": {str(i): [] for i in range(3, 20)}, "tracks": [tracks],
+                "anchor_boxes": [[300, 200, 340, 215]], "anchor_run": [0, 2]}
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "proof.png")
+            lettering.proof_sheet({"proof": out}, plan, frames, frames, {"take": 1},
+                                  [{"take": 1, "seed": 1, "score": 0.5}])
+            self.assertIsNotNone(cv2.imread(out))
+
 
 if __name__ == "__main__":
     unittest.main()
