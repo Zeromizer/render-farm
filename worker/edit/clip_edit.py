@@ -227,8 +227,8 @@ def _read_masks(path, n=None):
 
 def _object_masks(r, fh, fw, n, lo, hi):
     """A tracked-object region: pick, among the objects SAM 3 tracked for the noun, the one
-    under the agent's hint (a box or point at a time), and return {frame: uint8 mask} with
-    the margin added, from start_frame to end_frame."""
+    under the agent's hint (a box or point at a time), and return {frame: (bounding box with
+    the margin, uint8 outline mask with the margin)} from start_frame to end_frame."""
     cands = []
     for p in r["object_masks"]:
         ms = _read_masks(p, n)
@@ -265,7 +265,13 @@ def _object_masks(r, fh, fw, n, lo, hi):
             short = min(xs.max() - xs.min(), ys.max() - ys.min())
             pad = min(max(0.1 * short, 16), 40)
         k = int(pad)
-        out[i] = cv2.dilate(m.astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1)))
+        # the box also reaches below the object (shadow_below x its height, default 0.15): the
+        # contact shadow and reflection on the ground are not part of its outline
+        drop = float(r.get("shadow_below", 0.15)) * float(ys.max() - ys.min())
+        box = [max(0.0, float(xs.min()) - k), max(0.0, float(ys.min()) - k),
+               min(float(fw), float(xs.max() + 1) + k), min(float(fh), float(ys.max() + 1) + k + drop)]
+        out[i] = (box, cv2.dilate(m.astype(np.uint8) * 255,
+                                  cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1))))
     return out
 
 
@@ -578,11 +584,17 @@ def prep(spec):
         REGION_MASKS.clear()
         box_regs = [r for r in regions if not r.get("object_masks")]
         vmask = _boxes_per_frame(frames, box_regs, lo, min(hi, n - 1)) if box_regs else {}
+        # an object is redrawn inside its tracked bounding box by default: an outline-shaped
+        # hole tells H3 the shape of what was there, and it fills a car-shaped hole with a car
+        # (tested). shape: "outline" keeps the outline, for replacing a thing with another.
         obj = {}
         for r in regions:
             if r.get("object_masks"):
-                for i, m in _object_masks(r, fh, fw, n, lo, min(hi, n - 1)).items():
-                    obj[i] = m if i not in obj else cv2.bitwise_or(obj[i], m)
+                for i, (box, m) in _object_masks(r, fh, fw, n, lo, min(hi, n - 1)).items():
+                    if r.get("shape", "box") == "outline":
+                        obj[i] = m if i not in obj else cv2.bitwise_or(obj[i], m)
+                    else:
+                        vmask.setdefault(i, []).append(box)
         for i, m in obj.items():
             # an object frame's mask is its outline plus any boxes on it; the boxes list keeps
             # the outline's bounding box for the crop window and the anchor sizes

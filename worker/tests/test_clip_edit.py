@@ -228,7 +228,8 @@ class RoundTripTest(unittest.TestCase):
         CE.L.write_clip(p0, m0, 24, lossless=True)
         CE.L.write_clip(p1, m1, 24, lossless=True)
         rep = self._run("object", {"mode": "region", "clip": self.a, "crop": "full", "regions": [
-            {"object": "card", "object_masks": [p1, p0], "box": [55, 75, 75, 105], "frame": 5, "pad_px": 4}]}, 41)
+            {"object": "card", "object_masks": [p1, p0], "box": [55, 75, 75, 105], "frame": 5, "pad_px": 4,
+             "shape": "outline"}]}, 41)
         self.assertEqual(rep["warnings"], [])
         plan = json.load(open(os.path.join(w, "plan.json")))
         self.assertTrue(plan["region_mask"])
@@ -238,6 +239,17 @@ class RoundTripTest(unittest.TestCase):
         self.assertGreater(int(g[90, 85]), 127)    # circle centre on frame 10 (x = 60 + 25)
         self.assertLess(int(g[72, 62]), 128)       # card corner, outside the round outline
         self.assertLess(int(g[25, 275]), 128)      # the other object is not edited
+        # by default the object is redrawn inside its tracked box (an outline-shaped hole makes
+        # H3 draw the object again): the card corner is then masked too
+        os.makedirs(os.path.join(self.d, "object_box"), exist_ok=True)
+        CE.prep({"mode": "region", "clip": self.a, "crop": "full", "work_dir": os.path.join(self.d, "object_box"),
+                 "regions": [{"object": "card", "object_masks": [p0], "box": [55, 75, 75, 105], "frame": 5,
+                              "pad_px": 4}]})
+        pb = json.load(open(os.path.join(self.d, "object_box", "plan.json")))
+        self.assertFalse(pb["region_mask"])
+        mb, _ = CE.L.read_clip(os.path.join(self.d, "object_box", "gen_mask.mp4"))
+        gb = cv2.resize(mb[10 - pb["window"][0]], (320, 180), interpolation=cv2.INTER_NEAREST)[..., 1]
+        self.assertGreater(int(gb[72 + 3, 62 + 6]), 127)
         with self.assertRaises(RuntimeError):      # a hint on nothing tracked
             CE.prep({"mode": "region", "clip": self.a, "work_dir": os.path.join(self.d, "object_bad"),
                      "regions": [{"object": "card", "object_masks": [p0], "box": [0, 150, 20, 170], "frame": 5}]})
