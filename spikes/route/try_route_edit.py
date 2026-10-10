@@ -95,7 +95,7 @@ def write_video(path, frames, fps=24, lossless=False, audio_from=None):
     cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", str(fps), "-i", "-"]
     if audio_from:
         cmd += ["-i", audio_from, "-map", "0:v", "-map", "1:a?", "-c:a", "aac", "-shortest"]
-    cmd += ["-c:v", "libx264"] + (["-qp", "0"] if lossless else ["-crf", "12"]) + ["-pix_fmt", "yuv420p", path]
+    cmd += ["-c:v", "libx264", "-bf", "0"] + (["-qp", "0"] if lossless else ["-crf", "12"]) + ["-pix_fmt", "yuv420p", path]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     for f in frames:
         p.stdin.write(f.tobytes())
@@ -241,6 +241,52 @@ def regions(old, new, n, g_old=18, g_new=30, t_pad=2):
     return out
 
 
+def matched_plate(frame, plate, cover):
+    """The clean plate brought to this frame's grade: a smooth correction field measured on
+    the static pixels around (frame - plate, where the two agree and no car is). H3 footage
+    drifts in brightness over a clip, so the plain plate showed as a dark car-shaped patch.
+    (A Poisson paste smeared the old car's shadow and edge pixels in from the mask border.)"""
+    import cv2
+    import numpy as np
+    p = plate.astype(np.float32)
+    d = frame.astype(np.float32) - p
+    valid = ((np.abs(d).max(2) < 20) & ~cover).astype(np.float32)
+    num = cv2.GaussianBlur(d * valid[..., None], (0, 0), 25)
+    den = cv2.GaussianBlur(valid, (0, 0), 25)[..., None]
+    return p + num / np.maximum(den, 1e-3)
+
+
+def _soft(m, grow, sigma):
+    import cv2
+    import numpy as np
+    k = np.ones((2 * grow + 1, 2 * grow + 1), np.uint8)
+    return cv2.GaussianBlur((cv2.dilate(m.astype(np.uint8), k) > 0).astype(np.float32), (0, 0), sigma)[..., None]
+
+
+def compose(frames, old, car, plate, res, old_grow=12, car_grow=8):
+    """Only the car comes from H3. The old car is replaced by the graded clean plate (tight
+    to its own outline, so nothing passing close by is touched); the new car is pasted where
+    SAM finds it in the render, not where it was drawn (H3 runs off and behind the drawn
+    path, so pasting by the drawn path clipped it)."""
+    import cv2
+    import numpy as np
+    n = len(frames)
+    k41 = np.ones((41, 41), np.uint8)
+    out = []
+    for f in range(n):
+        cover = cv2.dilate(old[f].astype(np.uint8), k41) > 0
+        base = frames[f].astype(np.float32)
+        if old[f].any():
+            ao = _soft(old[f], old_grow, 3)
+            base = base * (1 - ao) + matched_plate(frames[f], plate, cover) * ao
+        u = np.zeros_like(car[0])
+        for j in range(max(0, f - 1), min(n, f + 2)):
+            u |= car[j]
+        ac = _soft(u, car_grow, 2.5)
+        out.append(np.clip(base * (1 - ac) + res[f].astype(np.float32) * ac, 0, 255).astype(np.uint8))
+    return out
+
+
 def inpaint_graph(ref_name, vmask_name, amask_name, prompt, w, h, n, seed, prefix, steps, k, family, first_name):
     g, _ = graphs_inpaint.build(ref_name, vmask_name, amask_name, prompt, w, h, n, seed, prefix,
                                 steps=steps, turbo=True, family=family,
@@ -297,7 +343,7 @@ def main():
         # paste-back mask: the region, a little wider in space and time, feathered
         comp = regions(old, new, n, int(job.get("grow_old", 18)) + 6, int(job.get("grow_new", 30)) + 6, t_pad=3)
         comp = [cv2.GaussianBlur(m.astype(np.float32), (0, 0), 5)[..., None] for m in comp]
-        old_grow, car_grow = int(job.get("old_grow", 8)), int(job.get("car_grow", 8))
+        old_grow, car_grow = int(job.get("old_grow", 12)), int(job.get("car_grow", 8))
         write_video(os.path.join(out, "oldmask.mp4"), [cv2.cvtColor(m.astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR) for m in old], lossless=True)
         for rd in job["renders"]:
             raw = os.path.join(out, f"{rd['name']}_raw.mp4")
@@ -317,22 +363,9 @@ def main():
             final = [np.clip(frames[f] * (1 - comp[f]) + res[f] * comp[f], 0, 255).astype(np.uint8) for f in range(n)]
             write_video(os.path.join(out, f"{rd['name']}_v1.mp4"), final, audio_from=src)
             log(f"render {rd['name']}: {t:.0f}s")
-            # v2: only the car comes from H3. The old car is replaced by the exact clean plate
-            # (tight to its own outline, so nothing passing close by is touched); the new car
-            # is pasted where SAM finds it in the render, not where it was drawn.
             car = rendered_car(raw, job.get("noun", "car"), new, n, out)
             tr.free()
-            ko = np.ones((2 * old_grow + 1, 2 * old_grow + 1), np.uint8)
-            kc = np.ones((2 * car_grow + 1, 2 * car_grow + 1), np.uint8)
-            final = []
-            for f in range(n):
-                ao = cv2.GaussianBlur((cv2.dilate(old[f].astype(np.uint8), ko) > 0).astype(np.float32), (0, 0), 2.5)[..., None]
-                u = np.zeros_like(car[0])
-                for j in range(max(0, f - 1), min(n, f + 2)):
-                    u |= car[j]
-                ac = cv2.GaussianBlur((cv2.dilate(u.astype(np.uint8), kc) > 0).astype(np.float32), (0, 0), 2.5)[..., None]
-                base = frames[f] * (1 - ao) + plate * ao
-                final.append(np.clip(base * (1 - ac) + res[f] * ac, 0, 255).astype(np.uint8))
+            final = compose(frames, old, car, plate, res, old_grow, car_grow)
             write_video(os.path.join(out, f"{rd['name']}.mp4"), final, audio_from=src)
             write_video(os.path.join(out, f"{rd['name']}_carmask.mp4"),
                         [cv2.cvtColor(m.astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR) for m in car], lossless=True)
