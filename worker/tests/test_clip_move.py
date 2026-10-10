@@ -180,6 +180,18 @@ class GeometryTest(unittest.TestCase):
         self.assertTrue(out[20, 80])
         self.assertFalse(out[75, 155])
 
+    def test_remove_old_takes_the_hard_shadow_keeps_other_cars(self):
+        road = np.full((200, 400, 3), (90, 95, 100), np.uint8)
+        frame = road.copy()
+        frame[80:110, 150:210] = (40, 200, 220)                       # the old car
+        frame[110:124, 160:215] = (36, 38, 40)                        # its hard shadow, road tint
+        frame[60:90, 222:262] = (245, 245, 245)                       # a white car right beside it
+        m = np.zeros((200, 400), bool)
+        m[80:110, 150:210] = True
+        out = CM.remove_old(frame, m, road, 832)
+        self.assertLess(float(np.abs(out[112:122, 165:210] - road[112:122, 165:210]).mean()), 6.0, "shadow left")
+        self.assertGreater(float(out[70:80, 235:250].mean()), 230, "the white car got painted over")
+
     def test_camera_drift(self):
         rng = np.random.default_rng(1)
         base = (rng.random((180, 320, 3)) * 255).astype(np.uint8)

@@ -575,7 +575,8 @@ def matched_plate(frame, plate, cover, sigma):
 def remove_old(frame, old_m, plate, w_ref):
     """The old car and its shadow halo replaced by the graded plate (body + 48 px at 832
     wide, feathered wide); things much brighter or darker than the road outside the body
-    (another car passing close) keep their own pixels."""
+    (another car passing close) keep their own pixels - but not the car's own shadow (darker,
+    same tint, within 36 px of the body)."""
     if not old_m.any():
         return frame.astype(np.float32)
     g, cg = px(48, w_ref), px(60, w_ref)
@@ -592,7 +593,13 @@ def remove_old(frame, old_m, plate, w_ref):
     reg = cv2.dilate(m, _disk(g)) > 0
     tight = cv2.dilate(m, _disk(round(6 * sc))) > 0
     base = fr.astype(np.float32)
-    other = (np.abs(base - pl.astype(np.float32)).max(2) > 45) & ~tight
+    plf = pl.astype(np.float32)
+    # the old car's own hard shadow beside its body: darker than the road, same tint. The
+    # LTX plate showed it was kept as "another object" and left a dark crescent (2026-10-11)
+    bs, ps = base.sum(2), plf.sum(2)
+    tint = np.abs(base / (bs[..., None] + 1) - plf / (ps[..., None] + 1)).max(2)
+    shade = (bs < ps - 45) & (tint < 0.06) & (cv2.dilate(m, _disk(round(36 * sc))) > 0)
+    other = (np.abs(base - plf).max(2) > 45) & ~tight & ~shade
     other = cv2.dilate(other.astype(np.uint8), _disk(round(4 * sc))) > 0
     a = cv2.GaussianBlur((reg & ~other).astype(np.float32), (0, 0), 10 * sc)[..., None]
     a = np.maximum(a, cv2.GaussianBlur(tight.astype(np.float32), (0, 0), 2 * sc)[..., None])

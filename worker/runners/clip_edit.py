@@ -28,7 +28,7 @@ params (jsonb):
                       hold_s (wait before moving, default 0.25), arrive_s | arrive_frame (plain
                       routes: reaches the last point, default the end), ease inout | linear,
                       turn (default true: the car turns to face where it goes; false keeps its
-                      orientation), ttm [start, end] steps (default [1, 3]). The road without
+                      orientation), ttm [start, end] steps (default [1, 3], moving camera [1, 5]). The road without
                       the car comes from the LTX 2.5 clean-plate IC-LoRA (graphs_ltx_plate);
                       without its models: a median plate, locked-off shots only
     takes             seeds to generate and score (default 2, max 4; move: default 1)
@@ -258,7 +258,10 @@ def _run_move(jid, p, clip, work_dir, stream, heartbeat, cancel_check, deadline,
     stream("build", spec, 16, 19)
 
     seeds = [p["seed"] + SEED_STEP * i for i in range(p["takes"])]
-    ttm = p.get("ttm") or [1, 3]
+    # how long the car is held to the drawn path: a moving camera needs longer, or H3 keeps a
+    # follow-shot car in frame instead of leaving it where the route stops it (2026-10-11 park
+    # drone: release at step 3 ran 92 px off the path, at 5 within 6 px and still natural)
+    ttm = p.get("ttm") or ([1, 5] if plan.get("camera_moving") else [1, 3])
     takes, take_masks = [], []
     db.set_phase(jid, "starting comfyui", 19)
     comfy_client.ensure_server(log)

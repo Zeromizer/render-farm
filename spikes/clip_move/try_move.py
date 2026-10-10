@@ -171,7 +171,7 @@ def main():
     takes, take_masks = [], []
     for i, seed in enumerate(seeds):
         graph, meta = graphs_ttm.build(*names, p["prompt"], W, H, plan["length"], seed, f"move_try/t{i + 1}",
-                                       ttm=p.get("ttm") or [1, 3])
+                                       ttm=p.get("ttm") or ([1, 5] if plan.get("camera_moving") else [1, 3]))
         t0 = time.monotonic()
         outs = run_outputs(graph)
         raw = fetch_all(outs, work)
