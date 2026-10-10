@@ -15,6 +15,16 @@ params (jsonb):
                       start_frame | start_s, end_frame | end_s} or {keys: [{at_s | frame,
                       box | box_norm}, ...] (2-12, linear in between), end_frame | end_s}], 1-4
     crop              region: auto | crop | full (default auto)
+    clean             region, for removing an object the scene implies (H3 alone redraws
+                      it): {prompt: what the area shows once it is gone, frame | at_s
+                      (default: where the boxes cover the most), every (frames between
+                      anchors, default 16)}. Krea 2 cleans that frame inside the boxes,
+                      clip_edit carries it along the camera move every `every` frames and
+                      H3 keeps those frames, filling around them. The cleaned frame is
+                      also uploaded as outputs/<job_id>-clean.png.
+    anchors           region, instead of clean: cleaned frames made elsewhere (an image
+                      model's copy of a frame with the object gone), [{image: {bucket,
+                      path}, frame | at_s}], 1-4; anchor_every (0 or 4-48, default 16)
     seconds           extend / prepend / bridge: how much to generate (snapped to H3's grid)
     context_s         extend / prepend (2.0) / bridge (1.5): original footage H3 sees
     start_frame / end_frame (or start_s / end_s)   audio: range whose sound is regenerated
@@ -39,7 +49,7 @@ import proc
 from venvs import venv_python
 from runners import gate_common
 from runners.video_gen import _run_prompt
-from videogen import comfy_client, graphs_inpaint, media_type, ram_gate, tts_guard
+from videogen import comfy_client, graphs_clean, graphs_inpaint, media_type, ram_gate, tts_guard
 
 _WORKER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EDIT_DIR = os.path.join(_WORKER_DIR, "edit")
@@ -83,6 +93,23 @@ def validate(p):
                                    "frame, with x1>x0 and y1>y0 (or keys)")
         if p.get("crop", "auto") not in ("auto", "crop", "full"):
             raise RuntimeError("crop must be auto, crop or full")
+        clean, anchors = p.get("clean"), p.get("anchors")
+        if clean is not None and anchors:
+            raise RuntimeError("pass clean or anchors, not both")
+        if clean is not None:
+            if not (isinstance(clean, dict) and (clean.get("prompt") or "").strip()):
+                raise RuntimeError("clean needs a prompt describing what the area shows once the object is gone")
+            if not 4 <= int(clean.get("every") or 16) <= 48:
+                raise RuntimeError("clean.every must be 4-48 frames")
+        if anchors:
+            if not (isinstance(anchors, list) and 1 <= len(anchors) <= 4 and all(
+                    isinstance(a, dict) and _src_ok(a.get("image")) for a in anchors)):
+                raise RuntimeError("anchors must be 1-4 of {image: {bucket, path}, frame | at_s}")
+            ev = int(p.get("anchor_every") if p.get("anchor_every") is not None else 16)
+            if ev and not 4 <= ev <= 48:
+                raise RuntimeError("anchor_every must be 0 or 4-48 frames")
+    elif p.get("clean") is not None or p.get("anchors"):
+        raise RuntimeError("clean / anchors only apply to region edits")
     if mode in ("extend", "prepend", "bridge"):
         sec = float(p.get("seconds") or 0)
         if not 0.25 <= sec <= 12:
@@ -93,6 +120,43 @@ def validate(p):
     if not 1 <= takes <= MAX_TAKES:
         raise RuntimeError(f"takes must be 1-{MAX_TAKES}")
     return dict(p, takes=takes, seed=int(p.get("seed") if p.get("seed") is not None else 6332))
+
+
+def _clean_anchor(jid, p, spec, clip, work_dir, stream, cancel_check, deadline, log):
+    """Anchor removal's cleaned frame: a first prep finds the boxes, clip_edit picks the
+    frame and writes it with its mask, Krea 2 redraws the boxed area from the prompt."""
+    c = p["clean"]
+    stream("prep", spec, 3, 5)
+    plan = json.load(open(os.path.join(work_dir, "plan.json")))
+    kw, kh = graphs_clean.size_for(plan["width"], plan["height"])
+    frame = c.get("frame")
+    if frame is None and c.get("at_s") is not None:
+        frame = int(round(float(c["at_s"]) * graphs_inpaint.FPS))
+    img, mask = os.path.join(work_dir, "clean_in.png"), os.path.join(work_dir, "clean_mask.png")
+    stream("clean_inputs", {"work_dir": work_dir, "clip": clip, "size": [kw, kh], "frame": frame,
+                            "out_image": img, "out_mask": mask}, 5, 6)
+    a = json.load(open(os.path.join(work_dir, "clean.json")))["frame"]
+    db.set_phase(jid, f"cleaning frame {a}", 6)
+    comfy_client.ensure_server(log)
+    dest = os.path.join(work_dir, "clean.png")
+    with tts_guard.paused(log):
+        missing = [n for n in graphs_clean.REQUIRED_NODES if n not in comfy_client.object_info()]
+        if missing:
+            raise RuntimeError(f"ComfyUI is missing nodes {missing} for cleaning the anchor frame")
+        names = [comfy_client.upload_input(f, subfolder="clip_edit") for f in (img, mask)]
+        graph = graphs_clean.build(*names, c["prompt"], p["seed"], f"clip_edit/{jid}_clean")
+        log(f"clean: Krea 2 on frame {a} at {kw}x{kh}, seed {p['seed']}")
+        try:
+            pid = comfy_client.submit(graph)
+            try:
+                outputs = comfy_client.wait(pid, lambda *_: None, cancel_check,
+                                            max(60, int(deadline - time.monotonic())))
+            except comfy_client._CanceledSignal:
+                raise proc.Canceled()
+            comfy_client.fetch_output(outputs, dest, exts=(".png",))
+        finally:
+            comfy_client.free()
+    return {"frame": a, "image": dest}
 
 
 def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
@@ -134,7 +198,22 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     spec = {k: p[k] for k in ("mode", "regions", "crop", "seconds", "context_s", "start_frame", "end_frame",
                               "start_s", "end_s") if p.get(k) is not None}
     spec.update(clips, work_dir=work_dir)
-    stream("prep", spec, 3, 10)
+    clean_local = None
+    if p.get("anchors"):
+        anchors = []
+        for k, a in enumerate(p["anchors"]):
+            local = media_type.ensure_extension(
+                gate_common.download(a["image"]["bucket"], a["image"]["path"], work_dir, f"anchor{k + 1}", log),
+                ("image",), name=f"anchor {k + 1}", probe=True)
+            anchors.append(dict({x: a[x] for x in ("frame", "at_s") if a.get(x) is not None}, image=local))
+        spec["anchors"] = anchors
+        spec["anchor_every"] = int(p.get("anchor_every") if p.get("anchor_every") is not None else 16)
+    elif p.get("clean") is not None:
+        clean_local = _clean_anchor(jid, p, spec, clips["clip"], work_dir, stream, cancel_check, deadline, log)
+        spec["anchors"] = [clean_local]
+        spec["anchor_every"] = int(p["clean"].get("every") or 16)
+        clean_local = clean_local["image"]
+    stream("prep", spec, 3 if clean_local is None else 8, 10)
     plan = json.load(open(os.path.join(work_dir, "plan.json")))
     W, H = plan["canvas"]
     for w in plan.get("warnings") or []:
@@ -183,8 +262,11 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
 
     db.set_phase(jid, "uploading", 94)
     report = json.load(open(report_local))
-    for f, remote, mime in ((proof_local, f"outputs/{jid}-proof.png", "image/png"),
-                            (report_local, f"outputs/{jid}-edit.json", "application/json")):
+    uploads = [(proof_local, f"outputs/{jid}-proof.png", "image/png"),
+               (report_local, f"outputs/{jid}-edit.json", "application/json")]
+    if clean_local:
+        uploads.append((clean_local, f"outputs/{jid}-clean.png", "image/png"))
+    for f, remote, mime in uploads:
         try:
             log(f"{os.path.basename(f)} -> {db.upload_file(remote, f, mime)}")
         except Exception as exc:  # noqa: BLE001 - the edited clip is the deliverable

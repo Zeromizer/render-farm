@@ -546,7 +546,7 @@ def prep(spec):
             "length": length, "canvas": [W, Hc], "regs": regs, "crop": crop_mode,
             "vmask": {str(k): v for k, v in vmask.items()}, "amask": sorted(amask),
             "generated": [i for i in range(N) if tl[i] is None], "src_ranges": src_ranges, "pad_tail": pad,
-            "anchor_frames": sorted(anchors), "warnings": warnings}
+            "anchor_frames": sorted(anchors), "feather": 16 if anchors else 8, "warnings": warnings}
     json.dump(plan, open(os.path.join(work, "plan.json"), "w"), indent=1)
     emit("PROGRESS", "100")
 
@@ -592,7 +592,9 @@ def compose_take(work, plan, take, out_path):
     mode = plan["mode"]
     vmask = {int(k): v for k, v in plan["vmask"].items()}
     out = [f.copy() for f in tl]
-    feather = 8
+    # a removed object leaves new content against old (cleaned paving beside the car's own
+    # shadow): anchor removals blend wider; overlays keep a tight edge off the car
+    feather = int(plan.get("feather", 8))
     for k, i in enumerate(range(lo, hi + 1)):
         if k >= len(gen):
             break
@@ -701,7 +703,8 @@ def compose(spec):
     report = {"mode": plan["mode"], "best_take": best["take"],
               "takes": [{k: v for k, v in r.items() if k != "path"} for r in results],
               "window": plan["window"], "frames": plan["frames"], "generated_frames": len(plan["generated"]),
-              "canvas": plan["canvas"], "crop": plan["crop"], "warnings": plan["warnings"]}
+              "canvas": plan["canvas"], "crop": plan["crop"], "anchor_frames": plan.get("anchor_frames", []),
+              "warnings": plan["warnings"]}
     json.dump(report, open(spec["report"], "w"), indent=1)
     emit("PROGRESS", "100")
 
@@ -737,8 +740,44 @@ def proof_sheet(path, plan, timeline_path, take_paths, results, best):
     cv2.imwrite(path, np.vstack(rows))
 
 
+def clean_inputs(spec):
+    """After a first prep (plan.json in work_dir): the frame and mask an image model cleans
+    for anchor removal. The frame is spec["frame"], or the one where the boxes cover the
+    most (the object fully in view), the middle of that stretch. Writes the frame and
+    mask at the image model's size (spec["size"]) and clean.json {frame}."""
+    work = spec["work_dir"]
+    plan = json.load(open(os.path.join(work, "plan.json")))
+    fh, fw = plan["height"], plan["width"]
+    n = plan["frames"] - plan.get("pad_tail", 0)
+    boxed = {int(k): v for k, v in plan["vmask"].items() if v != "full" and int(k) < n}
+    if not boxed:
+        raise RuntimeError("cleaning needs region boxes")
+    if spec.get("frame") is not None:
+        a = int(spec["frame"])
+        if a not in boxed:
+            a = min(boxed, key=lambda k: abs(k - a))
+    else:
+        area = {k: float(_box_mask(v, fh, fw).sum()) for k, v in boxed.items()}
+        top = max(area.values())
+        full = sorted(k for k, s in area.items() if s >= 0.98 * top)
+        a = full[len(full) // 2]
+    cap = cv2.VideoCapture(spec["clip"])
+    frame = None
+    for _ in range(a + 1):
+        ok, frame = cap.read()
+        if not ok:
+            raise RuntimeError(f"cannot read frame {a} of the clip")
+    cap.release()
+    kw, kh = spec["size"]
+    m = _box_mask(boxed[a], fh, fw, grow=int(spec.get("grow", 24)))
+    cv2.imwrite(spec["out_image"], cv2.resize(frame, (kw, kh), interpolation=cv2.INTER_AREA))
+    cv2.imwrite(spec["out_mask"], cv2.resize(m, (kw, kh), interpolation=cv2.INTER_NEAREST))
+    json.dump({"frame": a, "width": fw, "height": fh}, open(os.path.join(work, "clean.json"), "w"))
+    print(f"MEASURED clean frame {a} at {kw}x{kh}", flush=True)
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] not in ("prep", "compose"):
-        sys.exit("usage: clip_edit.py prep|compose <spec.json>")
-    s = json.load(open(sys.argv[2]))
-    prep(s) if sys.argv[1] == "prep" else compose(s)
+    cmds = {"prep": prep, "compose": compose, "clean_inputs": clean_inputs}
+    if len(sys.argv) != 3 or sys.argv[1] not in cmds:
+        sys.exit("usage: clip_edit.py prep|clean_inputs|compose <spec.json>")
+    cmds[sys.argv[1]](json.load(open(sys.argv[2])))

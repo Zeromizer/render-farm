@@ -65,6 +65,17 @@ class ValidateTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             _runner.validate(_params(mode="extend", seconds=30))
 
+    def test_clean_and_anchors(self):
+        _runner.validate(_params(clean={"prompt": "open paving"}))
+        _runner.validate(_params(anchors=[{"image": {"bucket": "assets", "path": "c"}, "at_s": 2}]))
+        for bad in ({"clean": {"prompt": " "}},
+                    {"clean": {"prompt": "open paving", "every": 2}},
+                    {"clean": {"prompt": "open paving"}, "anchors": [{"image": {"bucket": "a", "path": "c"}}]},
+                    {"anchors": [{"at_s": 2}]},
+                    {"mode": "extend", "seconds": 2, "clean": {"prompt": "open paving"}}):
+            with self.assertRaises(RuntimeError):
+                _runner.validate(_params(**bad))
+
     def test_needs_prompt(self):
         with self.assertRaises(RuntimeError):
             _runner.validate(_params(prompt=" "))
@@ -157,6 +168,26 @@ class RoundTripTest(unittest.TestCase):
         tl, _ = CE.L.read_clip(os.path.join(w, "timeline.mp4"))
         patch = tl[20][75:105, 85:125].astype(np.int16)   # where the green box was on frame 20
         self.assertLess(float(np.abs(patch - bg[75:105, 85:125].astype(np.int16)).mean()), 12.0)
+
+    def test_clean_inputs_picks_the_fullest_frame(self):
+        # the box grows from frame 0 to 20 and holds: the cleaned frame is the middle of
+        # the fullest stretch, written at the image model's size with its mask
+        keys = [{"frame": 0, "box": [280, 70, 320, 110]}, {"frame": 20, "box": [200, 70, 320, 110]},
+                {"frame": 40, "box": [200, 70, 320, 110]}]
+        w = os.path.join(self.d, "clean")
+        os.makedirs(w, exist_ok=True)
+        CE.prep({"mode": "region", "clip": self.a, "regions": [{"keys": keys, "track": False}], "work_dir": w})
+        img, mask = os.path.join(w, "ci.png"), os.path.join(w, "cm.png")
+        CE.clean_inputs({"work_dir": w, "clip": self.a, "size": [320, 176], "out_image": img, "out_mask": mask})
+        a = json.load(open(os.path.join(w, "clean.json")))["frame"]
+        self.assertTrue(26 <= a <= 34, a)
+        m = cv2.imread(mask, cv2.IMREAD_GRAYSCALE)
+        self.assertEqual(m.shape, (176, 320))
+        self.assertEqual(int(m[90, 300]), 255)
+        self.assertEqual(int(m[90, 100]), 0)
+        CE.clean_inputs({"work_dir": w, "clip": self.a, "size": [320, 176], "frame": 5, "out_image": img,
+                         "out_mask": mask})
+        self.assertEqual(json.load(open(os.path.join(w, "clean.json")))["frame"], 5)
 
     def test_region_tracked(self):
         self._run("region", {"mode": "region", "clip": self.a,

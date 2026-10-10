@@ -334,7 +334,7 @@ class _CanceledSignal(Exception):
     """Translated to proc.Canceled by the runner (keeps this module free of proc)."""
 
 
-def fetch_output(outputs, dest_path):
+def fetch_output(outputs, dest_path, exts=(".mp4", ".mkv", ".webm")):
     """Find the saved video in a /history outputs dict and download it.
 
     Only type=="output" entries count: LoadVideo reports its *input* file in the
@@ -347,7 +347,7 @@ def fetch_output(outputs, dest_path):
                 name = f.get("filename", "")
                 if f.get("type", "output") != "output":
                     continue
-                if not name.lower().endswith((".mp4", ".mkv", ".webm")):
+                if not name.lower().endswith(tuple(exts)):
                     continue
                 params = {"filename": name, "subfolder": f.get("subfolder", ""), "type": "output"}
                 with httpx.stream("GET", _url("/view"), params=params, timeout=_TIMEOUT) as r:
@@ -357,4 +357,4 @@ def fetch_output(outputs, dest_path):
                         for chunk in r.iter_bytes(1 << 20):
                             out.write(chunk)
                 return dest_path
-    raise ComfyError(f"no video in comfyui outputs: {json.dumps(outputs)[:800]}")
+    raise ComfyError(f"no {'/'.join(exts)} in comfyui outputs: {json.dumps(outputs)[:800]}")
