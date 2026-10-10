@@ -62,12 +62,24 @@ def run_png(graph, dest, timeout_s=900):
     raise RuntimeError("timed out")
 
 
+def clear_out(out):
+    """The python engine's output dir sits in a shared, reused repo cache and is zipped whole
+    after the run: start it empty, or every earlier spike's results ride along (700 MB zips
+    timed out the upload)."""
+    import shutil
+    os.makedirs(out, exist_ok=True)
+    for name in os.listdir(out):
+        q = os.path.join(out, name)
+        shutil.rmtree(q, ignore_errors=True) if os.path.isdir(q) else os.remove(q)
+
+
 def main():
     import cv2
     import numpy as np
     job = json.loads(sys.argv[1])
     out = os.path.abspath(sys.argv[2])
     os.makedirs(out, exist_ok=True)
+    clear_out(out)
     w, h = int(job.get("width", 1344)), int(job.get("height", 768))
     grey, white = os.path.join(out, "_grey.png"), os.path.join(out, "_white.png")
     cv2.imwrite(grey, np.full((h, w, 3), 127, np.uint8))

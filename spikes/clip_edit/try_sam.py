@@ -138,9 +138,21 @@ def overlay(clip, mask, out_dir):
               open(os.path.join(out_dir, "coverage.json"), "w"))
 
 
+def clear_out(out):
+    """The python engine's output dir sits in a shared, reused repo cache and is zipped whole
+    after the run: start it empty, or every earlier spike's results ride along (700 MB zips
+    timed out the upload)."""
+    import shutil
+    os.makedirs(out, exist_ok=True)
+    for name in os.listdir(out):
+        q = os.path.join(out, name)
+        shutil.rmtree(q, ignore_errors=True) if os.path.isdir(q) else os.remove(q)
+
+
 def main():
     job = json.loads(sys.argv[1])
     out_root = os.path.abspath(sys.argv[2])
+    clear_out(out_root)
     os.makedirs(out_root, exist_ok=True)
     info = httpx.get(COMFY + "/object_info", timeout=300).json()
     json.dump({n: info.get(n) for n in NODES}, open(os.path.join(out_root, "object_info.json"), "w"), indent=1)

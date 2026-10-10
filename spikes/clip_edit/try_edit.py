@@ -230,9 +230,21 @@ def run_test(t, out_root, work_root):
         shutil.copy(os.path.join(work, f"take{i + 1}.mp4"), os.path.join(out, f"take{i + 1}.mp4"))
 
 
+def clear_out(out):
+    """The python engine's output dir sits in a shared, reused repo cache and is zipped whole
+    after the run: start it empty, or every earlier spike's results ride along (700 MB zips
+    timed out the upload)."""
+    import shutil
+    os.makedirs(out, exist_ok=True)
+    for name in os.listdir(out):
+        q = os.path.join(out, name)
+        shutil.rmtree(q, ignore_errors=True) if os.path.isdir(q) else os.remove(q)
+
+
 def main():
     job = json.loads(sys.argv[1])
     out_root = os.path.abspath(sys.argv[2])
+    clear_out(out_root)
     work_root = os.path.join(os.environ.get("RENDER_WORK_DIR", out_root), "clip_edit_work")
     os.makedirs(out_root, exist_ok=True)
     ensure_comfy()
