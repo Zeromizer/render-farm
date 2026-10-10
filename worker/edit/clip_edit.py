@@ -123,21 +123,65 @@ def _boxes_per_frame(frames, regions, lo, hi):
         b = [float(v) for v in r["box"]]
         f0 = int(r.get("frame", lo))
         s, e = int(r["start_frame"]), int(r["end_frame"])
-        if r.get("track", True):
+        if r.get("keys"):
+            # keyframed: the box at a few times, linear in between, held past the ends.
+            # What an editor would do; predictable where tracking an object at the frame
+            # edge on a moving camera is not (it latches onto the hero car)
+            keys = r["keys"]
+            track = {}
+            for i in range(max(lo, s), min(hi, e) + 1):
+                if i <= keys[0]["frame"]:
+                    bx = keys[0]["box"]
+                elif i >= keys[-1]["frame"]:
+                    bx = keys[-1]["box"]
+                else:
+                    j = next(j for j in range(1, len(keys)) if keys[j]["frame"] >= i)
+                    k0, k1 = keys[j - 1], keys[j]
+                    t = (i - k0["frame"]) / max(1, k1["frame"] - k0["frame"])
+                    bx = [a + (c - a) * t for a, c in zip(k0["box"], k1["box"])]
+                track[i] = L.clamp_box([float(v) for v in bx], fw, fh)
+        elif r.get("track", True):
             if grays is None:
                 grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
-            m = max(40.0, 0.6 * max(b[2] - b[0], b[3] - b[1]))
+            # features on the object itself (small margin): a wide search area pulls in the
+            # hero car beside it, whose motion then wins
+            m = max(8.0, 0.15 * min(b[2] - b[0], b[3] - b[1]))
             motion = L.track_motion(grays, f0, L.clamp_box([b[0] - m, b[1] - m, b[2] + m, b[3] + m], fw, fh),
                                     max(lo, s), min(hi, e))
-            tr = L.track_element(grays, motion, f0, b, max(lo, s), min(hi, e))
-            # frames the track did not reach (left the frame, lost): hold the nearest box
-            known = sorted(tr)
-            track = {i: tr[i][:4] if i in tr else tr[min(known, key=lambda k: abs(k - i))][:4]
-                     for i in range(max(lo, s), min(hi, e) + 1)}
+            # the box rides the scene's motion and is clipped at the frame edge, not
+            # stopped there: things to remove are often half out of frame (a parked car at
+            # the side of an orbiting shot). Where the track ends (the object left the
+            # frame), the box keeps its last velocity, so it slides out instead of parking
+            # over whatever is there.
+            q = np.float32([[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]]).reshape(-1, 1, 2)
+            raw = {i: L.box_of(cv2.perspectiveTransform(q, T)) for i, T in motion.items()}
+            known = sorted(raw)
+            first, last = known[0], known[-1]
+
+            def vel(ks):
+                ks = [k for k in ks if k in raw]
+                if len(ks) < 2:
+                    return np.zeros(4)
+                return (np.array(raw[ks[-1]]) - np.array(raw[ks[0]])) / (ks[-1] - ks[0])
+            v_head = vel(list(range(first, min(last, first + 5) + 1)))
+            v_tail = vel(list(range(max(first, last - 5), last + 1)))
+            track = {}
+            for i in range(max(lo, s), min(hi, e) + 1):
+                if i in raw:
+                    bx = raw[i]
+                elif i < first:
+                    bx = list(np.array(raw[first]) + v_head * (i - first))
+                elif i > last:
+                    bx = list(np.array(raw[last]) + v_tail * (i - last))
+                else:
+                    bx = raw[min(known, key=lambda k: abs(k - i))]
+                track[i] = L.clamp_box(bx, fw, fh)
         else:
             track = {i: b for i in range(max(lo, s), min(hi, e) + 1)}
         for i, p in track.items():
             w, h = p[2] - p[0], p[3] - p[1]
+            if w < 2 or h < 2:   # wholly out of frame here
+                continue
             # about a latent cell (~32 canvas px) past the object, from its SHORT side and
             # capped: a margin from the long side turned a full-width graphics band into a
             # mask over the whole car (2026-10-10, the car warped)
@@ -221,11 +265,24 @@ def prep(spec):
             if r.get("box_norm") is not None:
                 b = r["box_norm"]
                 r["box"] = [b[0] * fw, b[1] * fh, b[2] * fw, b[3] * fh]
+            for k in r.get("keys") or []:
+                if k.get("box_norm") is not None:
+                    b = k["box_norm"]
+                    k["box"] = [b[0] * fw, b[1] * fh, b[2] * fw, b[3] * fh]
+                if k.get("at_s") is not None:
+                    k["frame"] = int(round(float(k["at_s"]) * FPS))
+                if "box" not in k or "frame" not in k:
+                    raise RuntimeError("each key needs box (or box_norm) and frame (or at_s)")
+            if r.get("keys"):
+                r["keys"] = sorted(r["keys"], key=lambda k: k["frame"])
+                r.setdefault("box", r["keys"][0]["box"])
+                r.setdefault("start_frame", r["keys"][0]["frame"])
+                r.setdefault("end_frame", r["keys"][-1]["frame"])
             for key, fkey in (("at_s", "frame"), ("start_s", "start_frame"), ("end_s", "end_frame")):
                 if r.get(key) is not None:
                     r[fkey] = int(round(float(r[key]) * FPS))
             if "box" not in r:
-                raise RuntimeError("each region needs box (pixels) or box_norm (0-1 of the frame)")
+                raise RuntimeError("each region needs box (pixels), box_norm (0-1 of the frame) or keys")
             r["frame"] = min(max(0, int(r.get("frame", 0))), n - 1)
             r.setdefault("start_frame", 0)
             r.setdefault("end_frame", n - 1)
