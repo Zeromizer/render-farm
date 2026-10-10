@@ -334,6 +334,28 @@ class _CanceledSignal(Exception):
     """Translated to proc.Canceled by the runner (keeps this module free of proc)."""
 
 
+def fetch_outputs(outputs, dest_dir, exts=(".mp4",)):
+    """Download every saved output file (type "output") with one of exts into dest_dir,
+    keeping ComfyUI's file names. Returns the local paths."""
+    paths = []
+    for node_out in outputs.values():
+        for key in ("videos", "images", "gifs"):
+            for f in node_out.get(key, []) or []:
+                name = f.get("filename", "")
+                if f.get("type", "output") != "output" or not name.lower().endswith(tuple(exts)):
+                    continue
+                params = {"filename": name, "subfolder": f.get("subfolder", ""), "type": "output"}
+                dest = os.path.join(dest_dir, os.path.basename(name))
+                with httpx.stream("GET", _url("/view"), params=params, timeout=_TIMEOUT) as r:
+                    if r.status_code != 200:
+                        raise ComfyError(f"/view failed HTTP {r.status_code} for {name}")
+                    with open(dest, "wb") as out:
+                        for chunk in r.iter_bytes(1 << 20):
+                            out.write(chunk)
+                paths.append(dest)
+    return paths
+
+
 def fetch_output(outputs, dest_path):
     """Find the saved video in a /history outputs dict and download it.
 
