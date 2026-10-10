@@ -9,6 +9,7 @@ Writes <out>/object_info.json (the SAM3 nodes' real schemas), and per test
 """
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -51,25 +52,30 @@ def run_graph(graph, dest, timeout_s=1200):
                 err = next((m[1] for m in msgs if m[0] == "execution_error"), {})
                 raise RuntimeError(f"execution error at {err.get('node_type')}: {err.get('exception_message')}\n"
                                    f"{''.join(err.get('traceback') or [])[-2000:]}")
+            got = 0
             for node_out in (e.get("outputs") or {}).values():
                 for key in ("videos", "images", "gifs"):
                     for f in node_out.get(key, []) or []:
                         if f.get("type", "output") == "output" and f["filename"].lower().endswith(".mp4"):
+                            m = re.search(r"_obj(\d+)", f["filename"])
+                            target = dest if not m else dest.replace("mask.mp4", f"obj{m.group(1)}.mp4")
                             params = {"filename": f["filename"], "subfolder": f.get("subfolder", ""), "type": "output"}
                             with httpx.stream("GET", COMFY + "/view", params=params, timeout=T) as resp:
                                 resp.raise_for_status()
-                                with open(dest, "wb") as out:
+                                with open(target, "wb") as out:
                                     for chunk in resp.iter_bytes(1 << 20):
                                         out.write(chunk)
-                            return time.monotonic() - t0
-            raise RuntimeError("no mp4 in outputs")
+                            got += 1
+            if not got:
+                raise RuntimeError("no mp4 in outputs")
+            return time.monotonic() - t0
         time.sleep(2)
     httpx.post(COMFY + "/interrupt", timeout=10)
     raise RuntimeError(f"timed out after {timeout_s}s")
 
 
 def graph(src, t, prefix):
-    return {
+    g = {
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": CKPT}},
         "2": {"class_type": "LoadVideo", "inputs": {"file": src}},
         "3": {"class_type": "GetVideoComponents", "inputs": {"video": ["2", 0]}},
@@ -90,6 +96,17 @@ def graph(src, t, prefix):
         "11": {"class_type": "SaveVideo", "inputs": {"video": ["10", 0], "filename_prefix": prefix, "format": "mp4",
                                                      "codec": "h264"}},
     }
+    # one mask video per object index (per_object: how many)
+    for k in range(int(t.get("per_object", 0))):
+        b = 100 + 10 * k
+        g.update({
+            str(b): {"class_type": "SAM3_TrackToMask", "inputs": {"track_data": ["7", 0], "object_indices": str(k)}},
+            str(b + 1): {"class_type": "MaskToImage", "inputs": {"mask": [str(b), 0]}},
+            str(b + 2): {"class_type": "CreateVideo", "inputs": {"images": [str(b + 1), 0], "fps": 24.0}},
+            str(b + 3): {"class_type": "SaveVideo", "inputs": {"video": [str(b + 2), 0], "filename_prefix": f"{prefix}_obj{k}",
+                                                              "format": "mp4", "codec": "h264"}},
+        })
+    return g
 
 
 def overlay(clip, mask, out_dir):
