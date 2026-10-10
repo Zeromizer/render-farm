@@ -213,6 +213,17 @@ def prep(spec):
         if not 1 <= len(regions) <= 4:
             raise RuntimeError("region mode needs 1-4 regions")
         for r in regions:
+            # agents see downscaled frames: boxes may come as fractions of the frame and
+            # times as seconds
+            if r.get("box_norm") is not None:
+                b = r["box_norm"]
+                r["box"] = [b[0] * fw, b[1] * fh, b[2] * fw, b[3] * fh]
+            for key, fkey in (("at_s", "frame"), ("start_s", "start_frame"), ("end_s", "end_frame")):
+                if r.get(key) is not None:
+                    r[fkey] = int(round(float(r[key]) * FPS))
+            if "box" not in r:
+                raise RuntimeError("each region needs box (pixels) or box_norm (0-1 of the frame)")
+            r["frame"] = min(max(0, int(r.get("frame", 0))), n - 1)
             r.setdefault("start_frame", 0)
             r.setdefault("end_frame", n - 1)
             r["start_frame"] = max(0, int(r["start_frame"]))
@@ -235,6 +246,9 @@ def prep(spec):
         if crop_mode == "auto":
             crop_mode = "full" if big else "crop"
     elif mode == "audio":
+        for key, fkey in (("start_s", "start_frame"), ("end_s", "end_frame")):
+            if spec.get(key) is not None:
+                spec[fkey] = int(round(float(spec[key]) * FPS))
         s = max(0, int(spec.get("start_frame", 0)))
         e = min(n - 1, int(spec.get("end_frame", n - 1)))
         lo, length = window_around(n + pad, s, e, int(spec.get("context_frames", 24)))

@@ -9,13 +9,14 @@ params (jsonb):
     source_b          {bucket, path}  bridge only: the clip that follows
     prompt            region (crop): what should be inside the window around the boxes;
                       otherwise the whole shot as it should look, incl. sound
-    regions           region: [{box: [x0, y0, x1, y1] in source px, frame (the box is
-                      drawn on), track (default true; false for overlays that do not
-                      move), start_frame, end_frame}], 1-4
+    regions           region: [{box: [x0, y0, x1, y1] in source px | box_norm: the same in
+                      0-1 of the frame, frame | at_s (where the box is drawn), track
+                      (default true; false for overlays that do not move),
+                      start_frame | start_s, end_frame | end_s}], 1-4
     crop              region: auto | crop | full (default auto)
     seconds           extend / prepend / bridge: how much to generate (snapped to H3's grid)
     context_s         extend / prepend (2.0) / bridge (1.5): original footage H3 sees
-    start_frame / end_frame   audio: range whose sound is regenerated
+    start_frame / end_frame (or start_s / end_s)   audio: range whose sound is regenerated
     takes             seeds to generate and score (default 2, max 4)
     seed              first seed (default 6332); takes use seed, seed+1009, ...
     steps / turbo     sampling (default turbo 4-step ref2v)
@@ -66,10 +67,12 @@ def validate(p):
         if not 1 <= len(regs) <= 4:
             raise RuntimeError("region mode needs 1-4 regions")
         for r in regs:
-            b = r.get("box")
+            b, norm = (r.get("box_norm"), True) if r.get("box_norm") is not None else (r.get("box"), False)
+            gap = 0.002 if norm else 4
             if not (isinstance(b, (list, tuple)) and len(b) == 4 and all(isinstance(v, (int, float)) for v in b)
-                    and b[2] > b[0] + 4 and b[3] > b[1] + 4):
-                raise RuntimeError("region box must be [x0, y0, x1, y1] in source pixels, x1>x0, y1>y0")
+                    and b[2] > b[0] + gap and b[3] > b[1] + gap and (not norm or all(0 <= v <= 1 for v in b))):
+                raise RuntimeError("region needs box [x0, y0, x1, y1] in source pixels or box_norm in 0-1 of the "
+                                   "frame, with x1>x0 and y1>y0")
         if p.get("crop", "auto") not in ("auto", "crop", "full"):
             raise RuntimeError("crop must be auto, crop or full")
     if mode in ("extend", "prepend", "bridge"):
@@ -120,8 +123,8 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         proc.run_streaming([py, "-u", os.path.join(EDIT_DIR, "clip_edit.py"), sub, path], cwd=EDIT_DIR,
                            on_line=on_line, cancel_check=cancel_check, timeout_seconds=timeout_seconds)
 
-    spec = {k: p[k] for k in ("mode", "regions", "crop", "seconds", "context_s", "start_frame", "end_frame")
-            if p.get(k) is not None}
+    spec = {k: p[k] for k in ("mode", "regions", "crop", "seconds", "context_s", "start_frame", "end_frame",
+                              "start_s", "end_s") if p.get(k) is not None}
     spec.update(clips, work_dir=work_dir)
     stream("prep", spec, 3, 10)
     plan = json.load(open(os.path.join(work_dir, "plan.json")))

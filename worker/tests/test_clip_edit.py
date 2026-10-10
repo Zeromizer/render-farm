@@ -146,6 +146,10 @@ class RoundTripTest(unittest.TestCase):
         rep = self._run_len("bridge", {"mode": "bridge", "clip": self.a, "clip_b": self.b, "seconds": 0.5})
         self.assertGreater(rep["generated_frames"], 0)
 
+    def test_region_norm_seconds(self):
+        self._run("norm", {"mode": "region", "clip": self.a,
+                           "regions": [{"box_norm": [0.1, 0.38, 0.3, 0.62], "at_s": 0.0, "end_s": 1.0}]}, 41)
+
     def test_audio(self):
         self._run("audio", {"mode": "audio", "clip": self.a, "start_frame": 5, "end_frame": 30}, 41)
 
