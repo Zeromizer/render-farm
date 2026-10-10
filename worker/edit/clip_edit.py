@@ -799,8 +799,9 @@ def clean_inputs(spec):
     """After a first prep (plan.json in work_dir): the frames and masks an image model cleans
     for anchor removal. The main frame is spec["frame"], or the one where the boxes cover the
     most (the object fully in view), a key frame in the middle of that stretch. The first and
-    last boxed key frames join it when they are a clip or more away: a moving camera carries
-    one cleaned frame only so far, and an object entering or leaving would otherwise pop.
+    last boxed key frames, and key frames where the box changes size (the object entering or
+    leaving), join it when they are a clip or more away (up to 5 frames): a moving camera
+    carries one cleaned box only so far, and an entry would otherwise pop.
     Writes <out_prefix><frame>.png and <out_prefix><frame>_mask.png at the image model's size
     (spec["size"]) and clean.json {frames: [{frame, image, mask}]}."""
     work = spec["work_dir"]
@@ -823,8 +824,13 @@ def clean_inputs(spec):
         # prefer a key frame (window start + 17k): there the cleaned frame is an anchor as is
         key = [k for k in full if k in keys]
         a = (key or full)[len(key or full) // 2]
-    picks = [a] + [k for k in (keys[:1] + keys[-1:]) if abs(k - a) >= LATENT_CLIP]
-    picks = sorted(set(picks[:int(spec.get("max_frames", 3))]))
+    # entries and exits: key frames where the box changes size against the next or previous
+    # key frame get their own cleaned view (a neighbour's cleaned box does not reach)
+    karea = {k: float(_box_mask(boxed[k], fh, fw).sum()) for k in keys}
+    moving = [k for i, k in enumerate(keys) if any(
+        abs(karea[k] - karea[j]) > 0.15 * max(karea[k], karea[j]) for j in keys[max(0, i - 1):i + 2] if j != k)]
+    picks = [a] + [k for k in (keys[:1] + keys[-1:] + moving) if abs(k - a) >= LATENT_CLIP]
+    picks = sorted(set(picks[:int(spec.get("max_frames", 5))]))
     cap = cv2.VideoCapture(spec["clip"])
     got = {}
     for i in range(max(picks) + 1):

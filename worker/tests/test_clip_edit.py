@@ -185,8 +185,8 @@ class RoundTripTest(unittest.TestCase):
         CE.clean_inputs({"work_dir": w, "clip": self.a, "size": [320, 176], "out_prefix": pre})
         cj = json.load(open(os.path.join(w, "clean.json")))
         self.assertEqual(cj["main"], 34)   # the fullest stretch is 20-40; 34 is its key frame
-        self.assertEqual([f["frame"] for f in cj["frames"]], [0, 34])
-        m = cv2.imread(cj["frames"][1]["mask"], cv2.IMREAD_GRAYSCALE)
+        self.assertEqual([f["frame"] for f in cj["frames"]], [0, 17, 34])   # 17 ends the entry
+        m = cv2.imread(cj["frames"][2]["mask"], cv2.IMREAD_GRAYSCALE)
         self.assertEqual(m.shape, (176, 320))
         self.assertEqual(int(m[90, 300]), 255)
         self.assertEqual(int(m[90, 100]), 0)
