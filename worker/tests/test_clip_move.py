@@ -1,7 +1,9 @@
-"""clip_edit move mode: param validation, route / track / camera maths, and a prep -> build ->
-compose round trip on a tiny synthetic locked-off clip (a red block driving across a grey
-road with a soft shadow; SAM's masks and the render's are faked from the known boxes),
-which catches shape bugs and checks the old car AND its shadow are gone before a GPU run.
+"""clip_edit move mode: param validation, route / track / camera maths, the LTX plate windows,
+and prep -> build -> compose round trips on tiny synthetic clips (a red block driving across a
+grey road with a soft shadow; SAM's masks, the LTX plate and the render are faked from the
+known geometry): a locked-off one on the median plate, and a panning camera on a faked LTX
+plate with a timed route. They catch shape bugs and check the old car AND its shadow are gone
+and the new car lands where the route says, before a GPU run.
 The pixel side needs OpenCV + ffmpeg; those tests skip without them."""
 import json
 import math
@@ -52,6 +54,16 @@ class ValidateMoveTest(unittest.TestCase):
     def test_route_may_leave_the_shot(self):
         _runner.validate(_params(route=[[0.5, 0.5], [1.4, 0.5]]))
 
+    def test_timed_route(self):
+        _runner.validate(_params(route=[{"at_s": 2.0, "x": 0.5, "y": 0.4}, {"at_s": 4.0, "x": 0.7, "y": 1.2}]))
+        _runner.validate(_params(route=[{"frame": 48, "x": 0.5, "y": 0.4}]))
+        for bad in ([{"at_s": 2.0, "x": 0.5, "y": 0.4}, [0.6, 0.2]],       # mixed kinds
+                    [{"at_s": 2.0, "x": 0.5}],                              # no y
+                    [{"at_s": 25.0, "x": 0.5, "y": 0.4}],                   # past 20 s
+                    [{"at_s": 2.0, "x": 0.5, "y": 1.8}]):                   # off the -0.5..1.5 range
+            with self.assertRaises(RuntimeError, msg=str(bad)):
+                _runner.validate(_params(route=bad))
+
     def test_timing_and_ttm(self):
         _runner.validate(_params(start_s=1.0, hold_s=0.5, arrive_s=4.0, ttm=[1, 2], ease="linear", turn=False))
         for bad in ({"start_s": 3, "arrive_s": 2}, {"ttm": [0, 2]}, {"ttm": [3, 2]}, {"ease": "bounce"},
@@ -85,6 +97,47 @@ class GeometryTest(unittest.TestCase):
         self.assertEqual(ps[40][:2], ps[59][:2])                      # still after arriving
         self.assertAlmostEqual(ps[16][2], 0.0, delta=0.3)              # heading east first
         self.assertAlmostEqual(ps[39][2], math.pi / 2, delta=0.3)      # then south
+
+    def test_poses_timed_hits_each_point_on_time(self):
+        route = [(0, 0), (100, 0), (100, 100), (0, 100)]
+        ps = CM.poses_timed(route, [20, 50, 70], 90, go=5)
+        self.assertEqual(ps[0][:2], ps[5][:2])                        # still until it leaves
+        for f, (x, y) in zip((20, 50, 70), route[1:]):
+            self.assertAlmostEqual(ps[f][0], x, delta=1.0)
+            self.assertAlmostEqual(ps[f][1], y, delta=1.0)
+        self.assertEqual(ps[70][:2], ps[89][:2])                      # stops at the last point
+        # never backs up along the route
+        dist = [0.0]
+        for a, b in zip(ps[5:71], ps[6:71]):
+            dist.append(dist[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+        self.assertAlmostEqual(dist[-1], 300, delta=25)                # ~ the spline's length, no detours
+
+    def test_ltx_windows_and_dims(self):
+        self.assertEqual(CM.ltx_windows(40), [(0, 41)])
+        self.assertEqual(CM.ltx_windows(121), [(0, 121)])
+        for n in (124, 250, 362):
+            ws = CM.ltx_windows(n)
+            self.assertEqual(ws[0][0], 0)
+            self.assertEqual(ws[-1][0] + ws[-1][1], n)               # the last one ends on the last frame
+            for (a, c), (b, _) in zip(ws, ws[1:]):
+                self.assertGreaterEqual(a + c - b, CM.LTX_OVERLAP)    # enough overlap to crossfade
+            self.assertTrue(all(c == CM.LTX_FRAMES for _, c in ws))
+        self.assertEqual(CM.ltx_dims(1344, 768), (1024, 576))
+        self.assertEqual(CM.ltx_dims(768, 1344), (576, 1024))
+        w, h = CM.ltx_dims(1920, 1080)
+        self.assertEqual((w % 32, h % 32), (0, 0))
+
+    def test_camera_track_follows_a_pan(self):
+        rng = np.random.default_rng(1)
+        tex = cv2.GaussianBlur((rng.random((180, 480, 3)) * 255).astype(np.uint8), (0, 0), 2)
+        frames = [tex[:, 3 * i:3 * i + 320].copy() for i in range(30)]
+        Hs, drift, lost = CM.camera_track(frames)
+        self.assertEqual(lost, 0)
+        x, y = CM.warp_pt(Hs[29], 200, 90)                            # frame 0 -> frame 29: 87 px left
+        self.assertAlmostEqual(x, 200 - 87, delta=2.0)
+        self.assertAlmostEqual(y, 90, delta=2.0)
+        G = CM.relative(Hs, 10)                                       # frame 10 -> frame 29: 57 px left
+        self.assertAlmostEqual(CM.warp_pt(G[29], 200, 90)[0], 200 - 57, delta=2.0)
 
     def test_pick_track_by_point(self):
         a = [np.zeros((40, 80), bool) for _ in range(5)]
@@ -125,6 +178,25 @@ class GeometryTest(unittest.TestCase):
         pan = [np.roll(base, 2 * i, axis=1) for i in range(30)]
         self.assertLess(CM.camera_drift(still), 0.005)
         self.assertGreater(CM.camera_drift(pan), 0.1)
+
+
+def _stitch_check(test, d):
+    """Two plate windows of flat colours crossfade over their overlap, n frames out."""
+    a, b = os.path.join(d, "a.mp4"), os.path.join(d, "b.mp4")
+    for pth, v in ((a, 40), (b, 200)):
+        wr = CM.Writer(pth, 64, 32, CM.FPS, lossless=True)
+        for _ in range(20):
+            wr.write(np.full((32, 64, 3), v, np.uint8))
+        wr.close()
+    out = os.path.join(d, "plate.mp4")
+    CM.stitch_plate([a, b], [(0, 20), (12, 20)], 30, out, (64, 32))
+    res, _ = CM.L.read_clip(out)
+    test.assertEqual(len(res), 30)
+    vals = [int(r[16, 32, 1]) for r in res]
+    test.assertLess(abs(vals[5] - 40), 3)
+    test.assertLess(abs(vals[25] - 200), 3)
+    test.assertTrue(all(x <= y + 2 for x, y in zip(vals, vals[1:])), vals)   # a smooth ramp, no jump
+    test.assertTrue(60 < vals[16] < 180, vals)
 
 
 def _road(w, h):
@@ -245,16 +317,101 @@ class RoundTripTest(unittest.TestCase):
         self.assertLess(float(np.abs(res[f][h - 30:, :60].astype(int) - dec[f][h - 30:, :60].astype(int)).mean()), 3.0)
         self.assertTrue(os.path.exists(os.path.join(self.dir, "proof.png")))
 
-    def test_moving_camera_is_refused(self):
-        w, h, n = 320, 192, 40
+    def test_stitch_plate(self):
+        _stitch_check(self, self.dir)
+
+    def _pan_clip(self, w, h, n, pan, car_world):
+        """A textured road the camera pans across `pan` px a frame, a red car at car_world(f)
+        (world px); returns (frames, empty frames, car box in frame px per frame)."""
         rng = np.random.default_rng(3)
-        tex = cv2.GaussianBlur((rng.random((h, w * 2, 3)) * 255).astype(np.uint8), (0, 0), 2)
-        frames = [tex[:, 3 * f:3 * f + w].copy() for f in range(n)]
+        world = cv2.GaussianBlur((rng.random((h, w + pan * n + 8, 3)) * 120 + 60).astype(np.uint8), (0, 0), 1.5)
+        cv2.line(world, (0, h // 2), (world.shape[1], h // 2), (230, 230, 230), 2)
+        frames, empty, boxes = [], [], []
+        for f in range(n):
+            bg = world[:, pan * f:pan * f + w].copy()
+            cx, cy = car_world(f)
+            box = (int(cx - pan * f) - 14, int(cy) - 8, int(cx - pan * f) + 14, int(cy) + 8)
+            empty.append(bg)
+            frames.append(_draw_car(bg, box))
+            boxes.append(box)
+        return frames, empty, boxes
+
+    def test_moving_camera_needs_the_ltx_plate(self):
+        w, h, n = 320, 192, 40
+        frames, _, boxes = self._pan_clip(w, h, n, 3, lambda f: (80 + 4 * f, h * 0.4))
         clip = os.path.join(self.dir, "pan.mp4")
         CM.L.write_clip(clip, frames, CM.FPS)
+        CM.prep({"clip": clip, "work_dir": self.dir})
+        with open(os.path.join(self.dir, "plan.json")) as fh:
+            plan = json.load(fh)
+        self.assertTrue(plan["camera_moving"])
+        self.assertTrue(os.path.exists(os.path.join(self.dir, plan["ltx"]["files"][0])))
+        m = os.path.join(self.dir, "src_obj0.mp4")
+        _mask_video(m, boxes + [boxes[-1]] * (plan["length"] - n), *plan["canvas"])
         with self.assertRaises(RuntimeError) as cm:
-            CM.prep({"clip": clip, "work_dir": self.dir})
-        self.assertIn("camera moves", str(cm.exception))
+            CM.build({"work_dir": self.dir, "sam_masks": [m], "point_norm": [0.27, 0.4], "route": [[0.5, 0.1]]})
+        self.assertIn("LTX", str(cm.exception))
+
+    def test_moving_camera_round_trip(self):
+        """A panning camera; the car should leave its lane and be at (0.5, 0.15) OF FRAME 30
+        at frame 30 (a timed point): the drawn car must land there although the camera has
+        moved 90 px since the start, the old car must be gone, the plate is the faked LTX one."""
+        w, h, n, pan = 320, 192, 40, 3
+        frames, empty, boxes = self._pan_clip(w, h, n, pan, lambda f: (80 + 4 * f, h * 0.4))
+        clip = os.path.join(self.dir, "pan.mp4")
+        CM.L.write_clip(clip, frames, CM.FPS)
+        CM.prep({"clip": clip, "work_dir": self.dir})
+        with open(os.path.join(self.dir, "plan.json")) as fh:
+            plan = json.load(fh)
+        W, H = plan["canvas"]
+        length = plan["length"]
+        self.assertTrue(plan["camera_moving"])
+        sx, sy = W / w, H / h
+        sc = lambda b: (int(b[0] * sx), int(b[1] * sy), int(b[2] * sx), int(b[3] * sy))  # noqa: E731
+        m = os.path.join(self.dir, "src_obj0.mp4")
+        _mask_video(m, [sc(b) for b in boxes] + [sc(boxes[-1])] * (length - n), W, H)
+        # the faked LTX plate: the empty road at the LTX canvas, one window per plan
+        lw, lh = plan["ltx"]["canvas"]
+        wins = []
+        for i, (s0, c) in enumerate(plan["ltx"]["windows"]):
+            pth = os.path.join(self.dir, f"plate_{i}.mp4")
+            wr = CM.Writer(pth, lw, lh, CM.FPS, lossless=True)
+            for j in range(c):
+                wr.write(cv2.resize(empty[min(s0 + j, n - 1)], (lw, lh), interpolation=cv2.INTER_AREA))
+            wr.close()
+            wins.append(pth)
+        CM.build({"work_dir": self.dir, "sam_masks": [m], "plate_windows": wins, "point_norm": [0.27, 0.4],
+                  "hold_s": 0, "route": [{"frame": 18, "x": 0.45, "y": 0.4}, {"frame": 30, "x": 0.5, "y": 0.15}]})
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "plate_ltx.mp4")))
+        with open(os.path.join(self.dir, "poses.json")) as fh:
+            pz = json.load(fh)
+        self.assertTrue(pz["camera_moving"])
+        d30 = pz["drawn"][30]
+        self.assertAlmostEqual(d30[0], 0.5 * W, delta=6, msg=f"drawn car at frame 30: {d30}")
+        self.assertAlmostEqual(d30[1], 0.15 * H, delta=6, msg=f"drawn car at frame 30: {d30}")
+        # fake take = the reference; the render's car mask from the drawn poses
+        take = os.path.join(self.dir, "move_ref.mp4")
+        car_boxes = [None if d is None else (int(d[0]) - 16, int(d[1]) - 10, int(d[0]) + 16, int(d[1]) + 10)
+                     for d in pz["drawn"]]
+        tm = os.path.join(self.dir, "take_obj0.mp4")
+        _mask_video(tm, car_boxes, W, H)
+        out = os.path.join(self.dir, "edit.mp4")
+        CM.compose({"work_dir": self.dir, "clip": clip, "takes": [take], "take_masks": [[tm]], "seeds": [6332],
+                    "out": out, "proof": os.path.join(self.dir, "proof.png"),
+                    "report": os.path.join(self.dir, "report.json")})
+        with open(os.path.join(self.dir, "report.json")) as fh:
+            rep = json.load(fh)
+        self.assertEqual((rep["plate"], rep["camera_moving"]), ("ltx", True))
+        res, _ = CM.L.read_clip(out)
+        self.assertEqual(len(res), n)
+        f = n - 4
+        x0, y0, x1, y1 = boxes[f]
+        patch = res[f][y0 - 10:y1 + 10, x0 - 10:x1 + 10].astype(int)
+        want = empty[f][y0 - 10:y1 + 10, x0 - 10:x1 + 10].astype(int)
+        self.assertLess(float(np.abs(patch - want).mean()), 8.0, "old car or its shadow is still there")
+        # and the new car is in the composite where it was drawn
+        cx, cy = int(d30[0] / sx), int(d30[1] / sy)
+        self.assertGreater(int(res[30][cy, cx, 2]) - int(res[30][cy, cx, 1]), 100, "no red car at the timed point")
 
 
 if __name__ == "__main__":

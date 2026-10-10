@@ -3,7 +3,13 @@
 The edit, from the 2026-10-10 spike (spikes/route/try_route_edit.py):
 
   SAM 3.1 tracks the car in the source (its old path, frame by frame)
-  -> a clean plate: the road without it (masked temporal median; locked-off camera only)
+  -> a clean plate video: the road without it, frame by frame - the LTX 2.5 Clean-Plate
+     IC-LoRA (videogen/graphs_ltx_plate.py, 2026-10-11), which takes out every vehicle and its
+     shadow and follows a moving camera. Without the LTX models on the PC: a masked temporal
+     median over a locked-off shot (with every other car SAM finds kept out of it)
+  -> the camera's motion, frame to frame (a ground-plane homography; identity when locked off):
+     the route is a path on the ground, given in the start frame (or as timed points, each in
+     the frame at its own time), so the car stays on the road while the camera moves
   -> the car cut from the start frame and dragged along the new route over the source with
      the old car taken out, turned to face where it is going = the cut-and-drag reference
   -> H3 + vlo Time-to-Move renders the clip from that (videogen/graphs_ttm.py)
@@ -15,11 +21,11 @@ The edit, from the 2026-10-10 spike (spikes/route/try_route_edit.py):
 
 Three subcommands driven by a spec JSON (run in the planar_patch venv: opencv + numpy):
 
-  prep     conform the clip to an H3 canvas on the 17k+5 grid, refuse a moving camera,
-           write move_src.mp4 and plan.json
-  build    pick the car's track, build the clean plate and the reference, write the H3
-           inputs (move_ref.mp4, move_refmask.mp4, first.png), oldmask.mp4, poses.json,
-           route.png
+  prep     conform the clip to an H3 canvas on the 17k+5 grid, track the camera (cam.json),
+           write move_src.mp4, the LTX plate windows (ltx_src_<i>.mp4) and plan.json
+  build    pick the car's track, stitch the LTX plate windows (plate_ltx.mp4) or build the
+           median plate, build the reference, write the H3 inputs (move_ref.mp4,
+           move_refmask.mp4, first.png), oldmask.mp4, poses.json, route.png
   compose  pick the car in each render, score the takes against the drawn path, compose
            each at the source's own resolution, write the best one, a proof sheet and a
            report
@@ -44,8 +50,14 @@ MAX_AREA = 1344 * 768              # H3's native canvas
 # Canvas pixels x frames one TTM pass holds on the 16 GB card: 1344x768x124 ran (2026-10-10).
 PIXEL_FRAMES = 1.3e8
 # How far the background may drift (fraction of the frame width, over the clip) and still
-# count as a locked-off shot. The clean plate is one image, so a camera move breaks it.
+# count as a locked-off shot (then the camera is held still: no homography jitter). A moving
+# camera needs the LTX plate: the median plate is one image.
 MAX_CAMERA_DRIFT = 0.012
+# LTX plate windows (videogen/graphs_ltx_plate.py WINDOW_*: what the 16 GB card ran) and how
+# much consecutive windows overlap (crossfaded).
+LTX_PIXELS = 1024 * 576
+LTX_FRAMES = 121
+LTX_OVERLAP = 16
 BASE_W = 832                       # every pixel size below was tuned on 832-wide footage
 
 emit = L.emit
@@ -109,7 +121,9 @@ class Writer:
         ffmpeg = L.find_ffmpeg_tool("ffmpeg")
         cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
                "-s", f"{w}x{h}", "-r", f"{fps:.3f}", "-i", "-"]
-        if audio_from:
+        if audio_from == "silence":  # the LTX plate graph encodes audio: give it a silent track
+            cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a"]
+        elif audio_from:
             cmd += ["-i", audio_from, "-map", "0:v:0", "-map", "1:a?"]
         if lossless:
             cmd += ["-c:v", "libx264", "-crf", "0", "-preset", "veryfast", "-pix_fmt", "yuv444p"]
@@ -160,36 +174,124 @@ def write_masks(path, masks, fps=FPS):
 
 # ---------------------------------------------------------------- camera
 
-def camera_drift(frames, step=6, scale=0.5):
-    """How far the background moves over the clip, as a fraction of the frame width: corner
-    tracks frame to frame (RANSAC similarity, so a moving car does not count), chained, the
-    largest displacement any frame corner reaches."""
+def camera_track(frames, scale=0.5):
+    """The camera's motion: per frame, the 3x3 homography taking frame 0's pixels to that
+    frame's (the ground plane, as RANSAC sees most of the picture; a moving car is an
+    outlier), chained frame to frame. Returns (homographies, drift, frames it lost track):
+    drift = the largest displacement any frame corner reaches, as a fraction of the width.
+    A step it cannot measure repeats the last one."""
     h, w = frames[0].shape[:2]
     S = np.diag([scale, scale, 1.0])
+    Si = np.linalg.inv(S)
     gray = lambda f: cv2.cvtColor(cv2.resize(f, None, fx=scale, fy=scale), cv2.COLOR_BGR2GRAY)  # noqa: E731
-    M = np.eye(3)
+    Hs, fails, last = [np.eye(3)], 0, np.eye(3)
     corners = np.array([[0, 0, 1], [w, 0, 1], [0, h, 1], [w, h, 1]], float).T
     worst = 0.0
     prev = gray(frames[0])
-    for i in range(step, len(frames), step):
+    for i in range(1, len(frames)):
         cur = gray(frames[i])
-        p0 = cv2.goodFeaturesToTrack(prev, 300, 0.01, 8)
-        if p0 is None or len(p0) < 12:
-            prev = cur
-            continue
-        p1, st, _ = cv2.calcOpticalFlowPyrLK(prev, cur, p0, None)
-        ok = st.ravel() == 1
-        if ok.sum() < 12:
-            prev = cur
-            continue
-        A, inl = cv2.estimateAffinePartial2D(p0[ok], p1[ok], method=cv2.RANSAC, ransacReprojThreshold=1.5)
-        if A is not None:
-            Af = np.vstack([A, [0, 0, 1]])
-            M = (np.linalg.inv(S) @ Af @ S) @ M
-            moved = M @ corners
-            worst = max(worst, float(np.max(np.hypot(moved[0] - corners[0], moved[1] - corners[1]))))
+        step = None
+        p0 = cv2.goodFeaturesToTrack(prev, 400, 0.01, 8)
+        if p0 is not None and len(p0) >= 12:
+            p1, st, _ = cv2.calcOpticalFlowPyrLK(prev, cur, p0, None)
+            ok = st.ravel() == 1
+            if ok.sum() >= 12:
+                Hm, inl = cv2.findHomography(p0[ok], p1[ok], cv2.RANSAC, 1.5)
+                if Hm is not None and inl is not None and inl.sum() >= 30:
+                    step = Si @ Hm @ S
+                else:  # few points: a similarity is steadier than a homography
+                    A, inl = cv2.estimateAffinePartial2D(p0[ok], p1[ok], method=cv2.RANSAC,
+                                                         ransacReprojThreshold=1.5)
+                    if A is not None and inl is not None and inl.sum() >= 10:
+                        step = Si @ np.vstack([A, [0, 0, 1]]) @ S
+        if step is None:
+            fails += 1
+            step = last
+        last = step
+        Hs.append(step @ Hs[-1])
+        moved = Hs[-1] @ corners
+        moved = moved[:2] / moved[2]
+        worst = max(worst, float(np.max(np.hypot(moved[0] - corners[0], moved[1] - corners[1]))))
         prev = cur
-    return worst / w
+    return Hs, worst / w, fails
+
+
+def camera_drift(frames):
+    """How far the background moves over the clip, as a fraction of the frame width."""
+    return camera_track(frames)[1]
+
+
+def to_canvas(Hs, fw, fh, W, H):
+    """Source-pixel homographies as canvas-pixel ones."""
+    S = np.diag([W / fw, H / fh, 1.0])
+    Si = np.linalg.inv(S)
+    return [S @ Hm @ Si for Hm in Hs]
+
+
+def relative(Hs, s0):
+    """G[f]: start-frame pixels -> frame f pixels."""
+    inv0 = np.linalg.inv(Hs[s0])
+    return [Hm @ inv0 for Hm in Hs]
+
+
+def warp_pt(G, x, y):
+    v = G @ np.array([x, y, 1.0])
+    return float(v[0] / v[2]), float(v[1] / v[2])
+
+
+# ---------------------------------------------------------------- LTX plate windows
+
+def ltx_dims(fw, fh, area=LTX_PIXELS):
+    """The LTX canvas: the clip's aspect, 32-aligned, about `area` pixels."""
+    ar = fw / fh
+    w = max(256, int(round(math.sqrt(area * ar) / 32)) * 32)
+    h = max(256, int(round(math.sqrt(area / ar) / 32)) * 32)
+    while w * h > area * 1.04:
+        if w >= h:
+            w -= 32
+        else:
+            h -= 32
+    return w, h
+
+
+def ltx_windows(n, size=LTX_FRAMES, overlap=LTX_OVERLAP):
+    """[(start, count)] covering n frames: one window of 8k+1 >= n frames for a short clip
+    (padded with the last frame), else windows of `size` overlapping by at least `overlap`,
+    the last one ending on the clip's last frame."""
+    if n <= size:
+        return [(0, 1 + 8 * int(math.ceil((n - 1) / 8)))]
+    out, s = [(0, size)], 0
+    while s + size < n:
+        s = s + size - overlap
+        if s + size >= n:
+            s = n - size
+        out.append((s, size))
+    return out
+
+
+def stitch_plate(paths, windows, n, out_path, size):
+    """The plate windows as one n-frame video at `size` (lossless), overlaps crossfaded."""
+    wr = Writer(out_path, size[0], size[1], FPS, lossless=True)
+    pending = {}
+    for i, ((s, c), pth) in enumerate(zip(windows, paths)):
+        nxt = windows[i + 1][0] if i + 1 < len(windows) else None
+        end = s + c - 1
+        rd = Reader(pth, size)
+        for j in range(c):
+            f = s + j
+            if f >= n:
+                break
+            img = rd.next().astype(np.float32)
+            if f in pending:  # second half of an overlap with the previous window
+                pw, acc = pending.pop(f)
+                img = acc + img * (1.0 - pw)
+            if nxt is not None and f >= nxt:
+                wprev = 1.0 - (f - nxt + 1) / (end - nxt + 2)
+                pending[f] = (wprev, img * wprev)
+                continue
+            wr.write(np.clip(img, 0, 255).astype(np.uint8))
+        rd.close()
+    wr.close()
 
 
 # ---------------------------------------------------------------- route geometry
@@ -207,13 +309,31 @@ def catmull_rom(pts, per=64):
     return np.array(out)
 
 
+PER = 64  # spline samples per route segment
+
+
+def _along(dense, s, seg, d):
+    """(x, y, heading) at arc length d along the dense spline."""
+    i = int(np.searchsorted(s, d, side="right") - 1)
+    i = min(max(i, 0), len(dense) - 2)
+    a = (d - s[i]) / max(seg[i], 1e-6)
+    x, y = dense[i] + a * (dense[i + 1] - dense[i])
+    j0, j1 = max(0, i - 3), min(len(dense) - 1, i + 4)
+    dx, dy = dense[j1] - dense[j0]
+    return float(x), float(y), math.atan2(dy, dx)
+
+
+def _spline(route_px):
+    dense = catmull_rom(route_px, PER)
+    seg = np.linalg.norm(np.diff(dense, axis=0), axis=1)
+    return dense, seg, np.concatenate([[0], np.cumsum(seg)])
+
+
 def poses(route_px, n, start, hold, arrive, ease="inout"):
     """(x, y, heading) per frame: still until start + hold, along the spline by arc length
     (smoothstep ease) to arrive at `arrive`, then still at the end. Frames before start get
     the first point (the caller does not use them)."""
-    dense = catmull_rom(route_px)
-    seg = np.linalg.norm(np.diff(dense, axis=0), axis=1)
-    s = np.concatenate([[0], np.cumsum(seg)])
+    dense, seg, s = _spline(route_px)
     total = s[-1]
     go = start + hold
     moving = max(1, arrive - go)
@@ -222,14 +342,50 @@ def poses(route_px, n, start, hold, arrive, ease="inout"):
         u = min(1.0, max(0.0, (f - go) / moving))
         if ease == "inout":
             u = u * u * (3 - 2 * u)
-        d = u * total
-        i = int(np.searchsorted(s, d, side="right") - 1)
-        i = min(max(i, 0), len(dense) - 2)
-        a = (d - s[i]) / max(seg[i], 1e-6)
-        x, y = dense[i] + a * (dense[i + 1] - dense[i])
-        j0, j1 = max(0, i - 3), min(len(dense) - 1, i + 4)
-        dx, dy = dense[j1] - dense[j0]
-        out.append((float(x), float(y), math.atan2(dy, dx)))
+        out.append(_along(dense, s, seg, u * total))
+    return out
+
+
+def _pchip(xk, yk, x, m0=None, m1=None):
+    """Monotone cubic through (xk, yk) (Fritsch-Carlson), slopes m0/m1 at the ends (default
+    the end secants): distance along the route over time, so the car never backs up."""
+    xk, yk = np.asarray(xk, float), np.asarray(yk, float)
+    h = np.diff(xk)
+    dl = np.diff(yk) / h
+    m = np.zeros(len(xk))
+    m[0] = dl[0] if m0 is None else m0
+    m[-1] = dl[-1] if m1 is None else m1
+    for k in range(1, len(xk) - 1):
+        if dl[k - 1] * dl[k] <= 0:
+            m[k] = 0.0
+        else:
+            w1, w2 = 2 * h[k] + h[k - 1], h[k] + 2 * h[k - 1]
+            m[k] = (w1 + w2) / (w1 / dl[k - 1] + w2 / dl[k])
+    k = min(max(int(np.searchsorted(xk, x, side="right") - 1), 0), len(xk) - 2)
+    t = (x - xk[k]) / h[k]
+    h00, h10 = 2 * t ** 3 - 3 * t ** 2 + 1, t ** 3 - 2 * t ** 2 + t
+    h01, h11 = -2 * t ** 3 + 3 * t ** 2, t ** 3 - t ** 2
+    return h00 * yk[k] + h10 * h[k] * m[k] + h01 * yk[k + 1] + h11 * h[k] * m[k + 1]
+
+
+def poses_timed(route_px, key_frames, n, go, ease="inout"):
+    """(x, y, heading) per frame for a timed route: route_px[0] is the car at the start (it
+    leaves at frame go), route_px[i] is reached at key_frames[i - 1]. Distance along the
+    spline follows a monotone curve through those times (from rest with ease inout, stopping
+    at the last point), still before go and after the last key."""
+    dense, seg, s = _spline(route_px)
+    xs = [float(go)] + [float(k) for k in key_frames]
+    ys = [0.0] + [float(s[min(i * PER, len(s) - 1)]) for i in range(1, len(route_px))]
+    slow = 0.0 if ease == "inout" else None
+    out = []
+    for f in range(n):
+        if f <= xs[0]:
+            d = 0.0
+        elif f >= xs[-1]:
+            d = ys[-1]
+        else:
+            d = float(np.clip(_pchip(xs, ys, f, slow, slow), 0, ys[-1]))
+        out.append(_along(dense, s, seg, d))
     return out
 
 
@@ -439,22 +595,43 @@ def prep(spec):
     if n < 17:
         raise RuntimeError("the clip is too short for a move edit (under a second)")
     fh, fw = frames[0].shape[:2]
-    emit("PHASE", "checking the camera")
-    drift = camera_drift(frames)
-    log(f"MEASURED camera drift {drift * 100:.2f}% of the width over the clip")
-    if drift > MAX_CAMERA_DRIFT:
-        raise RuntimeError(f"the camera moves in this clip (the background drifts {drift * 100:.1f}% of the frame "
-                           f"width); move edits need a locked-off shot for now")
+    emit("PHASE", "tracking the camera")
+    Hs, drift, lost = camera_track(frames)
+    moving = drift > MAX_CAMERA_DRIFT
+    log(f"MEASURED camera drift {drift * 100:.2f}% of the width over the clip "
+        f"({'moving' if moving else 'locked off'}); lost track in {lost} frame(s)")
+    if moving and lost > max(3, 0.1 * n):
+        raise RuntimeError(f"the camera moves in a way the edit cannot follow (lost track of the background in {lost} "
+                           f"of {n} frames: too fast, too blurred or too little texture); pick a steadier shot")
     length = snap_up(n)
     W, H = canvas_for(fw, fh, length)
-    emit("PROGRESS", 50)
+    emit("PROGRESS", 40)
+    # the camera, in canvas pixels, one homography per frame on the H3 grid (held still when
+    # locked off: no estimate jitter)
+    Hc = to_canvas(Hs, fw, fh, W, H) if moving else [np.eye(3)] * n
+    Hc = list(Hc) + [Hc[-1]] * (length - n)
+    _save(os.path.join(work, "cam.json"), {"moving": moving, "H": [[round(float(v), 8) for v in m.ravel()] for m in Hc]})
     small = [cv2.resize(f, (W, H), interpolation=cv2.INTER_AREA) for f in frames]
     small += [small[-1]] * (length - n)
     L.write_clip(os.path.join(work, "move_src.mp4"), small, FPS, audio_from=spec["clip"], lossless=True)
+    del small
+    emit("PROGRESS", 70)
+    # the LTX clean-plate windows: the clip at the LTX canvas, 8k+1 frames each, silent track
+    lw, lh = ltx_dims(fw, fh, min(LTX_PIXELS, max(fw * fh, 512 * 288)))  # no bigger than the source
+    wins = ltx_windows(n)
+    files = []
+    for i, (s0, c) in enumerate(wins):
+        name = f"ltx_src_{i}.mp4"
+        wr = Writer(os.path.join(work, name), lw, lh, FPS, audio_from="silence", frames=c)
+        for j in range(c):
+            wr.write(cv2.resize(frames[min(s0 + j, n - 1)], (lw, lh), interpolation=cv2.INTER_AREA))
+        wr.close()
+        files.append(name)
     plan = {"mode": "move", "fps": FPS, "frames": n, "width": fw, "height": fh, "length": length,
-            "canvas": [W, H], "camera_drift": round(drift, 4), "warnings": warnings}
+            "canvas": [W, H], "camera_drift": round(drift, 4), "camera_moving": moving, "warnings": warnings,
+            "ltx": {"canvas": [lw, lh], "windows": [[a, b] for a, b in wins], "files": files}}
     _save(os.path.join(work, "plan.json"), plan)
-    log(f"MEASURED canvas {W}x{H}, {n} frames -> {length} on the H3 grid")
+    log(f"MEASURED canvas {W}x{H}, {n} frames -> {length} on the H3 grid; LTX plate {lw}x{lh} in {len(wins)} window(s)")
     emit("PROGRESS", 100)
 
 
@@ -468,11 +645,29 @@ def _frame_of(spec, key_f, key_s, default):
     return default
 
 
+def _route_keys(spec, n):
+    """Timed route points as [(frame, x, y)] (x, y: 0-1 of THAT frame), or None for a plain
+    route ([x, y] points in the start frame)."""
+    raw = spec["route"]
+    if not any(isinstance(q, dict) for q in raw):
+        return None
+    keys = []
+    for q in raw:
+        if not isinstance(q, dict):
+            raise RuntimeError("the route mixes timed points ({at_s, x, y}) and plain ones ([x, y]); use one kind")
+        f = int(q["frame"]) if q.get("frame") is not None else int(round(float(q["at_s"]) * FPS))
+        keys.append((min(max(f, 0), n - 1), float(q["x"]), float(q["y"])))
+    return sorted(keys)
+
+
 def build(spec):
     work = spec["work_dir"]
     plan = _load(os.path.join(work, "plan.json"))
     W, H = plan["canvas"]
     n, length = plan["frames"], plan["length"]
+    cam_path = os.path.join(work, "cam.json")
+    cam = _load(cam_path) if os.path.exists(cam_path) else {"moving": False}
+    moving = bool(cam.get("moving"))
     emit("PHASE", "reading tracks")
     frames, _ = L.read_clip(os.path.join(work, "move_src.mp4"))
     frames = (frames + [frames[-1]] * length)[:length]
@@ -492,34 +687,73 @@ def build(spec):
     log(f"MEASURED old track: object {k}, in {seen}/{n - s0} frames from frame {s0}")
     emit("PROGRESS", 15)
 
-    # other traffic (SAM's generic "car" pass): kept out of the clean plate
-    others = [np.zeros((H, W), bool) for _ in range(length)]
-    for pth in spec.get("other_masks") or []:
-        for f, m in enumerate(read_masks(pth, length, (W, H))):
-            others[f] |= m
-    write_masks(os.path.join(work, "othermask.mp4"), others)
-
-    # clean plate (a sample of up to ~96 frames is plenty for a median)
-    step = max(1, n // 96)
-    idx = list(range(0, n, step))
-    plate = clean_plate([frames[i] for i in idx], [old[i] for i in idx], px(60, W),
-                        [others[i] for i in idx], px(30, W))
+    plate_path = os.path.join(work, "plate_ltx.mp4")
+    if spec.get("plate_windows"):
+        # the LTX clean plate, frame by frame (follows the camera; every car and shadow out)
+        emit("PHASE", "stitching the clean plate")
+        ltx = plan["ltx"]
+        stitch_plate(spec["plate_windows"], [tuple(w) for w in ltx["windows"]], n, plate_path, tuple(ltx["canvas"]))
+        rd = Reader(plate_path, (W, H))
+        plate = rd.next().copy()
+        rd.close()
+        log(f"MEASURED plate: LTX clean plate, {len(spec['plate_windows'])} window(s)")
+    else:
+        if moving:
+            raise RuntimeError("the camera moves in this clip and the LTX clean-plate models are not on the render "
+                               "PC; without them move edits need a locked-off shot")
+        if os.path.exists(plate_path):
+            os.remove(plate_path)
+        # other traffic (SAM's generic "car" pass): kept out of the median plate
+        others = [np.zeros((H, W), bool) for _ in range(length)]
+        for pth in spec.get("other_masks") or []:
+            for f, m in enumerate(read_masks(pth, length, (W, H))):
+                others[f] |= m
+        write_masks(os.path.join(work, "othermask.mp4"), others)
+        # a sample of up to ~96 frames is plenty for a median
+        step = max(1, n // 96)
+        idx = list(range(0, n, step))
+        plate = clean_plate([frames[i] for i in idx], [old[i] for i in idx], px(60, W),
+                            [others[i] for i in idx], px(30, W))
+        log("MEASURED plate: masked temporal median")
     cv2.imwrite(os.path.join(work, "plate.png"), plate)
     emit("PROGRESS", 35)
 
-    # route: from the car's centre at s0 through the given points (0-1 of the frame)
+    # the camera: G[f] takes start-frame pixels (the route's ground) to frame f's
+    G = relative([np.array(h, float).reshape(3, 3) for h in cam["H"]], s0) if moving else None
+    Gi = [np.linalg.inv(g) for g in G] if G else None
+    to_world = (lambda f, x, y: warp_pt(Gi[f], x, y)) if G else (lambda f, x, y: (x, y))  # noqa: E731
+
+    # route: from the car's centre at s0 through the given points, on the ground (start-frame
+    # pixels). Plain points are 0-1 of the start frame; timed ones 0-1 of the frame at their time.
     m0 = old[s0]
     ang, (cx, cy) = car_axis(m0)
-    pts = [(float(x) * W, float(y) * H) for x, y in spec["route"]]
-    if pts and math.hypot(pts[0][0] - cx, pts[0][1] - cy) < 0.04 * W:
-        pts = pts[1:]  # the agent gave the car's own position first
-    if not pts:
-        raise RuntimeError("the route needs at least one point after the car's position")
-    route = [(cx, cy)] + pts
     hold = max(0, _frame_of(spec, "hold_frames", "hold_s", int(round(0.25 * FPS))))
-    arrive = _frame_of(spec, "arrive_frame", "arrive_s", n - 1)
-    arrive = min(max(arrive, s0 + hold + 6), n - 1)
-    ps = poses(route, length, s0, hold, arrive, spec.get("ease", "inout"))
+    keys = _route_keys(spec, n)
+    if keys is None:
+        pts = [(float(x) * W, float(y) * H) for x, y in spec["route"]]
+        if pts and math.hypot(pts[0][0] - cx, pts[0][1] - cy) < 0.04 * W:
+            pts = pts[1:]  # the agent gave the car's own position first
+        if not pts:
+            raise RuntimeError("the route needs at least one point after the car's position")
+        route = [(cx, cy)] + pts
+        arrive = _frame_of(spec, "arrive_frame", "arrive_s", n - 1)
+        arrive = min(max(arrive, s0 + hold + 6), n - 1)
+        ps = poses(route, length, s0, hold, arrive, spec.get("ease", "inout"))
+    else:
+        wk = [(f, *to_world(f, x * W, y * H)) for f, x, y in keys]
+        if wk and wk[0][0] <= s0 + 2 and math.hypot(wk[0][1] - cx, wk[0][2] - cy) < 0.04 * W:
+            wk = wk[1:]  # the car's own position at the start
+        wk = [k for k in wk if k[0] > s0]
+        if not wk:
+            raise RuntimeError("the timed route needs at least one point after start_s")
+        hold = min(hold, max(0, wk[0][0] - s0 - 4))
+        frames_k, last = [], s0 + hold
+        for f, _, _ in wk:  # strictly later than the one before
+            last = max(f, last + 2)
+            frames_k.append(min(last, length - 1))
+        route = [(cx, cy)] + [(x, y) for _, x, y in wk]
+        arrive = frames_k[-1]
+        ps = poses_timed(route, frames_k, length, s0 + hold, spec.get("ease", "inout"))
     turn = spec.get("turn", True) is not False
     # the nose: the way the car was going in the source (old track after s0, else before),
     # else the way the new route starts
@@ -528,6 +762,7 @@ def build(spec):
     for f in list(range(s0 + 12, min(n, s0 + 25))) + list(range(max(0, s0 - 12), s0)):
         src_m = tracks[k][f] if f < len(tracks[k]) else None
         c = centroid(src_m) if src_m is not None and src_m.any() else None
+        c = to_world(f, *c) if c else None
         if c and math.hypot(c[0] - cx, c[1] - cy) > 3:
             h_src = math.atan2(c[1] - cy, c[0] - cx) if f > s0 else math.atan2(cy - c[1], cx - c[0])
             break
@@ -539,14 +774,16 @@ def build(spec):
     cover_k = _disk(px(15, W))
     k10 = _disk(px(10, W))
     refs, refmask, new = [], [], []
+    pr = Reader(plate_path, (W, H)) if os.path.exists(plate_path) else None
     for f in range(length):
+        pf = pr.next() if pr is not None else plate
         if f < s0:
             refs.append(frames[f])
             refmask.append(cv2.dilate(tracks[k][f].astype(np.uint8), k10) > 0)
             new.append(tracks[k][f])
             continue
         cov = cv2.GaussianBlur((cv2.dilate(old[f].astype(np.uint8), cover_k) > 0).astype(np.float32), (0, 0), 3)[..., None]
-        bg = frames[f].astype(np.float32) * (1 - cov) + plate.astype(np.float32) * cov
+        bg = frames[f].astype(np.float32) * (1 - cov) + pf.astype(np.float32) * cov
         x, y, hd = ps[f]
         dth = 0.0
         if turn:
@@ -555,14 +792,19 @@ def build(spec):
         M = cv2.getRotationMatrix2D((cx, cy), -math.degrees(dth), 1.0)
         M[0, 2] += x - cx
         M[1, 2] += y - cy
-        c = cv2.warpAffine(car, M, (W, H), flags=cv2.INTER_LINEAR)
-        a = cv2.warpAffine(alpha, M, (W, H), flags=cv2.INTER_LINEAR)[..., None]
+        M3 = np.vstack([M, [0, 0, 1]])
+        if G is not None:  # the ground pose, seen through the camera at frame f
+            M3 = G[f] @ M3
+        c = cv2.warpPerspective(car, M3, (W, H), flags=cv2.INTER_LINEAR)
+        a = cv2.warpPerspective(alpha, M3, (W, H), flags=cv2.INTER_LINEAR)[..., None]
         refs.append(np.clip(bg * (1 - a) + c * a, 0, 255).astype(np.uint8))
         nm = a[..., 0] > 0.5
         new.append(nm)
         refmask.append(cv2.dilate(nm.astype(np.uint8), k10) > 0)
         if f % 24 == 0:
             emit("PROGRESS", 40 + int(50 * f / length))
+    if pr is not None:
+        pr.close()
     L.write_clip(os.path.join(work, "move_ref.mp4"), refs, FPS, audio_from=os.path.join(work, "move_src.mp4"),
                  lossless=True)
     write_masks(os.path.join(work, "move_refmask.mp4"), refmask)
@@ -574,10 +816,14 @@ def build(spec):
         c = centroid(new[f]) if f >= s0 and new[f].any() else None
         drawn.append(None if c is None else [round(c[0], 1), round(c[1], 1)])
     _save(os.path.join(work, "poses.json"), {"start": s0, "hold": hold, "arrive": arrive, "drawn": drawn, "track": k,
-                                             "route": [[round(x, 1), round(y, 1)] for x, y in route]})
+                                             "route": [[round(x, 1), round(y, 1)] for x, y in route],
+                                             "camera_moving": moving})
+    # the route picture, on the ground as the start frame sees it
     pic = frames[s0].copy()
     for f in range(s0, n, 3):
         cs, _ = cv2.findContours(tracks[k][f].astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if Gi is not None:
+            cs = [cv2.perspectiveTransform(c.astype(np.float32), Gi[f]).astype(np.int32) for c in cs]
         cv2.drawContours(pic, cs, -1, (0, 200, 255), 1)
     for (x0, y0, _), (x1, y1, _) in zip(ps[s0:n], ps[s0 + 1:n]):
         cv2.line(pic, (int(x0), int(y0)), (int(x1), int(y1)), (0, 0, 255), 2)
@@ -642,25 +888,29 @@ def compose(spec):
         raise RuntimeError("H3 did not draw the car on the new path in any take; try a gentler route or another seed")
     best = min(good, key=lambda r: r["score"])["take"]
 
-    # the plate again at the source's own size (from a sample of frames + upscaled masks)
-    emit("PHASE", "clean plate at full size")
     old_small = read_masks(os.path.join(work, "oldmask.mp4"), length)
-    om_path = os.path.join(work, "othermask.mp4")
-    other_small = read_masks(om_path, length) if os.path.exists(om_path) else None
-    up = lambda m: cv2.resize(m.astype(np.uint8), (fw, fh), interpolation=cv2.INTER_LINEAR) > 0  # noqa: E731
-    step = max(1, n // 96)
-    rd = Reader(spec["clip"])
-    sample, sample_m, sample_o = [], [], []
-    for f in range(n):
-        fr = rd.next()
-        if f % step == 0:
-            sample.append(fr.copy())
-            sample_m.append(up(old_small[f]))
-            if other_small is not None:
-                sample_o.append(up(other_small[f]))
-    rd.close()
-    plate = clean_plate(sample, sample_m, px(60, fw), sample_o if other_small is not None else None, px(30, fw))
-    del sample, sample_m, sample_o
+    plate_path = os.path.join(work, "plate_ltx.mp4")
+    use_ltx = os.path.exists(plate_path)
+    plate = None
+    if not use_ltx:
+        # the median plate again at the source's own size (a sample of frames + upscaled masks)
+        emit("PHASE", "clean plate at full size")
+        om_path = os.path.join(work, "othermask.mp4")
+        other_small = read_masks(om_path, length) if os.path.exists(om_path) else None
+        up = lambda m: cv2.resize(m.astype(np.uint8), (fw, fh), interpolation=cv2.INTER_LINEAR) > 0  # noqa: E731
+        step = max(1, n // 96)
+        rd = Reader(spec["clip"])
+        sample, sample_m, sample_o = [], [], []
+        for f in range(n):
+            fr = rd.next()
+            if f % step == 0:
+                sample.append(fr.copy())
+                sample_m.append(up(old_small[f]))
+                if other_small is not None:
+                    sample_o.append(up(other_small[f]))
+        rd.close()
+        plate = clean_plate(sample, sample_m, px(60, fw), sample_o if other_small is not None else None, px(30, fw))
+        del sample, sample_m, sample_o
 
     outs = {}
     for r in good:
@@ -679,10 +929,16 @@ def compose(spec):
                          for c, d in zip(car_small, drawn_m)]
         dest = os.path.join(work, f"take{r['take']}.mp4")
         src, raw = Reader(spec["clip"]), Reader(spec["takes"][i])
+        pv = Reader(plate_path) if use_ltx else None
         wr = Writer(dest, fw, fh, FPS, audio_from=spec["clip"], frames=n)
+        pf = plate
         for f in range(n):
             fr = src.next()
             rf = raw.next()
+            if pv is not None:
+                pf = pv.next()
+                if (pf.shape[1], pf.shape[0]) != (fw, fh):
+                    pf = cv2.resize(pf, (fw, fh), interpolation=cv2.INTER_LANCZOS4)
             if f < s0:
                 wr.write(fr)
                 continue
@@ -693,18 +949,21 @@ def compose(spec):
             for j in range(max(s0, f - 1), min(n, f + 2)):
                 u |= car_small[j]
             cm = cv2.resize(u.astype(np.uint8), (fw, fh), interpolation=cv2.INTER_LINEAR) > 0
-            out = paste_car(remove_old(fr, om, plate, fw), rf, cm, fw)
+            out = paste_car(remove_old(fr, om, pf, fw), rf, cm, fw)
             wr.write(np.clip(out, 0, 255).astype(np.uint8))
             if f % 24 == 0:
                 emit("PROGRESS", int(100 * (f + 1) / n))
         wr.close()
         src.close()
         raw.close()
+        if pv is not None:
+            pv.close()
         outs[r["take"]] = dest
     shutil.copyfile(outs[best], spec["out"])
     proof_sheet(spec["proof"], work, spec["clip"], outs[best], s0, n)
     report = {"mode": "move", "best_take": best, "takes": results, "canvas": [W, H], "frames": n,
               "start_frame": s0, "arrive_frame": pz["arrive"], "camera_drift": plan["camera_drift"],
+              "camera_moving": bool(plan.get("camera_moving")), "plate": "ltx" if use_ltx else "median",
               "warnings": plan.get("warnings", [])}
     _save(spec["report"], report)
     log(f"best take {best}")

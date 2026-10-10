@@ -18,15 +18,19 @@ params (jsonb):
     seconds           extend / prepend / bridge: how much to generate (snapped to H3's grid)
     context_s         extend / prepend (2.0) / bridge (1.5): original footage H3 sees
     start_frame / end_frame (or start_s / end_s)   audio: range whose sound is regenerated
-    move              send a car along a new path (worker/edit/clip_move.py; locked-off shots,
-                      up to ~15 s): object (a noun SAM 3.1 tracks: "red car"), point_norm [x, y]
-                      on that car at the start, route [[x, y], ...] 1-12 points (0-1 of the
-                      frame, -0.5..1.5 to drive out of shot) its centre passes through after
-                      where it is, start_s | start_frame (when it leaves its old path, default
-                      0), hold_s (wait before moving, default 0.25), arrive_s | arrive_frame
-                      (reaches the last point, default the end), ease inout | linear, turn
-                      (default true: the car turns to face where it goes; false keeps its
-                      orientation), ttm [start, end] steps (default [1, 3])
+    move              send a car along a new path (worker/edit/clip_move.py; still or moving
+                      camera, up to ~15 s): object (a noun SAM 3.1 tracks: "red car"),
+                      point_norm [x, y] on that car at the start, route 1-12 points its centre
+                      passes through after where it is: [[x, y], ...] in 0-1 of the START frame
+                      (-0.5..1.5 to drive out of shot), or timed [{at_s | frame, x, y}, ...],
+                      each in 0-1 of the frame AT that time (a moving camera: the car is there
+                      then), start_s | start_frame (when it leaves its old path, default 0),
+                      hold_s (wait before moving, default 0.25), arrive_s | arrive_frame (plain
+                      routes: reaches the last point, default the end), ease inout | linear,
+                      turn (default true: the car turns to face where it goes; false keeps its
+                      orientation), ttm [start, end] steps (default [1, 3]). The road without
+                      the car comes from the LTX 2.5 clean-plate IC-LoRA (graphs_ltx_plate);
+                      without its models: a median plate, locked-off shots only
     takes             seeds to generate and score (default 2, max 4; move: default 1)
     seed              first seed (default 6332); takes use seed, seed+1009, ...
     steps / turbo     sampling (default turbo 4-step ref2v)
@@ -49,7 +53,8 @@ import proc
 from venvs import venv_python
 from runners import gate_common
 from runners.video_gen import _run_prompt
-from videogen import comfy_client, graphs_inpaint, graphs_sam3, graphs_ttm, media_type, ram_gate, tts_guard
+from videogen import (comfy_client, graphs_inpaint, graphs_ltx_plate, graphs_sam3, graphs_ttm, media_type, ram_gate,
+                      tts_guard)
 
 _WORKER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EDIT_DIR = os.path.join(_WORKER_DIR, "edit")
@@ -57,6 +62,7 @@ EDIT_DIR = os.path.join(_WORKER_DIR, "edit")
 REQUIREMENTS = os.path.join(_WORKER_DIR, "patch", "requirements.txt")
 MODES = ("region", "extend", "prepend", "bridge", "audio", "move")
 MAX_TAKES = 4
+MAX_FRAME = 362
 SEED_STEP = 1009
 
 
@@ -115,11 +121,21 @@ def _validate_move(p):
             and all(isinstance(v, (int, float)) and 0 <= v <= 1 for v in pt)):
         raise RuntimeError("move needs point_norm [x, y] in 0-1 of the frame, on the car at the start")
     route = p.get("route")
-    if not (isinstance(route, list) and 1 <= len(route) <= 12 and all(
-            isinstance(q, (list, tuple)) and len(q) == 2
-            and all(isinstance(v, (int, float)) and -0.5 <= v <= 1.5 for v in q) for q in route)):
-        raise RuntimeError("move needs route: 1-12 points [x, y] (0-1 of the frame; -0.5..1.5 to leave the "
-                           "shot) the car's centre passes through")
+    coord = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and -0.5 <= v <= 1.5  # noqa: E731
+
+    def plain(q):
+        return isinstance(q, (list, tuple)) and len(q) == 2 and all(coord(v) for v in q)
+
+    def timed(q):
+        t = q.get("frame") if q.get("frame") is not None else q.get("at_s")
+        return (isinstance(t, (int, float)) and not isinstance(t, bool) and 0 <= t <= (MAX_FRAME if q.get("frame")
+                is not None else 20) and coord(q.get("x")) and coord(q.get("y")))
+    ok = isinstance(route, list) and 1 <= len(route) <= 12 and (
+        all(plain(q) for q in route) or all(isinstance(q, dict) and timed(q) for q in route))
+    if not ok:
+        raise RuntimeError("move needs route: 1-12 points the car's centre passes through, either [x, y] in 0-1 of "
+                           "the start frame (-0.5..1.5 to leave the shot) or, all of them, timed {at_s, x, y} with "
+                           "x, y in 0-1 of the frame at that time")
     if p.get("ease", "inout") not in ("inout", "linear"):
         raise RuntimeError("ease must be inout or linear")
     ttm = p.get("ttm") or [1, 3]
@@ -155,10 +171,46 @@ def _sam_tracks(jid, noun, clip, work_dir, tag, cancel_check, deadline, log):
     return paths
 
 
+def _ltx_ready(log):
+    """True when the PC has every node and model file the LTX clean plate needs."""
+    info = comfy_client.object_info()
+    nodes = [n for n in graphs_ltx_plate.REQUIRED_NODES if n not in info]
+    files = graphs_ltx_plate.missing_models(info)
+    if nodes or files:
+        log(f"LTX clean plate unavailable (missing nodes {nodes}, files {files}): median plate")
+        return False
+    return True
+
+
+def _ltx_plate(jid, noun, plan, work_dir, heartbeat, cancel_check, deadline, log, prange):
+    """The LTX clean plate, one ComfyUI pass per window (clip_move's prep wrote them).
+    Returns the window videos, in order, and the seconds spent waiting for memory."""
+    ltx = plan["ltx"]
+    lw, lh = ltx["canvas"]
+    need = config.VIDEO_GEN_MIN_AVAIL_RAM_GB
+    waited = ram_gate.wait_for_ram(
+        need, config.VIDEO_GEN_RAM_WAIT_MAX_MINUTES * 60, cancel_check,
+        lambda gb: db.set_phase(jid, f"waiting for memory: {gb:.1f} GB free, needs {need:g} GB", prange[0]), log)
+    deadline += waited
+    out = []
+    span = (prange[1] - prange[0]) / max(1, len(ltx["files"]))
+    for i, (name, (s0, c)) in enumerate(zip(ltx["files"], ltx["windows"])):
+        src = comfy_client.upload_input(os.path.join(work_dir, name), subfolder="clip_edit")
+        graph, _ = graphs_ltx_plate.build(src, noun, lw, lh, c, 6332, f"clip_edit/{jid}_plate{i}")
+        dest = os.path.join(work_dir, f"plate_{i}.mp4")
+        lo = int(prange[0] + span * i)
+        log(f"clean plate {i + 1}/{len(ltx['files'])}: LTX {lw}x{lh}, frames {s0}-{s0 + c - 1}")
+        _run_prompt(jid, graph, f"clean plate {i + 1}/{len(ltx['files'])}", heartbeat, cancel_check, deadline, dest,
+                    log, prange=(lo, int(lo + span)))
+        out.append(dest)
+    return out, waited
+
+
 def _run_move(jid, p, clip, work_dir, stream, heartbeat, cancel_check, deadline, log):
-    """Move mode up to the takes: prep (canvas + camera check) -> SAM on the source -> build
-    (clean plate + cut-and-drag reference) -> per take, H3 + Time-to-Move, then SAM finds the
-    car in it. Returns (takes, their mask videos, seeds)."""
+    """Move mode up to the takes: prep (canvas, camera track, plate windows) -> SAM on the
+    source -> the LTX clean plate (or, without its models and only on a locked-off shot, SAM on
+    all traffic for a median plate) -> build (cut-and-drag reference) -> per take, H3 +
+    Time-to-Move, then SAM finds the car in it. Returns (takes, their mask videos, seeds)."""
     stream("prep", {"clip": clip, "work_dir": work_dir}, 3, 6)
     plan = json.load(open(os.path.join(work_dir, "plan.json")))
     W, H = plan["canvas"]
@@ -167,28 +219,48 @@ def _run_move(jid, p, clip, work_dir, stream, heartbeat, cancel_check, deadline,
     noun = p["object"].strip()
     db.set_phase(jid, "starting comfyui", 6)
     comfy_client.ensure_server(log)
+    plate_windows, other_masks = None, None
     with tts_guard.paused(log):
         db.set_phase(jid, f"tracking {noun}", 7)
         try:
             src_masks = _sam_tracks(jid, noun, os.path.join(work_dir, "move_src.mp4"), work_dir, "sam_src",
                                     cancel_check, deadline, log)
-            # every car, so other traffic stays out of the clean plate
-            db.set_phase(jid, "tracking other traffic", 8)
-            other_masks = _sam_tracks(jid, "car", os.path.join(work_dir, "move_src.mp4"), work_dir, "sam_all",
-                                      cancel_check, deadline, log)
         finally:
             comfy_client.free()
-    if not src_masks:
-        raise RuntimeError(f'SAM 3.1 found no {noun!r} in the clip; name the car the way it looks ("red car")')
+        if not src_masks:
+            raise RuntimeError(f'SAM 3.1 found no {noun!r} in the clip; name the car the way it looks ("red car")')
+        if _ltx_ready(log):
+            db.set_phase(jid, "clean plate", 8)
+            try:
+                plate_windows, waited = _ltx_plate(jid, noun, plan, work_dir, heartbeat, cancel_check, deadline, log,
+                                                   (8, 16))
+                deadline += waited
+            finally:
+                comfy_client.free()
+        elif plan.get("camera_moving"):
+            raise RuntimeError("the camera moves in this clip and the LTX clean-plate models are not on the render PC "
+                               "(see graphs_ltx_plate.MODEL_FILES); without them move edits need a locked-off shot")
+        else:
+            # every car, so other traffic stays out of the median plate
+            db.set_phase(jid, "tracking other traffic", 8)
+            try:
+                other_masks = _sam_tracks(jid, "car", os.path.join(work_dir, "move_src.mp4"), work_dir, "sam_all",
+                                          cancel_check, deadline, log)
+            finally:
+                comfy_client.free()
     spec = {k: p[k] for k in ("object", "point_norm", "route", "start_s", "start_frame", "hold_s", "arrive_s",
                               "arrive_frame", "ease", "turn") if p.get(k) is not None}
-    spec.update(work_dir=work_dir, sam_masks=src_masks, other_masks=other_masks)
-    stream("build", spec, 10, 16)
+    spec.update(work_dir=work_dir, sam_masks=src_masks)
+    if plate_windows:
+        spec["plate_windows"] = plate_windows
+    else:
+        spec["other_masks"] = other_masks
+    stream("build", spec, 16, 19)
 
     seeds = [p["seed"] + SEED_STEP * i for i in range(p["takes"])]
     ttm = p.get("ttm") or [1, 3]
     takes, take_masks = [], []
-    db.set_phase(jid, "starting comfyui", 16)
+    db.set_phase(jid, "starting comfyui", 19)
     comfy_client.ensure_server(log)
     with tts_guard.paused(log):
         missing = [n for n in graphs_ttm.REQUIRED_NODES if n not in comfy_client.object_info()]
@@ -198,20 +270,20 @@ def _run_move(jid, p, clip, work_dir, stream, heartbeat, cancel_check, deadline,
         need = config.VIDEO_GEN_MIN_AVAIL_RAM_GB
         waited = ram_gate.wait_for_ram(
             need, config.VIDEO_GEN_RAM_WAIT_MAX_MINUTES * 60, cancel_check,
-            lambda gb: db.set_phase(jid, f"waiting for memory: {gb:.1f} GB free, needs {need:g} GB", 17), log)
+            lambda gb: db.set_phase(jid, f"waiting for memory: {gb:.1f} GB free, needs {need:g} GB", 20), log)
         deadline += waited
-        db.set_phase(jid, "uploading inputs", 18)
+        db.set_phase(jid, "uploading inputs", 21)
         names = [comfy_client.upload_input(os.path.join(work_dir, f), subfolder="clip_edit")
                  for f in ("move_ref.mp4", "move_refmask.mp4", "first.png")]
         try:
-            span = (80 - 18) / len(seeds)
+            span = (80 - 21) / len(seeds)
             for i, seed in enumerate(seeds):
                 graph, meta = graphs_ttm.build(*names, p["prompt"], W, H, plan["length"], seed,
                                                f"clip_edit/{jid}_t{i + 1}", ttm=ttm)
                 log(f"take {i + 1}/{len(seeds)}: move {W}x{H} {plan['length']}f seed={seed} "
                     f"steps={meta['steps']} ttm={meta['ttm']}")
                 dest = os.path.join(work_dir, f"raw{i + 1}.mp4")
-                lo = int(18 + span * i)
+                lo = int(21 + span * i)
                 _run_prompt(jid, graph, f"take {i + 1}/{len(seeds)}", heartbeat, cancel_check, deadline, dest, log,
                             prange=(lo, int(lo + span * 0.85)))
                 comfy_client.free()
