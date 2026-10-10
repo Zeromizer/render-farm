@@ -68,6 +68,9 @@ from videogen import comfy_client
 # Engines whose runners drive the headless ComfyUI; after one of these the
 # worker checks ComfyUI's host RAM (comfy_client.recycle_if_bloated).
 COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit"}
+# Plus python: spike scripts drive ComfyUI over HTTP and leave it bloated too
+# (2026-10-10: 16.3 GB after an H3 spike). Under the threshold it is a no-op.
+RECYCLE_AFTER = COMFY_ENGINES | {"python"}
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            "python": python_script.run,
@@ -299,8 +302,8 @@ def process_job(job, log):
         log(f"failed {jid}: {str(e)[:300]}")
     # Here, between jobs, nothing of ours is using ComfyUI, so restarting it
     # cannot fail a job (2026-09-27: a restart from outside the worker did).
-    # ComfyUI engines are never light-lane engines, so this is still the loop.
-    if job["engine"] in COMFY_ENGINES:
+    # These engines are never light-lane engines, so this is still the loop.
+    if job["engine"] in RECYCLE_AFTER:
         try:
             comfy_client.recycle_if_bloated(log)
         except Exception as e:  # noqa: BLE001 - housekeeping must not stop the loop
