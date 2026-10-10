@@ -203,7 +203,7 @@ def check_graph(graph):
                 problems.append(f"{nid} {ct}: required input {k} not set")
         for k, v in n["inputs"].items():
             s = spec.get("required", {}).get(k) or spec.get("optional", {}).get(k)
-            if not s or isinstance(v, list):
+            if not s or isinstance(v, list) or ct.startswith("Load"):  # uploads aren't in the cached list
                 continue
             opts = s[0] if isinstance(s[0], list) else (s[1] or {}).get("options") if s[0] == "COMBO" and len(s) > 1 else None
             if opts is not None and v not in opts:
