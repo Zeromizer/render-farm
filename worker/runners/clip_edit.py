@@ -20,8 +20,9 @@ params (jsonb):
                       (default: where the boxes cover the most), every (frames between
                       anchors, rounded to H3's 17-frame latent clips; default 17)}. Krea 2 cleans that frame inside the boxes,
                       clip_edit carries it along the camera move every `every` frames and
-                      H3 keeps those frames, filling around them. The cleaned frame is
-                      also uploaded as outputs/<job_id>-clean.png.
+                      H3 keeps those frames, filling around them. The first and last
+                      boxed key frames are cleaned too (entries and exits). The main
+                      cleaned frame is also uploaded as outputs/<job_id>-clean.png.
     anchors           region, instead of clean: cleaned frames made elsewhere (an image
                       model's copy of a frame with the object gone), [{image: {bucket,
                       path}, frame | at_s}], 1-4; anchor_every (0 = only the key frame
@@ -123,9 +124,11 @@ def validate(p):
     return dict(p, takes=takes, seed=int(p.get("seed") if p.get("seed") is not None else 6332))
 
 
-def _clean_anchor(jid, p, spec, clip, work_dir, stream, cancel_check, deadline, log):
-    """Anchor removal's cleaned frame: a first prep finds the boxes, clip_edit picks the
-    frame and writes it with its mask, Krea 2 redraws the boxed area from the prompt."""
+def _clean_anchors(jid, p, spec, clip, work_dir, stream, cancel_check, deadline, log):
+    """Anchor removal's cleaned frames: a first prep finds the boxes, clip_edit picks the
+    frames (the object fully in view, plus the first and last boxed key frames) and writes
+    them with their masks, Krea 2 redraws the boxed area from the prompt on each. Returns
+    the anchors and the main cleaned frame's path."""
     c = p["clean"]
     stream("prep", spec, 3, 5)
     plan = json.load(open(os.path.join(work_dir, "plan.json")))
@@ -133,31 +136,36 @@ def _clean_anchor(jid, p, spec, clip, work_dir, stream, cancel_check, deadline, 
     frame = c.get("frame")
     if frame is None and c.get("at_s") is not None:
         frame = int(round(float(c["at_s"]) * graphs_inpaint.FPS))
-    img, mask = os.path.join(work_dir, "clean_in.png"), os.path.join(work_dir, "clean_mask.png")
     stream("clean_inputs", {"work_dir": work_dir, "clip": clip, "size": [kw, kh], "frame": frame,
-                            "out_image": img, "out_mask": mask}, 5, 6)
-    a = json.load(open(os.path.join(work_dir, "clean.json")))["frame"]
-    db.set_phase(jid, f"cleaning frame {a}", 6)
+                            "out_prefix": os.path.join(work_dir, "clean_in_")}, 5, 6)
+    cj = json.load(open(os.path.join(work_dir, "clean.json")))
+    db.set_phase(jid, f"cleaning frame{'s' if len(cj['frames']) > 1 else ''} "
+                      f"{', '.join(str(f['frame']) for f in cj['frames'])}", 6)
     comfy_client.ensure_server(log)
-    dest = os.path.join(work_dir, "clean.png")
+    anchors, main = [], None
     with tts_guard.paused(log):
         missing = [n for n in graphs_clean.REQUIRED_NODES if n not in comfy_client.object_info()]
         if missing:
             raise RuntimeError(f"ComfyUI is missing nodes {missing} for cleaning the anchor frame")
-        names = [comfy_client.upload_input(f, subfolder="clip_edit") for f in (img, mask)]
-        graph = graphs_clean.build(*names, c["prompt"], p["seed"], f"clip_edit/{jid}_clean")
-        log(f"clean: Krea 2 on frame {a} at {kw}x{kh}, seed {p['seed']}")
         try:
-            pid = comfy_client.submit(graph)
-            try:
-                outputs = comfy_client.wait(pid, lambda *_: None, cancel_check,
-                                            max(60, int(deadline - time.monotonic())))
-            except comfy_client._CanceledSignal:
-                raise proc.Canceled()
-            comfy_client.fetch_output(outputs, dest, exts=(".png",))
+            for f in cj["frames"]:
+                names = [comfy_client.upload_input(x, subfolder="clip_edit") for x in (f["image"], f["mask"])]
+                graph = graphs_clean.build(*names, c["prompt"], p["seed"], f"clip_edit/{jid}_clean{f['frame']}")
+                log(f"clean: Krea 2 on frame {f['frame']} at {kw}x{kh}, seed {p['seed']}")
+                pid = comfy_client.submit(graph)
+                try:
+                    outputs = comfy_client.wait(pid, lambda *_: None, cancel_check,
+                                                max(60, int(deadline - time.monotonic())))
+                except comfy_client._CanceledSignal:
+                    raise proc.Canceled()
+                dest = os.path.join(work_dir, f"clean_{f['frame']}.png")
+                comfy_client.fetch_output(outputs, dest, exts=(".png",))
+                anchors.append({"frame": f["frame"], "image": dest})
+                if f["frame"] == cj["main"]:
+                    main = dest
         finally:
             comfy_client.free()
-    return {"frame": a, "image": dest}
+    return anchors, main
 
 
 def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
@@ -210,10 +218,9 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         spec["anchors"] = anchors
         spec["anchor_every"] = int(p.get("anchor_every") if p.get("anchor_every") is not None else 17)
     elif p.get("clean") is not None:
-        clean_local = _clean_anchor(jid, p, spec, clips["clip"], work_dir, stream, cancel_check, deadline, log)
-        spec["anchors"] = [clean_local]
+        spec["anchors"], clean_local = _clean_anchors(jid, p, spec, clips["clip"], work_dir, stream, cancel_check,
+                                                      deadline, log)
         spec["anchor_every"] = int(p["clean"].get("every") or 17)
-        clean_local = clean_local["image"]
     stream("prep", spec, 3 if clean_local is None else 8, 10)
     plan = json.load(open(os.path.join(work_dir, "plan.json")))
     W, H = plan["canvas"]

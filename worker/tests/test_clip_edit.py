@@ -171,24 +171,26 @@ class RoundTripTest(unittest.TestCase):
         self.assertLess(float(np.abs(patch - bg[75:105, 76:122].astype(np.int16)).mean()), 12.0)
 
     def test_clean_inputs_picks_the_fullest_frame(self):
-        # the box grows from frame 0 to 20 and holds: the cleaned frame is the middle of
-        # the fullest stretch, written at the image model's size with its mask
+        # the box grows from frame 0 to 20 and holds: the main cleaned frame is the key frame
+        # of the fullest stretch, the first boxed key frame joins it (the entry), each written
+        # at the image model's size with its mask
         keys = [{"frame": 0, "box": [280, 70, 320, 110]}, {"frame": 20, "box": [200, 70, 320, 110]},
                 {"frame": 40, "box": [200, 70, 320, 110]}]
         w = os.path.join(self.d, "clean")
         os.makedirs(w, exist_ok=True)
         CE.prep({"mode": "region", "clip": self.a, "regions": [{"keys": keys, "track": False}], "work_dir": w})
-        img, mask = os.path.join(w, "ci.png"), os.path.join(w, "cm.png")
-        CE.clean_inputs({"work_dir": w, "clip": self.a, "size": [320, 176], "out_image": img, "out_mask": mask})
-        a = json.load(open(os.path.join(w, "clean.json")))["frame"]
-        self.assertEqual(a, 34)   # the fullest stretch is 20-40; 34 is its key frame
-        m = cv2.imread(mask, cv2.IMREAD_GRAYSCALE)
+        pre = os.path.join(w, "c_")
+        CE.clean_inputs({"work_dir": w, "clip": self.a, "size": [320, 176], "out_prefix": pre})
+        cj = json.load(open(os.path.join(w, "clean.json")))
+        self.assertEqual(cj["main"], 34)   # the fullest stretch is 20-40; 34 is its key frame
+        self.assertEqual([f["frame"] for f in cj["frames"]], [0, 34])
+        m = cv2.imread(cj["frames"][1]["mask"], cv2.IMREAD_GRAYSCALE)
         self.assertEqual(m.shape, (176, 320))
         self.assertEqual(int(m[90, 300]), 255)
         self.assertEqual(int(m[90, 100]), 0)
-        CE.clean_inputs({"work_dir": w, "clip": self.a, "size": [320, 176], "frame": 5, "out_image": img,
-                         "out_mask": mask})
-        self.assertEqual(json.load(open(os.path.join(w, "clean.json")))["frame"], 5)
+        self.assertIsNotNone(cv2.imread(cj["frames"][0]["image"]))
+        CE.clean_inputs({"work_dir": w, "clip": self.a, "size": [320, 176], "frame": 5, "out_prefix": pre})
+        self.assertEqual(json.load(open(os.path.join(w, "clean.json")))["main"], 5)
 
     def test_region_tracked(self):
         self._run("region", {"mode": "region", "clip": self.a,

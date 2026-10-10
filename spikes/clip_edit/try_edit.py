@@ -7,10 +7,10 @@ params.args = [<job json string>, <out dir>]. The job JSON:
 Inputs are fetched from (signed) URLs, so client clips never go into the repo.
 Per test: <out>/<name>/{best.mp4, take<N>.mp4, proof.png, report.json}.
 
-"krea_clean": {"frame", "prompt", "seeds", "pick", "grow"} first makes a cleaned
-anchor frame with Krea 2 (masked img2img in the same ComfyUI) over the region's boxes on
-that frame, saves every seed as <out>/<name>/krea_<seed>.png, and passes the picked one to
-clip_edit as an anchor (with the test's anchor_every).
+"krea_clean": {"frame", "prompt", "seed", "grow"} first makes cleaned anchor frames with
+Krea 2 (masked img2img in the same ComfyUI) over the region's boxes, the frames that
+clip_edit.clean_inputs picks, saves each as <out>/<name>/krea_<frame>.png, and passes them
+to clip_edit as anchors (with the test's anchor_every).
 
 Same ComfyUI graph as the engine will use (videogen/graphs_inpaint.py). ComfyUI must
 already be up: the worker owns its lifecycle, this only waits for it.
@@ -100,28 +100,28 @@ def fetch(url, dest):
 
 
 def krea_clean(t, spec, work, out):
-    """Cleaned anchor frame from Krea 2, the production path: a first prep for the boxes,
-    clip_edit.clean_inputs for the frame + mask, videogen/graphs_clean for the graph."""
+    """Cleaned anchor frames from Krea 2, the production path: a first prep for the boxes,
+    clip_edit.clean_inputs for the frames + masks, videogen/graphs_clean for the graph."""
     kc = t["krea_clean"]
     pre = os.path.join(work, "pre")
     os.makedirs(pre, exist_ok=True)
     clip_edit.prep({**json.loads(json.dumps({k: v for k, v in spec.items() if k != "work_dir"})), "work_dir": pre})
     plan = json.load(open(os.path.join(pre, "plan.json")))
     kw, kh = graphs_clean.size_for(plan["width"], plan["height"])
-    img, mask = os.path.join(work, "krea_in.png"), os.path.join(work, "krea_mask.png")
     clip_edit.clean_inputs({"work_dir": pre, "clip": spec["clip"], "size": [kw, kh], "frame": kc.get("frame"),
-                            "grow": kc.get("grow", 24), "out_image": img, "out_mask": mask})
-    a = json.load(open(os.path.join(pre, "clean.json")))["frame"]
-    img_n, mask_n = upload(img), upload(mask)
-    paths = []
-    for seed in kc.get("seeds", [6332]):
-        dest = os.path.join(out, f"krea_{seed}.png")
-        secs = run_graph(graphs_clean.build(img_n, mask_n, kc["prompt"], int(seed), f"clip_edit_try/{t['name']}_krea{seed}"),
+                            "grow": kc.get("grow", 24), "out_prefix": os.path.join(work, "krea_in_")})
+    cj = json.load(open(os.path.join(pre, "clean.json")))
+    seed = int(kc.get("seed", 6332))
+    anchors = []
+    for f in cj["frames"]:
+        img_n, mask_n = upload(f["image"]), upload(f["mask"])
+        dest = os.path.join(out, f"krea_{f['frame']}.png")
+        secs = run_graph(graphs_clean.build(img_n, mask_n, kc["prompt"], seed, f"clip_edit_try/{t['name']}_krea{f['frame']}"),
                          dest, timeout_s=900, ext=".png")
-        log(f"   krea seed {seed}: {kw}x{kh} frame {a} -> {secs:.0f}s")
-        paths.append(dest)
+        log(f"   krea frame {f['frame']}: {kw}x{kh} seed {seed} -> {secs:.0f}s")
+        anchors.append({"frame": f["frame"], "image": dest})
     httpx.post(COMFY + "/free", json={"unload_models": True, "free_memory": True}, timeout=60)
-    return [{"frame": a, "image": paths[int(kc.get("pick", 0))]}]
+    return anchors
 
 
 def run_test(t, out_root, work_root):

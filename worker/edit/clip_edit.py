@@ -779,17 +779,22 @@ def proof_sheet(path, plan, timeline_path, take_paths, results, best):
 
 
 def clean_inputs(spec):
-    """After a first prep (plan.json in work_dir): the frame and mask an image model cleans
-    for anchor removal. The frame is spec["frame"], or the one where the boxes cover the
-    most (the object fully in view), the middle of that stretch. Writes the frame and
-    mask at the image model's size (spec["size"]) and clean.json {frame}."""
+    """After a first prep (plan.json in work_dir): the frames and masks an image model cleans
+    for anchor removal. The main frame is spec["frame"], or the one where the boxes cover the
+    most (the object fully in view), a key frame in the middle of that stretch. The first and
+    last boxed key frames join it when they are a clip or more away: a moving camera carries
+    one cleaned frame only so far, and an object entering or leaving would otherwise pop.
+    Writes <out_prefix><frame>.png and <out_prefix><frame>_mask.png at the image model's size
+    (spec["size"]) and clean.json {frames: [{frame, image, mask}]}."""
     work = spec["work_dir"]
     plan = json.load(open(os.path.join(work, "plan.json")))
     fh, fw = plan["height"], plan["width"]
     n = plan["frames"] - plan.get("pad_tail", 0)
+    lo = plan["window"][0]
     boxed = {int(k): v for k, v in plan["vmask"].items() if v != "full" and int(k) < n}
     if not boxed:
         raise RuntimeError("cleaning needs region boxes")
+    keys = sorted(k for k in boxed if (k - lo) % LATENT_CLIP == 0)
     if spec.get("frame") is not None:
         a = int(spec["frame"])
         if a not in boxed:
@@ -799,21 +804,29 @@ def clean_inputs(spec):
         top = max(area.values())
         full = sorted(k for k, s in area.items() if s >= 0.98 * top)
         # prefer a key frame (window start + 17k): there the cleaned frame is an anchor as is
-        key = [k for k in full if (k - plan["window"][0]) % LATENT_CLIP == 0]
+        key = [k for k in full if k in keys]
         a = (key or full)[len(key or full) // 2]
+    picks = [a] + [k for k in (keys[:1] + keys[-1:]) if abs(k - a) >= LATENT_CLIP]
+    picks = sorted(set(picks[:int(spec.get("max_frames", 3))]))
     cap = cv2.VideoCapture(spec["clip"])
-    frame = None
-    for _ in range(a + 1):
+    got = {}
+    for i in range(max(picks) + 1):
         ok, frame = cap.read()
         if not ok:
-            raise RuntimeError(f"cannot read frame {a} of the clip")
+            raise RuntimeError(f"cannot read frame {i} of the clip")
+        if i in picks:
+            got[i] = frame
     cap.release()
     kw, kh = spec["size"]
-    m = _box_mask(boxed[a], fh, fw, grow=int(spec.get("grow", 24)))
-    cv2.imwrite(spec["out_image"], cv2.resize(frame, (kw, kh), interpolation=cv2.INTER_AREA))
-    cv2.imwrite(spec["out_mask"], cv2.resize(m, (kw, kh), interpolation=cv2.INTER_NEAREST))
-    json.dump({"frame": a, "width": fw, "height": fh}, open(os.path.join(work, "clean.json"), "w"))
-    print(f"MEASURED clean frame {a} at {kw}x{kh}", flush=True)
+    out = []
+    for k in picks:
+        img, mask = f"{spec['out_prefix']}{k}.png", f"{spec['out_prefix']}{k}_mask.png"
+        m = _box_mask(boxed[k], fh, fw, grow=int(spec.get("grow", 24)))
+        cv2.imwrite(img, cv2.resize(got[k], (kw, kh), interpolation=cv2.INTER_AREA))
+        cv2.imwrite(mask, cv2.resize(m, (kw, kh), interpolation=cv2.INTER_NEAREST))
+        out.append({"frame": k, "image": img, "mask": mask})
+    json.dump({"frames": out, "main": a, "width": fw, "height": fh}, open(os.path.join(work, "clean.json"), "w"))
+    print(f"MEASURED clean frames {picks} (main {a}) at {kw}x{kh}", flush=True)
 
 
 if __name__ == "__main__":
