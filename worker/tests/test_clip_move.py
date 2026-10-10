@@ -165,7 +165,15 @@ class RoundTripTest(unittest.TestCase):
     def test_prep_build_compose(self):
         w, h, n = 320, 192, 40
         road = _road(w, h)
-        frames = [_draw_car(road, _car_box(f, w, h, n, "right")) for f in range(n)]
+        # the red car waits at its start for 24 frames, then drives off east
+        park = 24
+        old_box = lambda f: _car_box(max(0, f - park) * (n - 1) // (n - 1 - park), w, h, n, "right")  # noqa: E731
+        frames = [_draw_car(road, old_box(f)) for f in range(n)]
+        # other traffic: once it has gone, a white car creeps past just below where it waited
+        # (most of the frames there that are free of the red car then show the white car)
+        for f in range(park + 1, n):
+            x = int(w * 0.12 + (f - park) * 2)
+            cv2.rectangle(frames[f], (x, int(h * 0.47)), (x + 30, int(h * 0.55)), (245, 245, 245), -1)
         clip = os.path.join(self.dir, "clip.mp4")
         CM.L.write_clip(clip, frames, CM.FPS)
         CM.prep({"clip": clip, "work_dir": self.dir})
@@ -179,7 +187,7 @@ class RoundTripTest(unittest.TestCase):
         # a second, parked "car" so pick_track has to choose
         src_masks = [os.path.join(self.dir, "src_obj0.mp4"), os.path.join(self.dir, "src_obj1.mp4")]
         _mask_video(src_masks[0], [(int(W * 0.8), int(H * 0.8), int(W * 0.9), int(H * 0.9))] * plan["length"], W, H)
-        _mask_video(src_masks[1], [sc(_car_box(min(f, n - 1), w, h, n, "right")) for f in range(plan["length"])], W, H)
+        _mask_video(src_masks[1], [sc(old_box(min(f, n - 1))) for f in range(plan["length"])], W, H)
         CM.build({"work_dir": self.dir, "sam_masks": src_masks, "point_norm": [0.2, 0.4],
                   "route": [[0.5, 0.4], [0.5, 0.1], [0.5, -0.3]], "hold_s": 0, "arrive_s": (n - 1) / CM.FPS})
         with open(os.path.join(self.dir, "poses.json")) as fh:
@@ -188,6 +196,8 @@ class RoundTripTest(unittest.TestCase):
         for f in ("move_ref.mp4", "move_refmask.mp4", "oldmask.mp4", "first.png", "route.png", "plate.png"):
             self.assertTrue(os.path.exists(os.path.join(self.dir, f)), f)
         plate = cv2.imread(os.path.join(self.dir, "plate.png"))
+        self.assertLess(int(plate[int(H * 0.52), :int(W * 0.45)].max(axis=1).max()), 200,
+                        "the passing white car leaked into the plate")
         self.assertLess(float(np.abs(plate.astype(int) - cv2.resize(road, (W, H)).astype(int)).mean()), 4.0,
                         "the plate should be the empty road")
         # fake take: the reference itself; the render's car mask from the drawn poses
@@ -212,7 +222,7 @@ class RoundTripTest(unittest.TestCase):
         self.assertEqual(res[0].shape[:2], (h, w))
         # where the old car (and its shadow) was late in the clip: road again
         f = n - 4
-        x0, y0, x1, y1 = _car_box(f, w, h, n, "right")
+        x0, y0, x1, y1 = old_box(f)
         patch = res[f][y0 - 10:y1 + 10, x0 - 10:x1 + 10].astype(int)
         want = road[y0 - 10:y1 + 10, x0 - 10:x1 + 10].astype(int)
         self.assertLess(float(np.abs(patch - want).mean()), 8.0, "old car or its shadow is still there")

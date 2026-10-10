@@ -304,9 +304,13 @@ def fill_gaps(masks, max_gap=12):
 
 # ---------------------------------------------------------------- plate + grade
 
-def clean_plate(frames, old, grow):
-    """Locked-off camera: per-pixel median over the frames where the car (and its shadow
-    halo: `grow` px round it) is not. frames/old may be a sample of the clip."""
+def clean_plate(frames, old, grow, outlier=25):
+    """Locked-off camera: the empty road, per pixel. Pass 1, the plain median over every
+    frame (the road, wherever nothing sits for half the clip). Pass 2, the median of the
+    samples that agree with it (within `outlier` levels) and are not under the car or its
+    shadow halo (`grow` px round it): so other traffic passing through drops out too - with
+    the car excluded alone, a spot near where it was parked kept few frames and a passing
+    SUV won the median (a white patch in the edit, 2026-10-10). frames/old may be a sample."""
     k = _disk(grow)
     h, w = frames[0].shape[:2]
     cover = [cv2.dilate(m.astype(np.uint8), k) > 0 for m in old]
@@ -314,11 +318,16 @@ def clean_plate(frames, old, grow):
     for y0 in range(0, h, 48):
         blk = np.stack([f[y0:y0 + 48] for f in frames]).astype(np.float32)
         cv = np.stack([c[y0:y0 + 48] for c in cover])
-        fallback = np.median(blk, axis=0)
-        blk[cv] = np.nan
+        first = np.median(blk, axis=0)
+        agree = blk.copy()
+        agree[np.abs(blk - first[None]).max(axis=3) > outlier] = np.nan
+        best = agree.copy()
+        best[cv] = np.nan
         with np.errstate(all="ignore"):
-            med = np.nanmedian(blk, axis=0)
-        plate[y0:y0 + 48] = np.clip(np.where(np.isnan(med), fallback, med), 0, 255).astype(np.uint8)
+            med = np.nanmedian(best, axis=0)       # agrees with the road and clear of the car
+            near = np.nanmedian(agree, axis=0)     # else agrees with it, maybe in the car's halo
+        med = np.where(np.isnan(med), np.where(np.isnan(near), first, near), med)
+        plate[y0:y0 + 48] = np.clip(med, 0, 255).astype(np.uint8)
     return plate
 
 
@@ -640,27 +649,36 @@ def compose(spec):
 
 
 def proof_sheet(path, work, clip, out_path, s0, n):
-    """The drawn route (old path outlined, new path in red) over six before/after pairs."""
+    """The drawn route (old path outlined in orange, the new one in red), then six moments,
+    before over after, in two rows of three: big enough to judge the edit by."""
     route = cv2.imread(os.path.join(work, "route.png"))
     picks = [int(s0 + (n - 1 - s0) * t) for t in (0.1, 0.3, 0.45, 0.6, 0.75, 0.9)]
-    tile_w = 320
+    tile_w = 480
     th = int(tile_w * route.shape[0] / route.shape[1])
-    cols = []
+    pairs = {}
     a, b = Reader(clip), Reader(out_path)
     want = set(picks)
     for f in range(n):
         fa, fb = a.next(), b.next()
         if f in want:
-            pa = cv2.resize(fa, (tile_w, th))
-            pb = cv2.resize(fb, (tile_w, th))
-            cv2.putText(pa, f"before {f}", (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-            cv2.putText(pb, f"after {f}", (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-            cols.append(np.vstack([pa, pb]))
+            pa = cv2.resize(fa, (tile_w, th), interpolation=cv2.INTER_AREA)
+            pb = cv2.resize(fb, (tile_w, th), interpolation=cv2.INTER_AREA)
+            for img, label in ((pa, f"before  {f / FPS:.1f}s"), (pb, f"after  {f / FPS:.1f}s")):
+                cv2.putText(img, label, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
+                cv2.putText(img, label, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            pairs[f] = np.vstack([pa, pb, np.zeros((6, tile_w, 3), np.uint8)])
     a.close()
     b.close()
-    grid = np.hstack(cols)
-    rt = cv2.resize(route, (int(grid.shape[0] * route.shape[1] / route.shape[0]), grid.shape[0]))
-    cv2.imwrite(path, np.hstack([rt, grid]))
+    cols = [pairs[f] for f in picks if f in pairs]
+    while len(cols) < 6:
+        cols.append(np.zeros_like(cols[0]))
+    sep = lambda img: np.hstack([img, np.zeros((img.shape[0], 6, 3), np.uint8)])  # noqa: E731
+    grid = np.vstack([np.hstack([sep(c) for c in cols[:3]]), np.hstack([sep(c) for c in cols[3:]])])
+    rt = cv2.resize(route, (int(grid.shape[0] * route.shape[1] / route.shape[0] * 0.5), grid.shape[0] // 2))
+    rt = np.vstack([rt, np.zeros((grid.shape[0] - rt.shape[0], rt.shape[1], 3), np.uint8)])
+    cv2.putText(rt, "route: old path (orange), new (red)", (8, rt.shape[0] // 2 + 30), cv2.FONT_HERSHEY_SIMPLEX,
+                0.7, (255, 255, 255), 2)
+    cv2.imwrite(path, np.hstack([sep(rt), grid]))
 
 
 def main():
