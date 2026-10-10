@@ -271,6 +271,35 @@ def pick_track(tracks, frame, point, w, h):
     return best[1]
 
 
+def main_body(masks, w):
+    """Each frame's mask cut down to the object itself: its largest piece plus any piece of
+    real size (a quarter of it) close by (a car split by a pole or a lane line). SAM hands a
+    car's track stray pieces on other things now and then: on a render, a stray piece over
+    the white SUV got pasted as a white patch beside it (2026-10-10). Returns (masks, number
+    of frames that lost a stray piece)."""
+    near = _disk(px(12, w))
+    out, cut = [], 0
+    for m in masks:
+        if not m.any():
+            out.append(m)
+            continue
+        n, lab, st, _ = cv2.connectedComponentsWithStats(m.astype(np.uint8))
+        if n <= 2:
+            out.append(m)
+            continue
+        big = 1 + int(np.argmax(st[1:, 4]))
+        reach = cv2.dilate((lab == big).astype(np.uint8), near) > 0
+        keep = np.zeros(n, bool)
+        keep[big] = True
+        for k in range(1, n):
+            if k != big and st[k, 4] >= 0.25 * st[big, 4] and reach[lab == k].any():
+                keep[k] = True
+        kept = keep[lab] & m
+        cut += int(kept.sum() < m.sum())
+        out.append(kept)
+    return out, cut
+
+
 def fill_gaps(masks, max_gap=12):
     """SAM loses a fast or partly hidden car for a few frames now and then: fill short gaps
     by sliding the nearest mask along the line between the masks either side (a missed frame
@@ -452,7 +481,10 @@ def build(spec):
         raise RuntimeError(f"SAM found no {spec.get('object', 'object')!r} in the clip")
     s0 = min(max(0, _frame_of(spec, "start_frame", "start_s", 0)), n - 2)
     k = pick_track(tracks, s0, spec["point_norm"], W, H)
-    old = fill_gaps(tracks[k])
+    body, cut = main_body(tracks[k], W)
+    if cut:
+        log(f"MEASURED old track: dropped stray pieces in {cut} frame(s)")
+    old = fill_gaps(body)
     old = [m if f >= s0 else np.zeros_like(m) for f, m in enumerate(old)]
     if not old[s0].any():
         raise RuntimeError("the car is not tracked at the start frame; give a start where it is in view")
@@ -633,7 +665,9 @@ def compose(spec):
     for r in good:
         i = r["take"] - 1
         emit("PHASE", f"composing take {r['take']}")
-        car_small = read_masks(spec["take_masks"][i][r["track"]], length)
+        car_small, cut = main_body(read_masks(spec["take_masks"][i][r["track"]], length), W)
+        if cut:
+            log(f"take {r['take']}: dropped stray pieces of the car's mask in {cut} frame(s)")
         dest = os.path.join(work, f"take{r['take']}.mp4")
         src, raw = Reader(spec["clip"]), Reader(spec["takes"][i])
         wr = Writer(dest, fw, fh, FPS, audio_from=spec["clip"], frames=n)

@@ -107,6 +107,16 @@ class GeometryTest(unittest.TestCase):
         self.assertIsNotNone(c)
         self.assertAlmostEqual(c[0], 14.5 + 30, delta=2)
 
+    def test_main_body_drops_strays(self):
+        m = np.zeros((100, 200), bool)
+        m[10:40, 10:70] = True       # the car
+        m[10:40, 74:90] = True       # a piece of it across a lane line: kept
+        m[70:85, 150:165] = True     # a stray piece on something else: dropped
+        (out,), cut = CM.main_body([m], 832)  # sizes tuned at 832 wide
+        self.assertEqual(cut, 1)
+        self.assertTrue(out[20, 80])
+        self.assertFalse(out[75, 155])
+
     def test_camera_drift(self):
         rng = np.random.default_rng(1)
         base = (rng.random((180, 320, 3)) * 255).astype(np.uint8)

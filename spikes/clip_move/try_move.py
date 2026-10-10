@@ -174,6 +174,9 @@ def main():
     for f in os.listdir(work):
         if f.startswith("take") and f.endswith(".mp4"):
             shutil.copy(os.path.join(work, f), out)
+    for d in os.listdir(work):  # the SAM masks are small: keep them for checking
+        if d.startswith("sam_") and os.path.isdir(os.path.join(work, d)):
+            shutil.copytree(os.path.join(work, d), os.path.join(out, d))
     shutil.rmtree(work, ignore_errors=True)  # keep the zip small
 
 
