@@ -104,12 +104,11 @@ def write_video(path, frames, fps=24, lossless=False, audio_from=None):
         raise RuntimeError(f"ffmpeg failed writing {path}")
 
 
-def track_car(src_path, noun, at, n, w, h, out):
-    """Per-frame bool masks of the car under `at` in frame 0 (SAM 3.1 video tracking)."""
-    import numpy as np
+def sam_tracks(src_path, noun, out, prefix):
+    """Every SAM 3.1 track of `noun` in a clip: a list of per-frame bool mask lists."""
     name = tr.upload(src_path)
-    outs = run_outputs(graphs_sam3.build(name, noun, "route_edit/sam", objects=4))
-    best = None
+    outs = run_outputs(graphs_sam3.build(name, noun, prefix, objects=4))
+    tracks = []
     for node_out in outs.values():
         for f in node_out.get("videos", []) or node_out.get("images", []) or []:
             if f.get("type") != "output" or "_obj" not in f["filename"]:
@@ -118,14 +117,43 @@ def track_car(src_path, noun, at, n, w, h, out):
             fetch(f, dest)
             ms = [fr[..., 2] > 127 for fr in read_frames(dest)]
             os.remove(dest)
-            if not ms or not ms[0].any():
-                continue
-            ys, xs = np.nonzero(ms[0])
-            d = (xs.mean() / w - at[0]) ** 2 + (ys.mean() / h - at[1]) ** 2
-            hit = ms[0][min(int(at[1] * h), h - 1), min(int(at[0] * w), w - 1)]
-            score = (0 if hit else 1, d)
-            if best is None or score < best[0]:
-                best = (score, ms)
+            if ms and any(m.any() for m in ms):
+                tracks.append(ms)
+    return tracks
+
+
+def rendered_car(raw_path, noun, new, n, out):
+    """Where the car actually is in H3's render: the SAM track that sits on the drawn path
+    most. H3 runs a little off and behind the drawn path, so pasting back by the drawn path
+    clipped the car."""
+    import cv2
+    import numpy as np
+    k = np.ones((81, 81), np.uint8)
+    near = [cv2.dilate(m.astype(np.uint8), k) > 0 for m in new]
+    best = None
+    for ms in sam_tracks(raw_path, noun, out, "route_edit/samraw"):
+        ms = ms[:n] + [np.zeros_like(ms[0])] * max(0, n - len(ms))
+        score = sum(int((m & near[f]).sum()) for f, m in enumerate(ms))
+        if best is None or score > best[0]:
+            best = (score, ms)
+    if best is None or best[0] == 0:
+        raise RuntimeError("SAM found no car on the drawn path in the render")
+    return best[1]
+
+
+def track_car(src_path, noun, at, n, w, h, out):
+    """Per-frame bool masks of the car under `at` in frame 0 (SAM 3.1 video tracking)."""
+    import numpy as np
+    best = None
+    for ms in sam_tracks(src_path, noun, out, "route_edit/sam"):
+        if not ms[0].any():
+            continue
+        ys, xs = np.nonzero(ms[0])
+        d = (xs.mean() / w - at[0]) ** 2 + (ys.mean() / h - at[1]) ** 2
+        hit = ms[0][min(int(at[1] * h), h - 1), min(int(at[0] * w), w - 1)]
+        score = (0 if hit else 1, d)
+        if best is None or score < best[0]:
+            best = (score, ms)
     if best is None:
         raise RuntimeError(f"SAM found no {noun!r} in frame 0")
     ms = best[1][:n] + [best[1][-1]] * max(0, n - len(best[1]))
@@ -269,6 +297,8 @@ def main():
         # paste-back mask: the region, a little wider in space and time, feathered
         comp = regions(old, new, n, int(job.get("grow_old", 18)) + 6, int(job.get("grow_new", 30)) + 6, t_pad=3)
         comp = [cv2.GaussianBlur(m.astype(np.float32), (0, 0), 5)[..., None] for m in comp]
+        old_grow, car_grow = int(job.get("old_grow", 8)), int(job.get("car_grow", 8))
+        write_video(os.path.join(out, "oldmask.mp4"), [cv2.cvtColor(m.astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR) for m in old], lossless=True)
         for rd in job["renders"]:
             raw = os.path.join(out, f"{rd['name']}_raw.mp4")
             seed = int(rd.get("seed", 6332))
@@ -285,8 +315,27 @@ def main():
             res += [res[-1]] * (n - len(res))
             res = [cv2.resize(r_, (w, h)) if r_.shape[:2] != (h, w) else r_ for r_ in res]
             final = [np.clip(frames[f] * (1 - comp[f]) + res[f] * comp[f], 0, 255).astype(np.uint8) for f in range(n)]
-            write_video(os.path.join(out, f"{rd['name']}.mp4"), final, audio_from=src)
+            write_video(os.path.join(out, f"{rd['name']}_v1.mp4"), final, audio_from=src)
             log(f"render {rd['name']}: {t:.0f}s")
+            # v2: only the car comes from H3. The old car is replaced by the exact clean plate
+            # (tight to its own outline, so nothing passing close by is touched); the new car
+            # is pasted where SAM finds it in the render, not where it was drawn.
+            car = rendered_car(raw, job.get("noun", "car"), new, n, out)
+            tr.free()
+            ko = np.ones((2 * old_grow + 1, 2 * old_grow + 1), np.uint8)
+            kc = np.ones((2 * car_grow + 1, 2 * car_grow + 1), np.uint8)
+            final = []
+            for f in range(n):
+                ao = cv2.GaussianBlur((cv2.dilate(old[f].astype(np.uint8), ko) > 0).astype(np.float32), (0, 0), 2.5)[..., None]
+                u = np.zeros_like(car[0])
+                for j in range(max(0, f - 1), min(n, f + 2)):
+                    u |= car[j]
+                ac = cv2.GaussianBlur((cv2.dilate(u.astype(np.uint8), kc) > 0).astype(np.float32), (0, 0), 2.5)[..., None]
+                base = frames[f] * (1 - ao) + plate * ao
+                final.append(np.clip(base * (1 - ac) + res[f] * ac, 0, 255).astype(np.uint8))
+            write_video(os.path.join(out, f"{rd['name']}.mp4"), final, audio_from=src)
+            write_video(os.path.join(out, f"{rd['name']}_carmask.mp4"),
+                        [cv2.cvtColor(m.astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR) for m in car], lossless=True)
     finally:
         tr.free()
 
