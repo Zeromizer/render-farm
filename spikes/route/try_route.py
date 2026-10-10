@@ -13,6 +13,10 @@ params.args = [<job json string>, <out dir>]. Job JSON:
    replaced by the car's own centre), "frames": 121, "width": 832, "height": 480,
    "ease": "inout" | "linear", "hold": 6 (frames still at the start),
    "renders": [{"name", "steps", "turbo", "ttm": [start, end], "seed"}]}
+Several cars: "cars": [{"at": [x, y] (0-1, a point on that car), "route": [...], "hold": 6,
+   "end": <frame it arrives, default the last>, "ease"}] in place of "route"; SAM finds every
+   car, each one is picked by its point, all are removed from the plate and each is dragged
+   along its own route.
 Writes <out>/{plate.png, mask.png, route.png, reference.mp4, refmask.mp4, <name>.mp4,
 compare.mp4}.
 """
@@ -187,15 +191,17 @@ def catmull_rom(pts, per=64):
     return np.array(out)
 
 
-def poses(route_px, n, hold, ease):
-    """(x, y, heading radians) per frame: arc-length along the spline with an ease profile."""
+def poses(route_px, n, hold, ease, end=None):
+    """(x, y, heading radians) per frame: arc-length along the spline with an ease profile,
+    still until frame `hold`, arriving at frame `end` (default the last)."""
     import numpy as np
     dense = catmull_rom(route_px)
     seg = np.linalg.norm(np.diff(dense, axis=0), axis=1)
     s = np.concatenate([[0], np.cumsum(seg)])
     total = s[-1]
     out = []
-    moving = max(1, n - 1 - hold)
+    end = n - 1 if end is None else min(int(end), n - 1)
+    moving = max(1, end - hold)
     for f in range(n):
         u = min(1.0, max(0.0, (f - hold) / moving))
         if ease == "inout":
@@ -223,48 +229,89 @@ def car_axis(mask):
     return math.atan2(vy, vx), (float(cx), float(cy))
 
 
-def build_reference(still, plate, mask, route_n, n, hold, ease, w, h, out):
-    """Cut-and-drag clip: the car moved along the route over the clean plate, turned to face
-    its direction of travel, and the mask of where it is."""
+def pick_cars(mask, cars, w0, h0):
+    """One mask per car: the connected piece of the SAM mask under (or nearest to) each car's
+    point."""
     import cv2
     import numpy as np
-    H0, W0 = still.shape[:2]
-    sx, sy = w / W0, h / H0
+    n, lab = cv2.connectedComponents((mask > 127).astype(np.uint8))
+    out = []
+    for c in cars:
+        px, py = int(c["at"][0] * w0), int(c["at"][1] * h0)
+        k = lab[min(max(py, 0), h0 - 1), min(max(px, 0), w0 - 1)]
+        if k == 0:
+            best = None
+            for j in range(1, n):
+                ys, xs = np.nonzero(lab == j)
+                if len(xs) < 50:
+                    continue
+                d = (xs.mean() - px) ** 2 + (ys.mean() - py) ** 2
+                if best is None or d < best[0]:
+                    best = (d, j)
+            if best is None:
+                raise RuntimeError(f"no car found near {c['at']}")
+            k = best[1]
+        out.append(((lab == k).astype(np.uint8) * 255))
+    return out
+
+
+def build_reference(still, plate, car_masks, cars, n, w, h, out):
+    """Cut-and-drag clip: each car moved along its route over the clean plate, turned to face
+    its direction of travel, and the mask of where they all are."""
+    import cv2
+    import numpy as np
     still_c = cv2.resize(still, (w, h), interpolation=cv2.INTER_AREA)
     plate_c = cv2.resize(plate, (w, h), interpolation=cv2.INTER_AREA)
-    m = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
-    ang, (cx, cy) = car_axis(m > 127)
-    route = [(cx, cy)] + [(x * w, y * h) for x, y in route_n[1:]]
-    ps = poses(route, n, hold, ease)
-    # the car's heading: its long axis, pointed the way the route starts
-    h0 = ps[min(n - 1, hold + 2)][2] if n > hold + 2 else ps[-1][2]
-    if math.cos(ang - h0) < 0:
-        ang += math.pi
-    alpha = cv2.GaussianBlur((m > 127).astype(np.float32), (0, 0), 1.2)
-    car = still_c.astype(np.float32)
+    car_src = still_c.astype(np.float32)
+    k21 = np.ones((21, 21), np.uint8)
+    tracks = []
+    for cm, c in zip(car_masks, cars):
+        m = cv2.resize(cm, (w, h), interpolation=cv2.INTER_NEAREST) > 127
+        ang, (cx, cy) = car_axis(m)
+        route = [(cx, cy)] + [(x * w, y * h) for x, y in c["route"][1:]]
+        hold = int(c.get("hold", 6))
+        ps = poses(route, n, hold, c.get("ease", "inout"), c.get("end"))
+        # the car's heading: its long axis, pointed the way the route starts
+        h0 = ps[min(n - 1, hold + 2)][2]
+        if math.cos(ang - h0) < 0:
+            ang += math.pi
+        alpha = cv2.GaussianBlur(m.astype(np.float32), (0, 0), 1.2)
+        tracks.append((m, ang, cx, cy, hold, ps, alpha, route))
     frames, masks = [], []
-    for f, (x, y, hd) in enumerate(ps):
+    for f in range(n):
         if f == 0:
             frames.append(still_c.copy())
-            masks.append(cv2.dilate((m > 127).astype(np.uint8) * 255, np.ones((21, 21), np.uint8)))
+            u = np.zeros((h, w), np.uint8)
+            for m, *_ in tracks:
+                u |= m.astype(np.uint8) * 255
+            masks.append(cv2.dilate(u, k21))
             continue
-        # rotate by the change of heading (ramped in over the first frames so frame 0 is the
-        # still exactly), about the car's own centre, then move it to the route point
-        ramp = min(1.0, f / 8.0)
-        dth = math.atan2(math.sin(hd - ang), math.cos(hd - ang)) * ramp
-        M = cv2.getRotationMatrix2D((cx, cy), -math.degrees(dth), 1.0)
-        M[0, 2] += x - cx
-        M[1, 2] += y - cy
-        c = cv2.warpAffine(car, M, (w, h), flags=cv2.INTER_LINEAR)
-        a = cv2.warpAffine(alpha, M, (w, h), flags=cv2.INTER_LINEAR)[..., None]
-        frames.append(np.clip(plate_c.astype(np.float32) * (1 - a) + c * a, 0, 255).astype(np.uint8))
-        masks.append(cv2.dilate((a[..., 0] > 0.5).astype(np.uint8) * 255, np.ones((21, 21), np.uint8)))
+        img = plate_c.astype(np.float32)
+        mk = np.zeros((h, w), np.uint8)
+        for m, ang, cx, cy, hold, ps, alpha, _ in tracks:
+            x, y, hd = ps[f]
+            # rotate by the change of heading (ramped in over the first frames of moving so the
+            # still car does not snap round), about the car's own centre, then move it on
+            ramp = min(1.0, max(f - hold, 0) / 8.0) if hold > 0 else min(1.0, f / 8.0)
+            dth = math.atan2(math.sin(hd - ang), math.cos(hd - ang)) * ramp
+            M = cv2.getRotationMatrix2D((cx, cy), -math.degrees(dth), 1.0)
+            M[0, 2] += x - cx
+            M[1, 2] += y - cy
+            c = cv2.warpAffine(car_src, M, (w, h), flags=cv2.INTER_LINEAR)
+            a = cv2.warpAffine(alpha, M, (w, h), flags=cv2.INTER_LINEAR)[..., None]
+            img = img * (1 - a) + c * a
+            mk |= (a[..., 0] > 0.5).astype(np.uint8) * 255
+        frames.append(np.clip(img, 0, 255).astype(np.uint8))
+        masks.append(cv2.dilate(mk, k21))
     # route picture
     pic = still_c.copy()
-    for (x0, y0, _), (x1, y1, _) in zip(ps, ps[1:]):
-        cv2.line(pic, (int(x0), int(y0)), (int(x1), int(y1)), (0, 0, 255), 2)
-    for x, y in route:
-        cv2.circle(pic, (int(x), int(y)), 5, (0, 255, 255), -1)
+    colours = [(0, 0, 255), (255, 128, 0), (0, 200, 0), (255, 0, 255)]
+    for i, (*_, ps, _a, route) in enumerate(tracks):
+        col = colours[i % len(colours)]
+        for (x0, y0, _), (x1, y1, _) in zip(ps, ps[1:]):
+            cv2.line(pic, (int(x0), int(y0)), (int(x1), int(y1)), col, 2)
+        for x, y in route:
+            cv2.circle(pic, (int(x), int(y)), 5, (0, 255, 255), -1)
     cv2.imwrite(os.path.join(out, "route.png"), pic)
     return still_c, frames, masks
 
@@ -331,8 +378,13 @@ def main():
         log(f"plate: {t:.0f}s")
         free()
         # 3. cut-and-drag reference
-        first, frames, masks = build_reference(still, plate, mask, job["route"], n, int(job.get("hold", 6)),
-                                               job.get("ease", "inout"), w, h, out)
+        cars = job.get("cars")
+        if cars:
+            car_masks = pick_cars(mask, cars, W0, H0)
+        else:
+            cars = [{"route": job["route"], "hold": int(job.get("hold", 6)), "ease": job.get("ease", "inout")}]
+            car_masks = [mask]
+        first, frames, masks = build_reference(still, plate, car_masks, cars, n, w, h, out)
         cv2.imwrite(os.path.join(out, "first.png"), first)
         write_video(os.path.join(out, "reference.mp4"), frames)
         write_video(os.path.join(out, "refmask.mp4"), [cv2.cvtColor(m, cv2.COLOR_GRAY2BGR) for m in masks])
