@@ -38,17 +38,44 @@ def log(*a):
     print(*a, flush=True)
 
 
+def ensure_comfy(wait_s=600):
+    """ComfyUI must answer before anything is sent: a server still starting (or busy loading
+    a model) takes the connection and then stalls the request."""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < wait_s:
+        try:
+            if httpx.get(COMFY + "/system_stats", timeout=10).status_code == 200:
+                return
+        except httpx.HTTPError:
+            pass
+        time.sleep(3)
+    raise RuntimeError(f"ComfyUI did not answer /system_stats within {wait_s}s")
+
+
+def retry(fn, tries=4):
+    for k in range(tries):
+        try:
+            return fn()
+        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            if k == tries - 1:
+                raise
+            log(f"   comfy call failed ({exc}); waiting for ComfyUI and retrying")
+            ensure_comfy()
+
+
 def upload(path, sub="route_try"):
-    with open(path, "rb") as f:
-        r = httpx.post(COMFY + "/upload/image", files={"image": (os.path.basename(path), f)},
-                       data={"subfolder": sub, "type": "input", "overwrite": "true"}, timeout=T)
-    r.raise_for_status()
-    j = r.json()
-    return f"{j['subfolder']}/{j['name']}" if j.get("subfolder") else j["name"]
+    def go():
+        with open(path, "rb") as f:
+            r = httpx.post(COMFY + "/upload/image", files={"image": (os.path.basename(path), f)},
+                           data={"subfolder": sub, "type": "input", "overwrite": "true"}, timeout=T)
+        r.raise_for_status()
+        j = r.json()
+        return f"{j['subfolder']}/{j['name']}" if j.get("subfolder") else j["name"]
+    return retry(go)
 
 
 def run(graph, dest, ext, timeout_s=1800):
-    r = httpx.post(COMFY + "/prompt", json={"prompt": graph, "client_id": str(uuid.uuid4())}, timeout=T)
+    r = retry(lambda: httpx.post(COMFY + "/prompt", json={"prompt": graph, "client_id": str(uuid.uuid4())}, timeout=T))
     if r.status_code != 200:
         raise RuntimeError(f"/prompt rejected {r.status_code}: {r.text[:3000]}")
     pid = r.json()["prompt_id"]
@@ -267,6 +294,7 @@ def main():
             for chunk in r.iter_bytes(1 << 20):
                 f.write(chunk)
     still = cv2.imread(still_p)
+    ensure_comfy()
     H0, W0 = still.shape[:2]
     w, h, n = int(job.get("width", 832)), int(job.get("height", 480)), int(job.get("frames", 121))
     try:
