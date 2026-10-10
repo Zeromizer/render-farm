@@ -190,6 +190,139 @@ def _boxes_per_frame(frames, regions, lo, hi):
     return out
 
 
+def _box_mask(boxes, fh, fw, grow=0):
+    m = np.zeros((fh, fw), np.uint8)
+    for b in boxes:
+        m[max(0, int(b[1]) - grow):int(math.ceil(b[3])) + grow, max(0, int(b[0]) - grow):int(math.ceil(b[2])) + grow] = 255
+    return m
+
+
+def _cover(img, w, h):
+    """Scale and centre-crop an image to exactly w x h (an image model may return another shape)."""
+    ih, iw = img.shape[:2]
+    s = max(w / iw, h / ih)
+    r = cv2.resize(img, (max(w, int(round(iw * s))), max(h, int(round(ih * s)))), interpolation=cv2.INTER_AREA)
+    y0, x0 = (r.shape[0] - h) // 2, (r.shape[1] - w) // 2
+    return r[y0:y0 + h, x0:x0 + w]
+
+
+def _align_to(img, ref, keep, scale=0.5):
+    """Warp img (a cleaned copy of ref, possibly redrawn whole by an image model) onto ref,
+    fitted on the pixels outside the edit (keep = 255). Identity if the fit is implausible."""
+    fh, fw = ref.shape[:2]
+    a = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), None, fx=scale, fy=scale).astype(np.float32)
+    b = cv2.resize(cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY), None, fx=scale, fy=scale).astype(np.float32)
+    m = cv2.resize(keep, (b.shape[1], b.shape[0]), interpolation=cv2.INTER_NEAREST)
+    warp = np.eye(3, dtype=np.float32)
+    try:
+        _, warp = cv2.findTransformECC(b, a, warp, cv2.MOTION_HOMOGRAPHY,
+                                       (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 1e-5), m, 5)
+    except cv2.error:
+        return img, False
+    S = np.diag([scale, scale, 1.0])
+    full = np.linalg.inv(S) @ warp.astype(np.float64) @ S
+    corners = np.array([[0, 0, 1], [fw, 0, 1], [0, fh, 1], [fw, fh, 1]], np.float64).T
+    moved = full @ corners
+    moved = moved[:2] / moved[2]
+    if np.abs(moved - corners[:2]).max() > 0.08 * max(fw, fh):
+        return img, False
+    return cv2.warpPerspective(img, full, (fw, fh), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                               borderMode=cv2.BORDER_REPLICATE), True
+
+
+def _match_colour(clean, ref, mask):
+    """Match the cleaned patch's level and contrast to the original in a ring around the edit
+    (an image model often shifts the grade a little)."""
+    ring = (cv2.dilate(mask, np.ones((61, 61), np.uint8)) > 0) & ~(cv2.dilate(mask, np.ones((11, 11), np.uint8)) > 0)
+    if ring.sum() < 200:
+        return clean
+    c, r = clean[ring].astype(np.float32), ref[ring].astype(np.float32)
+    gain = np.clip(r.std(0) / np.maximum(c.std(0), 1.0), 0.8, 1.25)
+    out = (clean.astype(np.float32) - c.mean(0)) * gain + r.mean(0)
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def _bg_motion(frames, a, targets, vmask, scale=0.5):
+    """Homography taking frame a to each target frame, from corners tracked outside the edit,
+    chained frame to frame (so a cleaned anchor can ride the camera move)."""
+    fh, fw = frames[0].shape[:2]
+    S = np.diag([scale, scale, 1.0])
+    Si = np.linalg.inv(S)
+    gray = lambda i: cv2.resize(cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY), None, fx=scale, fy=scale)  # noqa: E731
+
+    def bg(i):
+        v = vmask.get(i)
+        m = np.full((fh, fw), 255, np.uint8)
+        if v and v != "full":
+            m[_box_mask(v, fh, fw, grow=20) > 0] = 0
+        return cv2.resize(m, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+
+    out = {a: np.eye(3)}
+    want = set(targets)
+    for step in (1, -1):
+        far = max([t for t in want if (t - a) * step > 0], key=lambda t: abs(t - a), default=None)
+        if far is None:
+            continue
+        acc, prev, pg = np.eye(3), a, gray(a)
+        for i in range(a + step, far + step, step):
+            cg = gray(i)
+            hs = np.eye(3)
+            pts = cv2.goodFeaturesToTrack(pg, 400, 0.01, 8, mask=bg(prev))
+            if pts is not None and len(pts) >= 8:
+                nxt, st, _ = cv2.calcOpticalFlowPyrLK(pg, cg, pts, None)
+                ok = st.ravel() == 1
+                if ok.sum() >= 8:
+                    h, _ = cv2.findHomography(pts[ok], nxt[ok], cv2.RANSAC, 2.0)
+                    if h is not None:
+                        hs = h
+            acc = hs @ acc
+            out[i] = Si @ acc @ S
+            prev, pg = i, cg
+    return out
+
+
+def _anchors(spec, frames, vmask, lo, hi, warnings):
+    """Cleaned frames the agent supplies (an image model's version of a frame with the object
+    gone) pasted into the masked area on their frames. Those frames go to H3 unmasked, so it
+    copies the emptiness instead of redrawing what the scene implies; anchor_every spreads
+    the first one along the camera move to more frames. Returns {frame: full-res frame}."""
+    n = len(frames)
+    fh, fw = frames[0].shape[:2]
+    pasted = {}
+    first = None
+    for an in spec.get("anchors") or []:
+        a = int(round(float(an["at_s"]) * FPS)) if an.get("at_s") is not None else int(an.get("frame", 0))
+        a = min(max(a, lo), min(hi, n - 1))
+        v = vmask.get(a)
+        if not v or v == "full":
+            warnings.append(f"anchor at frame {a} skipped: no region box on that frame")
+            continue
+        img = cv2.imread(an["image"], cv2.IMREAD_COLOR)
+        if img is None:
+            raise RuntimeError(f"anchor image for frame {a} is not a readable image")
+        img = _cover(img, fw, fh)
+        m = _box_mask(v, fh, fw)
+        img, ok = _align_to(img, frames[a], 255 - cv2.dilate(m, np.ones((41, 41), np.uint8)))
+        if not ok:
+            warnings.append(f"anchor at frame {a}: could not line the cleaned frame up with the clip; used as is")
+        pasted[a] = _match_colour(img, frames[a], m)
+        first = a if first is None else first
+    every = int(spec.get("anchor_every") or 0)
+    if every > 0 and first is not None:
+        span = sorted(i for i in vmask if lo <= i <= min(hi, n - 1) and vmask[i] != "full")
+        targets = [i for i in span if (i - first) % every == 0 and i not in pasted]
+        H = _bg_motion(frames, first, targets, vmask)
+        for t in targets:
+            pasted[t] = cv2.warpPerspective(pasted[first], H[t], (fw, fh), borderMode=cv2.BORDER_REPLICATE)
+    out = {}
+    for a, img in pasted.items():
+        alpha = cv2.GaussianBlur(cv2.dilate(_box_mask(vmask[a], fh, fw), np.ones((9, 9), np.uint8)), (0, 0), 4.0)
+        alpha = (alpha.astype(np.float32) / 255.0)[..., None]
+        out[a] = np.clip(frames[a].astype(np.float32) * (1 - alpha) + img.astype(np.float32) * alpha,
+                         0, 255).astype(np.uint8)
+    return out
+
+
 def _resize_to(f, w, h):
     return f if f.shape[1] == w and f.shape[0] == h else cv2.resize(f, (w, h), interpolation=cv2.INTER_AREA)
 
@@ -253,6 +386,7 @@ def prep(spec):
 
     # window + masks (video: list of box lists or "full"; audio: per-frame 0/1)
     vmask, amask = {}, {}
+    anchors = {}
     crop_mode = "full"
     regs = None
     if mode == "region":
@@ -305,6 +439,9 @@ def prep(spec):
         crop_mode = spec.get("crop", "auto")
         if crop_mode == "auto":
             crop_mode = "full" if big else "crop"
+        anchors = _anchors(spec, frames, vmask, lo, hi, warnings)
+        for a, f in anchors.items():
+            tl[a] = f
     elif mode == "audio":
         for key, fkey in (("start_s", "start_frame"), ("end_s", "end_frame")):
             if spec.get(key) is not None:
@@ -384,7 +521,8 @@ def prep(spec):
         f = tl[i] if tl[i] is not None else grey
         src_c.append(cv2.resize(f[ry:ry + rh_, rx:rx + rw_], (W, Hc), interpolation=cv2.INTER_AREA))
         m = np.zeros((fh, fw), np.uint8)
-        v = vmask.get(i)
+        # anchor frames carry the cleaned area as given: H3 keeps them and fills around them
+        v = None if i in anchors else vmask.get(i)
         if v == "full":
             m[:] = 255
         elif v:
@@ -408,7 +546,7 @@ def prep(spec):
             "length": length, "canvas": [W, Hc], "regs": regs, "crop": crop_mode,
             "vmask": {str(k): v for k, v in vmask.items()}, "amask": sorted(amask),
             "generated": [i for i in range(N) if tl[i] is None], "src_ranges": src_ranges, "pad_tail": pad,
-            "warnings": warnings}
+            "anchor_frames": sorted(anchors), "warnings": warnings}
     json.dump(plan, open(os.path.join(work, "plan.json"), "w"), indent=1)
     emit("PROGRESS", "100")
 

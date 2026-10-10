@@ -134,6 +134,30 @@ class RoundTripTest(unittest.TestCase):
         self.assertEqual(len(rep["takes"]), 2)
         return rep
 
+    def test_region_anchor(self):
+        # the cleaned frame is the plain background, shifted 3 px the way an image model's
+        # redraw can be; it must line up, land in the box on its frames, and those frames
+        # must go to H3 unmasked
+        rng = np.random.default_rng(3)
+        bg = cv2.GaussianBlur(rng.integers(0, 255, (180, 320, 3), dtype=np.uint8), (0, 0), 2)
+        img = os.path.join(self.d, "clean.png")
+        cv2.imwrite(img, np.roll(bg, 3, axis=1))
+        keys = [{"frame": 0, "box": [40, 70, 90, 110]}, {"frame": 40, "box": [120, 70, 170, 110]}]
+        rep = self._run("anchor", {"mode": "region", "clip": self.a, "regions": [{"keys": keys}],
+                                   "anchors": [{"frame": 20, "image": img}], "anchor_every": 10}, 41)
+        self.assertEqual(rep["warnings"], [])
+        w = os.path.join(self.d, "anchor")
+        plan = json.load(open(os.path.join(w, "plan.json")))
+        self.assertEqual(plan["anchor_frames"], [0, 10, 20, 30, 40])
+        masks, _ = CE.L.read_clip(os.path.join(w, "gen_mask.mp4"))
+        lo = plan["window"][0]
+        for a in plan["anchor_frames"]:
+            self.assertEqual(int(masks[a - lo].max()), 0)
+        self.assertGreater(int(masks[25 - lo].max()), 200)
+        tl, _ = CE.L.read_clip(os.path.join(w, "timeline.mp4"))
+        patch = tl[20][75:105, 85:125].astype(np.int16)   # where the green box was on frame 20
+        self.assertLess(float(np.abs(patch - bg[75:105, 85:125].astype(np.int16)).mean()), 12.0)
+
     def test_region_tracked(self):
         self._run("region", {"mode": "region", "clip": self.a,
                              "regions": [{"box": [40, 70, 90, 110], "frame": 0, "track": True}]}, 41)
