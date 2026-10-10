@@ -566,6 +566,7 @@ def build(spec):
     L.write_clip(os.path.join(work, "move_ref.mp4"), refs, FPS, audio_from=os.path.join(work, "move_src.mp4"),
                  lossless=True)
     write_masks(os.path.join(work, "move_refmask.mp4"), refmask)
+    write_masks(os.path.join(work, "newmask.mp4"), [m if f >= s0 else np.zeros_like(m) for f, m in enumerate(new)])
     write_masks(os.path.join(work, "oldmask.mp4"), old)
     cv2.imwrite(os.path.join(work, "first.png"), frames[0])
     drawn = []
@@ -668,6 +669,14 @@ def compose(spec):
         car_small, cut = main_body(read_masks(spec["take_masks"][i][r["track"]], length), W)
         if cut:
             log(f"take {r['take']}: dropped stray pieces of the car's mask in {cut} frame(s)")
+        # and only near where the car was drawn (H3 runs ~30 px off it at 832 wide; a stray piece
+        # on other traffic sits much further away): nothing else in the render gets pasted
+        nm_path = os.path.join(work, "newmask.mp4")
+        if os.path.exists(nm_path):
+            reach = _disk(px(110, W))
+            drawn_m = read_masks(nm_path, length)
+            car_small = [c & (cv2.dilate(d.astype(np.uint8), reach) > 0) if d.any() else c
+                         for c, d in zip(car_small, drawn_m)]
         dest = os.path.join(work, f"take{r['take']}.mp4")
         src, raw = Reader(spec["clip"]), Reader(spec["takes"][i])
         wr = Writer(dest, fw, fh, FPS, audio_from=spec["clip"], frames=n)
