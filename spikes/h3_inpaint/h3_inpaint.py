@@ -141,7 +141,8 @@ def mask_boxes_for_frame(masks, i):
             b = m["per_frame"].get(str(i))
             if b:
                 pad = m.get("pad", 0)
-                out.append((b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad))
+                o = m.get("offset", (0, 0, 0, 0))
+                out.append((b[0] + o[0] - pad, b[1] + o[1] - pad, b[2] + o[2] + pad, b[3] + o[3] + pad))
         else:
             a, z = m["frames"]
             if a <= i <= z:
@@ -274,7 +275,8 @@ def free_vram():
         pass
 
 
-def build_graph(src_name, mask_name, amask_name, prompt, W, H, length, steps, turbo, seed, prefix):
+def build_graph(src_name, mask_name, amask_name, prompt, W, H, length, steps, turbo, seed, prefix,
+                ref_names=(), ref_image_size="match"):
     g = {}
     g["unet"] = {"class_type": "UNETLoader", "inputs": {"unet_name": UNET, "weight_dtype": "default"}}
     model = ["unet", 0]
@@ -323,7 +325,10 @@ def build_graph(src_name, mask_name, amask_name, prompt, W, H, length, steps, tu
     g["cond"] = {"class_type": "MiniMaxH3ReferenceToVideo",
                  "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "audio_vae": ["avae", 0],
                             "prompt": prompt, "width": W, "height": H, "length": length,
-                            "ref_image_size": "match"}}
+                            "ref_image_size": ref_image_size}}
+    for j, rn in enumerate(ref_names):
+        g[f"ref_img_{j}"] = {"class_type": "LoadImage", "inputs": {"image": rn}}
+        g["cond"]["inputs"][f"ref_images.ref_image_{j}"] = [f"ref_img_{j}", 0]
     g["guider"] = {"class_type": "BasicGuider", "inputs": {"model": model, "conditioning": ["cond", 0]}}
     g["sampler"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "res_multistep"}}
     g["sched"] = {"class_type": "BasicScheduler",
@@ -354,7 +359,27 @@ def run_test(t, src_path, src_frames, out_dir, report):
     masks = t["masks"]
     area = float(t.get("area", 768 * 768))
 
-    if t.get("mode", "crop") == "crop":
+    mode = t.get("mode", "crop")
+    if mode == "follow":
+        # window of fixed size that moves with a tracked point (smoothed), so the element
+        # stays large and nearly static in the generation canvas
+        f = t["follow"]
+        rw, rh = f["size"]
+        W, H = gen_dims(rw / rh, area)
+        rh = int(round(rw * H / W))
+        cen = np.array([f["centres"][str(i)] for i in win], np.float32) + np.float32(f.get("offset", (0, 0)))
+        sm = int(f.get("smooth", 3))
+        if sm > 0:
+            pad_c = np.pad(cen, ((sm, sm), (0, 0)), mode="edge")
+            ker = np.ones(2 * sm + 1) / (2 * sm + 1)
+            cen = np.stack([np.convolve(pad_c[:, d], ker, mode="valid") for d in range(2)], 1)
+        regs = []
+        for cx, cy in cen:
+            rx = int(round(min(max(0, cx - rw / 2), fw - rw)))
+            ry = int(round(min(max(0, cy - rh / 2), fh - rh)))
+            regs.append((rx, ry, rw, rh))
+        rx, ry = regs[0][:2]
+    elif mode == "crop":
         bbox = union_bbox(masks, win)
         bw, bh = bbox[2] - bbox[0] + 2 * t.get("pad", 96), bbox[3] - bbox[1] + 2 * t.get("pad", 96)
         W, H = gen_dims(bw / bh, area)
@@ -362,12 +387,15 @@ def run_test(t, src_path, src_frames, out_dir, report):
     else:
         W, H = gen_dims(fw / fh, area)
         rx, ry, rw, rh = 0, 0, fw, fh
+    if mode != "follow":
+        regs = [(rx, ry, rw, rh)] * length
     log(f"[{name}] window {start}..{start + length - 1} ({length} f), region {rx},{ry} {rw}x{rh} -> gen {W}x{H}")
 
     work = os.path.join(out_dir, name)
     os.makedirs(work, exist_ok=True)
     src_crop, vmask, amask, full_masks = [], [], [], []
-    for i in win:
+    for k, i in enumerate(win):
+        rx, ry, rw, rh = regs[k]
         m = raster_mask(mask_boxes_for_frame(masks, i), fw, fh)
         full_masks.append(m)
         src_crop.append(cv2.resize(src_frames[i][ry:ry + rh, rx:rx + rw], (W, H), interpolation=cv2.INTER_AREA))
@@ -383,6 +411,7 @@ def run_test(t, src_path, src_frames, out_dir, report):
     write_video(p_vm, vmask, lossless=True)
     write_video(p_am, amask, lossless=True)
     n_src, n_vm, n_am = upload(p_src), upload(p_vm), upload(p_am)
+    n_refs = [upload(r) for r in t.get("ref_images", [])]
 
     feather = int(t.get("feather", 12))
     for v in t["variants"]:
@@ -391,10 +420,10 @@ def run_test(t, src_path, src_frames, out_dir, report):
         turbo = bool(v.get("turbo", False))
         seed = int(v.get("seed", 6332))
         g = build_graph(n_src, n_vm, n_am, t["prompt"], W, H, length, steps, turbo, seed,
-                        f"h3_inpaint_spike/{vname}")
+                        f"h3_inpaint_spike/{vname}", n_refs, t.get("ref_image_size", "match"))
         t0 = time.time()
         rec = {"test": name, "variant": v["label"], "steps": steps, "turbo": turbo, "seed": seed,
-               "gen_w": W, "gen_h": H, "frames": length, "region": [rx, ry, rw, rh]}
+               "gen_w": W, "gen_h": H, "frames": length, "region": list(regs[0]), "mode": mode}
         try:
             for attempt in (1, 2):
                 pid = submit(g)
@@ -440,6 +469,7 @@ def run_test(t, src_path, src_frames, out_dir, report):
                                       (0, 0), feather / 2.0).astype(np.float32) / 255.0
             else:
                 mf = m.astype(np.float32) / 255.0
+            rx, ry, rw, rh = regs[k]
             back = cv2.resize(gk, (rw, rh), interpolation=cv2.INTER_CUBIC)
             canvas = patched[i].astype(np.float32)
             reg = canvas[ry:ry + rh, rx:rx + rw]
@@ -459,9 +489,10 @@ def run_test(t, src_path, src_frames, out_dir, report):
             row = np.hstack([src_frames[i], patched[i]])
             sbs.append(cv2.resize(row, (row.shape[1] // 2 * 2 // 2, row.shape[0] // 2 * 2 // 2)))
         write_video(os.path.join(out_dir, f"{vname}_compare.mp4"), sbs)
-        if t.get("mode", "crop") == "crop":
+        if mode in ("crop", "follow"):
             zoom = []
-            for i in win:
+            for k, i in enumerate(win):
+                rx, ry, rw, rh = regs[k]
                 a = src_frames[i][ry:ry + rh, rx:rx + rw]
                 b = patched[i][ry:ry + rh, rx:rx + rw]
                 z = np.hstack([a, b])
