@@ -208,7 +208,7 @@ class RoundTripTest(unittest.TestCase):
         CE.prep({"mode": "region", "clip": self.a, "regions": [{"keys": keys, "track": False}], "work_dir": w,
                  "anchors": [{"frame": 34, "image": img}], "anchor_every": 17})
         plan = json.load(open(os.path.join(w, "plan.json")))
-        self.assertEqual(plan["anchor_frames"], [0, 9, 10, 11, 12, 17, 34])
+        self.assertEqual(plan["anchor_frames"], list(range(0, 18)) + [34])
 
     def test_region_tracked(self):
         self._run("region", {"mode": "region", "clip": self.a,

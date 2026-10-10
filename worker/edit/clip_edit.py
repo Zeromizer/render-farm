@@ -345,14 +345,17 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
     else:
         targets = sorted({min(keys, key=lambda k: abs(k - a)) for a in src})
     # where the box grows or shrinks between key frames (the object entering or leaving)
-    # H3 invents the most: also anchor the middle 4-frame latent of that clip (all four
-    # frames, or max pooling masks it again)
+    # H3 invents the most (half-drawn ghosts of the object): anchor that whole clip, its four
+    # 4-frame latents (all four frames each, or max pooling masks the latent again)
     area = lambda i: float(_box_mask(vmask[i], fh, fw).sum())  # noqa: E731
     for k in list(targets):
         k2 = k + LATENT_CLIP
-        group = list(range(k + 9, k + 13))
-        if k2 in vmask and vmask[k2] != "full" and all(vmask.get(g) and vmask[g] != "full" for g in group)                 and abs(area(k2) - area(k)) > 0.15 * max(area(k), area(k2)) and group[-1] < n:
-            targets.extend(group)
+        if not (k2 in vmask and vmask[k2] != "full" and abs(area(k2) - area(k)) > 0.15 * max(area(k), area(k2))):
+            continue
+        for g0 in range(k + 1, k + LATENT_CLIP, 4):
+            group = list(range(g0, g0 + 4))
+            if group[-1] < n and all(vmask.get(g) and vmask[g] != "full" for g in group):
+                targets.extend(group)
     targets = sorted(set(targets))
     # carry only what was cleaned: outside its box the source frame is plain footage, and the
     # background's motion does not move the subject (it dragged the hero car's own front into
