@@ -159,15 +159,15 @@ class RoundTripTest(unittest.TestCase):
         self.assertEqual(rep["warnings"], [])
         w = os.path.join(self.d, "anchor")
         plan = json.load(open(os.path.join(w, "plan.json")))
-        self.assertEqual(plan["anchor_frames"], [0, 10, 20, 30, 40])
+        self.assertEqual(plan["anchor_frames"], [0, 17, 34])   # key frames only
         masks, _ = CE.L.read_clip(os.path.join(w, "gen_mask.mp4"))
         lo = plan["window"][0]
         for a in plan["anchor_frames"]:
             self.assertEqual(int(masks[a - lo].max()), 0)
         self.assertGreater(int(masks[25 - lo].max()), 200)
         tl, _ = CE.L.read_clip(os.path.join(w, "timeline.mp4"))
-        patch = tl[20][75:105, 85:125].astype(np.int16)   # where the green box was on frame 20
-        self.assertLess(float(np.abs(patch - bg[75:105, 85:125].astype(np.int16)).mean()), 12.0)
+        patch = tl[17][75:105, 76:122].astype(np.int16)   # where the green box was on frame 17
+        self.assertLess(float(np.abs(patch - bg[75:105, 76:122].astype(np.int16)).mean()), 12.0)
 
     def test_clean_inputs_picks_the_fullest_frame(self):
         # the box grows from frame 0 to 20 and holds: the cleaned frame is the middle of
@@ -180,7 +180,7 @@ class RoundTripTest(unittest.TestCase):
         img, mask = os.path.join(w, "ci.png"), os.path.join(w, "cm.png")
         CE.clean_inputs({"work_dir": w, "clip": self.a, "size": [320, 176], "out_image": img, "out_mask": mask})
         a = json.load(open(os.path.join(w, "clean.json")))["frame"]
-        self.assertTrue(26 <= a <= 34, a)
+        self.assertEqual(a, 34)   # the fullest stretch is 20-40; 34 is its key frame
         m = cv2.imread(mask, cv2.IMREAD_GRAYSCALE)
         self.assertEqual(m.shape, (176, 320))
         self.assertEqual(int(m[90, 300]), 255)

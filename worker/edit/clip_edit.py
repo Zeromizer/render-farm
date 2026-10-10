@@ -50,6 +50,7 @@ PIXEL_FRAMES = 1.1e8
 MAX_AREA = 1344 * 768     # H3's native canvas; never generate above it
 CROP_AREA = L.CANVAS_AREA
 HANDOFF = 6               # frames blended from original to generated at a seam
+LATENT_CLIP = 17          # H3's VAE clip: its first frame is a latent of its own (anchors)
 
 
 emit = L.emit
@@ -285,11 +286,18 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
     """Cleaned frames the agent supplies (an image model's version of a frame with the object
     gone) pasted into the masked area on their frames. Those frames go to H3 unmasked, so it
     copies the emptiness instead of redrawing what the scene implies; anchor_every spreads
-    the first one along the camera move to more frames. Returns {frame: full-res frame}."""
+    them along the camera move to more frames. Returns {frame: full-res frame}.
+
+    Anchors only count on KEY frames: H3's VAE encodes 17-frame clips whose first frame
+    is a latent frame of its own, while the other 16 share latents four at a time, and a
+    latent is masked if any of its frames is (max pooling). A lone unmasked frame anywhere
+    else is swallowed by its masked neighbours, so a cleaned frame is carried (by the
+    background's motion) to the key frames - window start + 17k - and only those are
+    kept: the nearest one for each supplied anchor, or every round(anchor_every / 17)
+    clips across the boxed span."""
     n = len(frames)
     fh, fw = frames[0].shape[:2]
-    pasted = {}
-    first = None
+    src = {}
     for an in spec.get("anchors") or []:
         a = int(round(float(an["at_s"]) * FPS)) if an.get("at_s") is not None else int(an.get("frame", 0))
         a = min(max(a, lo), min(hi, n - 1))
@@ -305,15 +313,28 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
         img, ok = _align_to(img, frames[a], 255 - cv2.dilate(m, np.ones((41, 41), np.uint8)))
         if not ok:
             warnings.append(f"anchor at frame {a}: could not line the cleaned frame up with the clip; used as is")
-        pasted[a] = _match_colour(img, frames[a], m)
-        first = a if first is None else first
+        src[a] = _match_colour(img, frames[a], m)
+    keys = [i for i in range(lo, min(hi, n - 1) + 1) if (i - lo) % LATENT_CLIP == 0
+            and vmask.get(i) and vmask[i] != "full"]
     every = int(spec.get("anchor_every") or 0)
-    if every > 0 and first is not None:
-        span = sorted(i for i in vmask if lo <= i <= min(hi, n - 1) and vmask[i] != "full")
-        targets = [i for i in span if (i - first) % every == 0 and i not in pasted]
-        H = _bg_motion(frames, first, targets, vmask)
-        for t in targets:
-            pasted[t] = cv2.warpPerspective(pasted[first], H[t], (fw, fh), borderMode=cv2.BORDER_REPLICATE)
+    if not src or not keys:
+        if src:
+            warnings.append("anchors skipped: no key frame (window start + 17k) has a region box")
+        return {}
+    if every > 0:
+        step = max(1, int(round(every / LATENT_CLIP)))
+        targets = keys[::step]
+    else:
+        targets = sorted({min(keys, key=lambda k: abs(k - a)) for a in src})
+    by_src = {}
+    for t in targets:
+        by_src.setdefault(min(src, key=lambda a: abs(a - t)), []).append(t)
+    pasted = {}
+    for a, ts in by_src.items():
+        H = _bg_motion(frames, a, ts, vmask)
+        for t in ts:
+            pasted[t] = src[a] if t == a else cv2.warpPerspective(src[a], H[t], (fw, fh),
+                                                                    borderMode=cv2.BORDER_REPLICATE)
     out = {}
     for a, img in pasted.items():
         alpha = cv2.GaussianBlur(cv2.dilate(_box_mask(vmask[a], fh, fw), np.ones((9, 9), np.uint8)), (0, 0), 4.0)
@@ -760,7 +781,9 @@ def clean_inputs(spec):
         area = {k: float(_box_mask(v, fh, fw).sum()) for k, v in boxed.items()}
         top = max(area.values())
         full = sorted(k for k, s in area.items() if s >= 0.98 * top)
-        a = full[len(full) // 2]
+        # prefer a key frame (window start + 17k): there the cleaned frame is an anchor as is
+        key = [k for k in full if (k - plan["window"][0]) % LATENT_CLIP == 0]
+        a = (key or full)[len(key or full) // 2]
     cap = cv2.VideoCapture(spec["clip"])
     frame = None
     for _ in range(a + 1):

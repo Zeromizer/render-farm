@@ -18,13 +18,14 @@ params (jsonb):
     clean             region, for removing an object the scene implies (H3 alone redraws
                       it): {prompt: what the area shows once it is gone, frame | at_s
                       (default: where the boxes cover the most), every (frames between
-                      anchors, default 16)}. Krea 2 cleans that frame inside the boxes,
+                      anchors, rounded to H3's 17-frame latent clips; default 17)}. Krea 2 cleans that frame inside the boxes,
                       clip_edit carries it along the camera move every `every` frames and
                       H3 keeps those frames, filling around them. The cleaned frame is
                       also uploaded as outputs/<job_id>-clean.png.
     anchors           region, instead of clean: cleaned frames made elsewhere (an image
                       model's copy of a frame with the object gone), [{image: {bucket,
-                      path}, frame | at_s}], 1-4; anchor_every (0 or 4-48, default 16)
+                      path}, frame | at_s}], 1-4; anchor_every (0 = only the key frame
+                      nearest each, or 4-68, default 17)
     seconds           extend / prepend / bridge: how much to generate (snapped to H3's grid)
     context_s         extend / prepend (2.0) / bridge (1.5): original footage H3 sees
     start_frame / end_frame (or start_s / end_s)   audio: range whose sound is regenerated
@@ -99,15 +100,15 @@ def validate(p):
         if clean is not None:
             if not (isinstance(clean, dict) and (clean.get("prompt") or "").strip()):
                 raise RuntimeError("clean needs a prompt describing what the area shows once the object is gone")
-            if not 4 <= int(clean.get("every") or 16) <= 48:
-                raise RuntimeError("clean.every must be 4-48 frames")
+            if not 4 <= int(clean.get("every") or 17) <= 68:
+                raise RuntimeError("clean.every must be 4-68 frames")
         if anchors:
             if not (isinstance(anchors, list) and 1 <= len(anchors) <= 4 and all(
                     isinstance(a, dict) and _src_ok(a.get("image")) for a in anchors)):
                 raise RuntimeError("anchors must be 1-4 of {image: {bucket, path}, frame | at_s}")
-            ev = int(p.get("anchor_every") if p.get("anchor_every") is not None else 16)
-            if ev and not 4 <= ev <= 48:
-                raise RuntimeError("anchor_every must be 0 or 4-48 frames")
+            ev = int(p.get("anchor_every") if p.get("anchor_every") is not None else 17)
+            if ev and not 4 <= ev <= 68:
+                raise RuntimeError("anchor_every must be 0 or 4-68 frames")
     elif p.get("clean") is not None or p.get("anchors"):
         raise RuntimeError("clean / anchors only apply to region edits")
     if mode in ("extend", "prepend", "bridge"):
@@ -207,11 +208,11 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
                 ("image",), name=f"anchor {k + 1}", probe=True)
             anchors.append(dict({x: a[x] for x in ("frame", "at_s") if a.get(x) is not None}, image=local))
         spec["anchors"] = anchors
-        spec["anchor_every"] = int(p.get("anchor_every") if p.get("anchor_every") is not None else 16)
+        spec["anchor_every"] = int(p.get("anchor_every") if p.get("anchor_every") is not None else 17)
     elif p.get("clean") is not None:
         clean_local = _clean_anchor(jid, p, spec, clips["clip"], work_dir, stream, cancel_check, deadline, log)
         spec["anchors"] = [clean_local]
-        spec["anchor_every"] = int(p["clean"].get("every") or 16)
+        spec["anchor_every"] = int(p["clean"].get("every") or 17)
         clean_local = clean_local["image"]
     stream("prep", spec, 3 if clean_local is None else 8, 10)
     plan = json.load(open(os.path.join(work_dir, "plan.json")))
