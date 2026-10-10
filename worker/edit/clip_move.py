@@ -221,6 +221,32 @@ def camera_drift(frames):
     return camera_track(frames)[1]
 
 
+def static_drift(frames, step=6, scale=0.5):
+    """Is the camera locked off? Every step-th frame registered DIRECTLY to frame 0 (a
+    similarity, RANSAC), not chained: chaining adds up each step's error (a locked-off H3
+    clip read 1.1% chained against 0.75% here, 2026-10-11). The largest corner displacement
+    as a fraction of the width; 1.0 when a frame cannot be registered at all."""
+    h, w = frames[0].shape[:2]
+    gray = lambda f: cv2.cvtColor(cv2.resize(f, None, fx=scale, fy=scale), cv2.COLOR_BGR2GRAY)  # noqa: E731
+    g0 = gray(frames[0])
+    p0 = cv2.goodFeaturesToTrack(g0, 400, 0.01, 8)
+    if p0 is None or len(p0) < 12:
+        return 0.0  # nothing to track: a featureless frame cannot show a camera move either
+    corners = np.array([[0, 0], [w, 0], [0, h], [w, h]], float) * scale
+    worst = 0.0
+    for i in range(step, len(frames), step):
+        p1, st, _ = cv2.calcOpticalFlowPyrLK(g0, gray(frames[i]), p0, None, winSize=(21, 21), maxLevel=4)
+        ok = st.ravel() == 1
+        if ok.sum() < 12:
+            return 1.0
+        A, inl = cv2.estimateAffinePartial2D(p0[ok], p1[ok], method=cv2.RANSAC, ransacReprojThreshold=1.5)
+        if A is None or inl is None or inl.sum() < 10:
+            return 1.0
+        moved = corners @ A[:, :2].T + A[:, 2]
+        worst = max(worst, float(np.max(np.hypot(*(moved - corners).T))) / scale)
+    return worst / w
+
+
 def to_canvas(Hs, fw, fh, W, H):
     """Source-pixel homographies as canvas-pixel ones."""
     S = np.diag([W / fw, H / fh, 1.0])
@@ -601,8 +627,9 @@ def prep(spec):
         raise RuntimeError("the clip is too short for a move edit (under a second)")
     fh, fw = frames[0].shape[:2]
     emit("PHASE", "tracking the camera")
-    Hs, drift, lost = camera_track(frames)
-    moving = drift > MAX_CAMERA_DRIFT
+    still = static_drift(frames)
+    moving = still > MAX_CAMERA_DRIFT
+    Hs, drift, lost = camera_track(frames) if moving else (None, still, 0)
     log(f"MEASURED camera drift {drift * 100:.2f}% of the width over the clip "
         f"({'moving' if moving else 'locked off'}); lost track in {lost} frame(s)")
     if moving and lost > max(3, 0.1 * n):
@@ -869,7 +896,7 @@ def pick_render_car(tracks, drawn, s0, n, w):
     near = px(60, w)
     best = None
     for k, ms in enumerate(tracks):
-        d, miss, hits = [], 0, 0
+        d, miss, hits, off = [], 0, 0, 0
         for f in range(s0, n):
             want = drawn[f]
             if want is None:
@@ -881,11 +908,12 @@ def pick_render_car(tracks, drawn, s0, n, w):
             dist = math.hypot(c[0] - want[0], c[1] - want[1])
             d.append(dist)
             hits += dist < near
+            off += dist > 2 * near
         if not hits:
             continue
-        score = (float(np.mean(d)) + 40.0 * miss / max(1, len(d) + miss)) * BASE_W / w
+        score = (float(np.mean(d)) + 40.0 * (miss + off) / max(1, len(d) + miss)) * BASE_W / w
         if best is None or score < best[0]:
-            best = (score, k, float(np.mean(d)) * BASE_W / w, miss)
+            best = (score, k, float(np.mean(d)) * BASE_W / w, miss, off)
     return best
 
 
@@ -906,10 +934,12 @@ def compose(spec):
             results.append({"take": i + 1, "seed": spec["seeds"][i], "ok": False,
                             "why": "the car was not found on the drawn path in this render"})
             continue
-        score, k, dist, miss = pick
+        score, k, dist, miss, off = pick
         results.append({"take": i + 1, "seed": spec["seeds"][i], "ok": True, "score": round(score, 1),
-                        "path_error_px832": round(dist, 1), "missing_frames": miss, "track": k})
-        log(f"take {i + 1}: car track {k}, {dist:.1f} px off the drawn path (832 scale), {miss} frames missing")
+                        "path_error_px832": round(dist, 1), "missing_frames": miss, "off_path_frames": off,
+                        "track": k})
+        log(f"take {i + 1}: car track {k}, {dist:.1f} px off the drawn path (832 scale), {miss} frames missing, "
+            f"{off} well off it")
     good = [r for r in results if r["ok"]]
     if not good:
         raise RuntimeError("H3 did not draw the car on the new path in any take; try a gentler route or another seed")
@@ -952,8 +982,21 @@ def compose(spec):
         if os.path.exists(nm_path):
             reach = _disk(px(110, W))
             drawn_m = read_masks(nm_path, length)
-            car_small = [c & (cv2.dilate(d.astype(np.uint8), reach) > 0) if d.any() else c
-                         for c, d in zip(car_small, drawn_m)]
+            kept, dropped = [], 0
+            for c, d in zip(car_small, drawn_m):
+                if d.any() and c.any():
+                    near_c = c & (cv2.dilate(d.astype(np.uint8), reach) > 0)
+                    # the render's car mostly beyond reach (H3 kept it somewhere else): pasting
+                    # the part inside left a sliver of car (2026-10-11); paste none of it
+                    if near_c.sum() < 0.6 * c.sum():
+                        near_c = np.zeros_like(c)
+                        dropped += 1
+                    c = near_c
+                kept.append(c)
+            car_small = kept
+            if dropped:
+                log(f"take {r['take']}: the render's car was off the drawn path in {dropped} frame(s): not pasted there")
+                r["unpasted_frames"] = dropped
         dest = os.path.join(work, f"take{r['take']}.mp4")
         src, raw = Reader(spec["clip"]), Reader(spec["takes"][i])
         pv = Reader(plate_path) if use_ltx else None
