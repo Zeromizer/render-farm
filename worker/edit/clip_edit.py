@@ -441,7 +441,7 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
     pasted = {}
     for t in targets:
         box_t = _frame_mask(t, vmask, fh, fw)
-        best = None
+        cands = []
         for a in src:
             cleaned = _frame_mask(a, vmask, fh, fw)
             if t == a:
@@ -450,10 +450,17 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
                 Hm = motion[a][t]
                 cand = (cv2.warpPerspective(src[a], Hm, (fw, fh), borderMode=cv2.BORDER_REPLICATE),
                         cv2.warpPerspective(cleaned, Hm, (fw, fh), flags=cv2.INTER_NEAREST))
-            cov = int(cv2.countNonZero(cv2.bitwise_and(cand[1], box_t)))
-            if best is None or cov > best[0]:
-                best = (cov, cand)
-        pasted[t] = best[1]
+            cands.append((int(cv2.countNonZero(cv2.bitwise_and(cand[1], box_t))), cand))
+        cands.sort(key=lambda c: -c[0])
+        # the best-covering source, then whatever it misses (a strip the camera had not yet
+        # seen in that frame, which H3 filled with the object again) from the next ones
+        img, valid = cands[0][1][0].copy(), cands[0][1][1].copy()
+        for _, (im2, v2) in cands[1:]:
+            fill = cv2.bitwise_and(cv2.bitwise_and(v2, box_t), cv2.bitwise_not(valid)) > 0
+            if fill.any():
+                img[fill] = im2[fill]
+                valid[fill] = 255
+        pasted[t] = (img, valid)
     out = {}
     for a, (img, valid) in pasted.items():
         box = _frame_mask(a, vmask, fh, fw)
