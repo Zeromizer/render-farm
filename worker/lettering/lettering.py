@@ -182,53 +182,94 @@ def align_reference(ref, frame, boxes_ref, log):
 
 # ---------------------------------------------------------------- tracking
 
-def track_element(grays, anchor, box, lo, hi):
-    """Template-match an element box from the anchor frame outwards, updating the
-    template every frame (slow pose change, motion blur). Returns {frame: (x0, y0, score)}."""
-    x0, y0, x1, y1 = [int(round(v)) for v in box]
-    w, h = x1 - x0, y1 - y0
+def track_motion(grays, anchor, roi, lo, hi):
+    """Similarity transform (scale, rotation, translation) anchor -> frame for every frame
+    the car stays trackable, chained frame to frame from LK flow on features around the
+    elements. Scale matters: a push-in or a car driving at the camera can double the
+    lettering's size over a clip. Returns {frame: 3x3}."""
     H, W = grays[0].shape
-    out = {anchor: (x0, y0, 1.0)}
+    corners = np.float32([[roi[0], roi[1]], [roi[2], roi[1]], [roi[2], roi[3]], [roi[0], roi[3]]]).reshape(-1, 1, 2)
+    lk = {"winSize": (21, 21), "maxLevel": 3,
+          "criteria": (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)}
+    out = {anchor: np.eye(3)}
     for rng in (range(anchor - 1, lo - 1, -1), range(anchor + 1, hi + 1)):
-        px, py = x0, y0
-        tpl = grays[anchor][y0:y1, x0:x1]
-        prev_dx = prev_dy = 0
+        T, prev = np.eye(3), anchor
         for i in rng:
-            sx = max(40, 2 * w // 3)
-            sy = max(30, h)
-            cx, cy = px + prev_dx, py + prev_dy   # constant-velocity prediction
-            ax0, ay0 = max(0, cx - sx), max(0, cy - sy)
-            ax1, ay1 = min(W, cx + w + sx), min(H, cy + h + sy)
-            win = grays[i][ay0:ay1, ax0:ax1]
-            if win.shape[0] < h or win.shape[1] < w:
+            r = clamp_box(box_of(cv2.perspectiveTransform(corners, T)), W, H)
+            if r[2] - r[0] < 24 or r[3] - r[1] < 24:
                 break
-            res = cv2.matchTemplate(win, tpl, cv2.TM_CCOEFF_NORMED)
-            _, score, _, loc = cv2.minMaxLoc(res)
-            nx, ny = ax0 + loc[0], ay0 + loc[1]
-            if nx <= 0 or ny <= 0 or nx + w >= W or ny + h >= H:
+            m = np.zeros((H, W), np.uint8)
+            m[int(r[1]):int(r[3]), int(r[0]):int(r[2])] = 255
+            pts = cv2.goodFeaturesToTrack(grays[prev], 400, 0.01, 5, mask=m)
+            if pts is None or len(pts) < 12:
+                break
+            nxt, st, _ = cv2.calcOpticalFlowPyrLK(grays[prev], grays[i], pts, None, **lk)
+            back, st2, _ = cv2.calcOpticalFlowPyrLK(grays[i], grays[prev], nxt, None, **lk)
+            ok = (st.ravel() == 1) & (st2.ravel() == 1) & (np.linalg.norm((pts - back).reshape(-1, 2), axis=1) < 1.0)
+            if ok.sum() < 12:
+                break
+            A, inl = cv2.estimateAffinePartial2D(pts[ok], nxt[ok], method=cv2.RANSAC, ransacReprojThreshold=1.5)
+            if A is None or int(inl.sum()) < 10:
+                break
+            T = np.vstack([A, [0, 0, 1]]) @ T
+            out[i], prev = T.copy(), i
+    return out
+
+
+def _peak(res, loc):
+    """Sub-pixel peak of a matchTemplate response (parabola through the neighbours)."""
+    x, y = loc
+    def off(a, b, c):
+        d = a - 2 * b + c
+        return 0.0 if abs(d) < 1e-9 else 0.5 * (a - c) / d
+    dx = off(res[y, x - 1], res[y, x], res[y, x + 1]) if 0 < x < res.shape[1] - 1 else 0.0
+    dy = off(res[y - 1, x], res[y, x], res[y + 1, x]) if 0 < y < res.shape[0] - 1 else 0.0
+    return x + dx, y + dy
+
+
+def track_element(grays, motion, anchor, box, lo, hi):
+    """Each element rides the car's motion, then a local template match (template updated
+    every frame, cut sub-pixel at the predicted size) absorbs parallax and pose change.
+    The correction carries forward, so an element on another plane (badge on the bonnet,
+    plate on the bumper) does not drift. Returns {frame: (x0, y0, x1, y1, score)}."""
+    H, W = grays[0].shape
+    q0 = np.float32([[box[0], box[1]], [box[2], box[1]], [box[2], box[3]], [box[0], box[3]]]).reshape(-1, 1, 2)
+    out = {anchor: (*box, 1.0)}
+    for rng in (range(anchor - 1, lo - 1, -1), range(anchor + 1, hi + 1)):
+        cx = cy = 0.0
+        prev, pc = anchor, ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+        for i in rng:
+            if i not in motion:
+                break
+            p = box_of(cv2.perspectiveTransform(q0, motion[i]))
+            pw, ph = p[2] - p[0], p[3] - p[1]
+            mx, my = (p[0] + p[2]) / 2 + cx, (p[1] + p[3]) / 2 + cy
+            if mx - pw / 2 <= 0 or my - ph / 2 <= 0 or mx + pw / 2 >= W - 1 or my + ph / 2 >= H - 1 or pw < 6 or ph < 4:
                 break   # touching the frame edge: entering/leaving, not fully visible -> leave it alone
-            out[i] = (nx, ny, float(score))
-            if score < 0.35:
-                break   # lost: stop rather than wander; the caller borrows a neighbour's motion
-            prev_dx, prev_dy = nx - px, ny - py
-            px, py = nx, ny
-            tpl = grays[i][ny:ny + h, nx:nx + w]
+            w, h = int(round(pw)), int(round(ph))
+            # previous frame's patch, resampled to this frame's scale/rotation (sub-pixel)
+            D = motion[prev][:2, :2] @ np.linalg.inv(motion[i][:2, :2])
+            c0 = np.array([(w - 1) / 2, (h - 1) / 2])
+            M = np.hstack([D, (np.array(pc) - D @ c0)[:, None]]).astype(np.float32)
+            tpl = cv2.warpAffine(grays[prev], M, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
+            sx, sy = max(6, int(0.15 * w)), max(4, int(0.3 * h))
+            ox, oy = int(round(mx - w / 2)) - sx, int(round(my - h / 2)) - sy
+            score = 0.0
+            if ox >= 0 and oy >= 0 and ox + w + 2 * sx <= W and oy + h + 2 * sy <= H and float(tpl.std()) >= 4.0:
+                res = cv2.matchTemplate(grays[i][oy:oy + h + 2 * sy, ox:ox + w + 2 * sx], tpl, cv2.TM_CCOEFF_NORMED)
+                _, score, _, loc = cv2.minMaxLoc(res)
+                if score >= 0.5:   # else: flat or lost -> ride the motion alone this frame
+                    lx, ly = _peak(res, loc)
+                    nx, ny = ox + lx + (w - 1) / 2, oy + ly + (h - 1) / 2
+                    cx, cy = cx + nx - mx, cy + ny - my
+                    mx, my = nx, ny
+            out[i] = tuple(float(v) for v in (mx - pw / 2, my - ph / 2, mx + pw / 2, my + ph / 2, score))
+            prev, pc = i, (mx, my)
     return out
 
 
-def fill_from(track, primary, anchor, frames):
-    """Frames an element's own track did not reach (or held weakly) borrow the primary
-    element's displacement since the anchor."""
-    ax, ay, _ = track[anchor]
-    pax, pay, _ = primary[anchor]
-    out = {}
-    for i in frames:
-        t = track.get(i)
-        if t and t[2] >= 0.45:
-            out[i] = (t[0], t[1])
-        elif i in primary:
-            out[i] = (ax + primary[i][0] - pax, ay + primary[i][1] - pay)
-    return out
+def motion_scale(T):
+    return math.sqrt(abs(np.linalg.det(T[:2, :2])))
 
 
 # ---------------------------------------------------------------- prep
@@ -268,23 +309,26 @@ def prep(spec):
     lo, hi = start, start + length - 1
     emit("PHASE", "tracking elements")
     grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
-    tracks = [track_element(grays, anchor, b, lo, hi) for b in anchor_boxes]
-    areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in anchor_boxes]
-    primary = tracks[int(np.argmax(areas))]
+    u = box_of(np.array([[b[0], b[1]] for b in anchor_boxes] + [[b[2], b[3]] for b in anchor_boxes]))
+    m = max(40.0, 0.6 * max(u[2] - u[0], u[3] - u[1]))
+    motion = track_motion(grays, anchor, clamp_box([u[0] - m, u[1] - m, u[2] + m, u[3] + m], fw, fh), lo, hi)
+    tracks = [track_element(grays, motion, anchor, b, lo, hi) for b in anchor_boxes]
+    scales = {i: motion_scale(T) for i, T in motion.items()}
     win = range(lo, hi + 1)
-    pos = [fill_from(t, primary, anchor, win) for t in tracks]
+    print(f"MEASURED motion frames={len(motion)} scale {min(scales.values()):.2f}-{max(scales.values()):.2f}", flush=True)
     for e, t in zip(elements, tracks):
-        sc = [s for _, _, s in t.values()]
+        sc = [v[4] for v in t.values()]
         print(f"MEASURED track {e['name']} frames={len(t)} min_score={min(sc):.2f} "
-              f"weak={sum(1 for s in sc if s < 0.45)}", flush=True)
+              f"weak={sum(1 for s in sc if s < 0.5)}", flush=True)
 
-    # anchor run: contiguous frames around the anchor where every element sits within
-    # `settle` px of its anchor position -> the real lettering is pasted there, unmasked
+    # anchor run: contiguous frames around the anchor where every element's box (all four
+    # edges, so size too) sits within `settle` px of the anchor box -> the real lettering
+    # is pasted there, unmasked
     settle = float(spec.get("settle_px", 2.5))
     def settled(i):
         for k, b in enumerate(anchor_boxes):
-            p = pos[k].get(i)
-            if p is None or abs(p[0] - b[0]) > settle or abs(p[1] - b[1]) > settle:
+            p = tracks[k].get(i)
+            if p is None or max(abs(p[j] - b[j]) for j in range(4)) > settle:
                 return False
         return True
     a0 = a1 = anchor
@@ -294,20 +338,22 @@ def prep(spec):
         a1 += 1
     print(f"MEASURED anchor_run {a0}-{a1} ({a1 - a0 + 1} frames)", flush=True)
 
-    # paste the real lettering on the anchor run (per element, translated by its track)
+    # paste the real lettering on the anchor run (per element, moved with the car and its
+    # own correction)
     emit("PHASE", "pasting reference lettering")
     anchored = [f.copy() for f in frames]
     pad_a = int(spec.get("paste_pad", 4))
     for k, b in enumerate(anchor_boxes):
-        m = np.zeros((fh, fw), np.uint8)
-        cv2.rectangle(m, (int(b[0]) - pad_a, int(b[1]) - pad_a), (int(b[2]) + pad_a, int(b[3]) + pad_a), 255, -1)
-        mf = cv2.GaussianBlur(m, (0, 0), 2.5).astype(np.float32) / 255.0
+        mk = np.zeros((fh, fw), np.uint8)
+        cv2.rectangle(mk, (int(b[0]) - pad_a, int(b[1]) - pad_a), (int(b[2]) + pad_a, int(b[3]) + pad_a), 255, -1)
+        mf = cv2.GaussianBlur(mk, (0, 0), 2.5).astype(np.float32) / 255.0
         for i in range(a0, a1 + 1):
-            dx, dy = pos[k][i][0] - b[0], pos[k][i][1] - b[1]
-            M = np.float32([[1, 0, dx], [0, 1, dy]])
-            r = cv2.warpAffine(ref_warp, M, (fw, fh))
-            a = cv2.warpAffine(mf, M, (fw, fh))[..., None]
-            anchored[i] = np.clip(anchored[i] * (1 - a) + r * a, 0, 255).astype(np.uint8)
+            p = tracks[k][i]
+            s = (p[2] - p[0]) / max(1e-6, b[2] - b[0])
+            M = np.float32([[s, 0, p[0] - s * b[0]], [0, s, p[1] - s * b[1]]])
+            r = cv2.warpAffine(ref_warp, M, (fw, fh), flags=cv2.INTER_CUBIC)
+            al = cv2.warpAffine(mf, M, (fw, fh))[..., None]
+            anchored[i] = np.clip(anchored[i] * (1 - al) + r * al, 0, 255).astype(np.uint8)
 
     # masks: every window frame outside the anchor run where the element was located
     pad_frac = float(spec.get("mask_pad", 0.25))
@@ -316,42 +362,44 @@ def prep(spec):
         if a0 <= i <= a1:
             continue
         boxes = []
-        for k, b in enumerate(anchor_boxes):
-            p = pos[k].get(i)
+        for k in range(len(anchor_boxes)):
+            p = tracks[k].get(i)
             if p is None:
                 continue
-            w, h = b[2] - b[0], b[3] - b[1]
+            w, h = p[2] - p[0], p[3] - p[1]
             pad = max(10.0, pad_frac * max(w, h) * 0.5 + 0.15 * h)
-            boxes.append(clamp_box([p[0] - pad, p[1] - pad, p[0] + w + pad, p[1] + h + pad], fw, fh))
+            boxes.append(clamp_box([p[0] - pad, p[1] - pad, p[2] + pad, p[3] + pad], fw, fh))
         if boxes:
             masks[i] = boxes
 
-    # follow-crop: a fixed-size window riding the primary element, centred on the union
-    u = box_of(np.array([[b[0], b[1]] for b in anchor_boxes] + [[b[2], b[3]] for b in anchor_boxes]))
+    # follow-crop: a window riding the elements that zooms with the car, so H3 sees the
+    # lettering at a steady size and resolution (compose maps each frame back by its reg)
     uw, uh = u[2] - u[0], u[3] - u[1]
-    rw = max(2.4 * uw, 2.2 * uh * 16 / 9, 240.0)
-    rh = rw * 9 / 16
-    rw, rh = min(rw, fw), min(rh, fh)
-    W, Hc = gen_dims(rw / rh)
-    rh = rw * Hc / W
-    if rh > fh:
-        rh = fh
-        rw = rh * W / Hc
-    rw, rh = int(round(rw)), int(round(rh))
-    pidx = int(np.argmax(areas))
-    pb = anchor_boxes[pidx]
-    off = ((u[0] + u[2]) / 2 - pb[0], (u[1] + u[3]) / 2 - pb[1])
-    cen = np.array([[pos[pidx][i][0] + off[0], pos[pidx][i][1] + off[1]] if i in pos[pidx]
-                    else [(u[0] + u[2]) / 2, (u[1] + u[3]) / 2] for i in win], np.float32)
+    rw0 = max(2.4 * uw, 2.2 * uh * 16 / 9, 240.0)
+    W, Hc = gen_dims(16 / 9)
+    off = ((u[0] + u[2]) / 2, (u[1] + u[3]) / 2)
+    cen, sz = [], []
+    for i in win:
+        T = motion.get(i)
+        if T is None:   # car lost (left the frame): hold the nearest known pose
+            T = motion[min(motion, key=lambda j: abs(j - i))]
+        c = cv2.perspectiveTransform(np.float32([[off]]), T)[0, 0]
+        cen.append(c)
+        sz.append(motion_scale(T))
+    cen, sz = np.array(cen, np.float32), np.array(sz, np.float32)
     sm = 3
-    padc = np.pad(cen, ((sm, sm), (0, 0)), mode="edge")
     ker = np.ones(2 * sm + 1) / (2 * sm + 1)
-    cen = np.stack([np.convolve(padc[:, d], ker, mode="valid") for d in range(2)], 1)
+    cen = np.stack([np.convolve(np.pad(cen[:, d], sm, mode="edge"), ker, mode="valid") for d in range(2)], 1)
+    sz = np.convolve(np.pad(sz, sm, mode="edge"), ker, mode="valid")
     regs = []
-    for cx, cy in cen:
+    for (cx, cy), s in zip(cen, sz):
+        rw = min(rw0 * s, fw, fh * W / Hc)
+        rh = rw * Hc / W
+        rw, rh = int(round(rw)), int(round(rh))
         regs.append((int(round(min(max(0, cx - rw / 2), fw - rw))), int(round(min(max(0, cy - rh / 2), fh - rh))), rw, rh))
-    print(f"MEASURED window {lo}-{hi} ({length} f) crop {rw}x{rh} -> canvas {W}x{Hc} "
-          f"(x{W / rw:.2f}), masked frames {len(masks)}", flush=True)
+    rws = [r[2] for r in regs]
+    print(f"MEASURED window {lo}-{hi} ({length} f) crop {min(rws)}-{max(rws)} px wide -> canvas {W}x{Hc} "
+          f"(x{W / max(rws):.2f}-x{W / min(rws):.2f}), masked frames {len(masks)}", flush=True)
 
     emit("PHASE", "writing generation inputs")
     work = spec["work_dir"]
@@ -377,7 +425,7 @@ def prep(spec):
     plan = {"fps": fps, "frames": n, "width": fw, "height": fh, "anchor": anchor, "window": [lo, hi],
             "length": length, "canvas": [W, Hc], "regs": regs, "anchor_run": [a0, a1],
             "masks": {str(k): v for k, v in masks.items()}, "anchor_boxes": anchor_boxes,
-            "tracks": [{str(i): list(p) for i, p in t.items()} for t in pos],
+            "tracks": [{str(i): list(p[:4]) for i, p in t.items()} for t in tracks],
             "names": [e["name"] for e in elements], "align": {"ecc": cc, "inliers": inliers},
             "warnings": []}
     if a1 - a0 + 1 < 6:
@@ -446,17 +494,16 @@ def compose(spec):
         # the tracked box, reference resized to it) minus a flicker penalty
         sims, flick = [], []
         for e, ref_g in enumerate(refs):
-            b = plan["anchor_boxes"][e]
-            w, h = int(round(b[2] - b[0])), int(round(b[3] - b[1]))
+            h, w = ref_g.shape[:2]
             prev = None
             for i in sorted(masks):
                 p = tracks[e].get(i)
                 if p is None:
                     continue
-                x, y = int(round(p[0])), int(round(p[1]))
-                if x < 0 or y < 0 or x + w > fw or y + h > fh:
+                x0, y0, x1, y1 = [int(round(v)) for v in p]
+                if x0 < 0 or y0 < 0 or x1 > fw or y1 > fh or x1 - x0 < 4 or y1 - y0 < 4:
                     continue
-                crop = _grad(out[i][y:y + h, x:x + w])
+                crop = _grad(cv2.resize(out[i][y0:y1, x0:x1], (w, h), interpolation=cv2.INTER_AREA))
                 sims.append(_ncc(crop, ref_g))
                 if prev is not None:
                     flick.append(float(np.abs(crop - prev).mean()))
@@ -493,12 +540,12 @@ def proof_sheet(spec, plan, original, fixed, best, results):
         own = [i for i in masks if i in tracks[e]] or masks
         picks = [own[int(round(t * (len(own) - 1)))] for t in np.linspace(0, 1, 6)] + [plan["anchor_run"][0]]
         b = plan["anchor_boxes"][e]
-        w, h = b[2] - b[0], b[3] - b[1]
-        cw, ch = max(w * 2.2, 80), max(h * 3.0, 50)
         top, bot = [], []
         for i in picks:
-            p = tracks[e].get(i, (b[0], b[1]))
-            cx, cy = p[0] + w / 2, p[1] + h / 2
+            p = tracks[e].get(i, b)
+            w, h = p[2] - p[0], p[3] - p[1]
+            cw, ch = min(max(w * 2.2, 80), fw), min(max(h * 3.0, 50, cw * 0.3), fh)
+            cx, cy = (p[0] + p[2]) / 2, (p[1] + p[3]) / 2
             x0 = int(min(max(0, cx - cw / 2), fw - cw)); y0 = int(min(max(0, cy - ch / 2), fh - ch))
             sz = (tile_w, int(tile_w * ch / cw))
             o = cv2.resize(original[i][y0:y0 + int(ch), x0:x0 + int(cw)], sz, interpolation=cv2.INTER_CUBIC)

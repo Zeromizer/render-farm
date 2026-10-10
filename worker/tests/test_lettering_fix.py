@@ -104,6 +104,29 @@ class PixelHelpersTest(unittest.TestCase):
         w, h = lettering.gen_dims(16 / 9)
         self.assertEqual((w % 32, h % 32), (0, 0))
 
+    def test_tracks_a_push_in(self):
+        """A camera pushing in doubles the element's size: the box must grow with it."""
+        import cv2
+        import numpy as np
+        rng = np.random.default_rng(1)
+        base = cv2.GaussianBlur(rng.integers(0, 255, (360, 640), dtype=np.uint8), (0, 0), 1.5)
+        cv2.rectangle(base, (290, 200), (350, 220), 255, -1)   # the "plate"
+        cv2.putText(base, "AB12", (296, 216), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 0, 1)
+        grays = []
+        for i in range(40):
+            s = 1 + i / 39   # 1.0 -> 2.0 about the plate's centre
+            M = np.float32([[s, 0, 320 - s * 320], [0, s, 210 - s * 210]])
+            grays.append(cv2.warpAffine(base, M, (640, 360), flags=cv2.INTER_LINEAR))
+        box = [290.0, 200.0, 350.0, 220.0]
+        motion = lettering.track_motion(grays, 0, [240, 160, 400, 260], 0, 39)
+        self.assertEqual(len(motion), 40)
+        self.assertAlmostEqual(lettering.motion_scale(motion[39]), 2.0, delta=0.06)
+        track = lettering.track_element(grays, motion, 0, box, 0, 39)
+        x0, y0, x1, y1, _ = track[39]
+        self.assertAlmostEqual(x1 - x0, 120, delta=5)
+        self.assertAlmostEqual((x0 + x1) / 2, 320, delta=3)
+        self.assertAlmostEqual((y0 + y1) / 2, 210, delta=3)
+
 
 if __name__ == "__main__":
     unittest.main()
