@@ -44,7 +44,10 @@ def run_graph(graph, dest, timeout_s=1200):
     pid = r.json()["prompt_id"]
     t0 = time.monotonic()
     while time.monotonic() - t0 < timeout_s:
-        e = httpx.get(COMFY + f"/history/{pid}", timeout=15).json().get(pid)
+        try:
+            e = httpx.get(COMFY + f"/history/{pid}", timeout=60).json().get(pid)
+        except httpx.TimeoutException:
+            continue
         if e:
             st = e.get("status") or {}
             if st.get("status_str") == "error":
@@ -139,7 +142,7 @@ def main():
     job = json.loads(sys.argv[1])
     out_root = os.path.abspath(sys.argv[2])
     os.makedirs(out_root, exist_ok=True)
-    info = httpx.get(COMFY + "/object_info", timeout=60).json()
+    info = httpx.get(COMFY + "/object_info", timeout=300).json()
     json.dump({n: info.get(n) for n in NODES}, open(os.path.join(out_root, "object_info.json"), "w"), indent=1)
     ck = (info.get("CheckpointLoaderSimple") or {}).get("input", {}).get("required", {}).get("ckpt_name", [[]])[0]
     log(f"sam3 checkpoint listed: {CKPT in ck}")
