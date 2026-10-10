@@ -263,22 +263,38 @@ def _soft(m, grow, sigma):
     return cv2.GaussianBlur((cv2.dilate(m.astype(np.uint8), k) > 0).astype(np.float32), (0, 0), sigma)[..., None]
 
 
-def compose(frames, old, car, plate, res, old_grow=12, car_grow=8):
-    """Only the car comes from H3. The old car is replaced by the graded clean plate (tight
-    to its own outline, so nothing passing close by is touched); the new car is pasted where
-    SAM finds it in the render, not where it was drawn (H3 runs off and behind the drawn
-    path, so pasting by the drawn path clipped it)."""
+def compose(frames, old, car, plate, res, old_grow=48, car_grow=8, cover_grow=60):
+    """Only the car comes from H3.
+
+    The old car: H3 cars darken the road round them out to ~40-50 px (soft shadow, -15
+    levels at the body, -3 at 25 px), so taking out only the body left a "visibly invisible
+    car" - its shadow halo driving down the road. So the graded clean plate (built with the
+    same wide exclusion, so it is shadow-free) goes over the body + 48 px, feathered wide;
+    anything else passing close (much brighter or darker than the road: the other car) keeps
+    its own pixels.
+
+    The new car is pasted where SAM finds it in the render, not where it was drawn (H3 runs
+    off and behind the drawn path, so pasting by the drawn path clipped it)."""
     import cv2
     import numpy as np
     n = len(frames)
-    k41 = np.ones((41, 41), np.uint8)
+    pf = plate.astype(np.float32)
+    kc = np.ones((2 * cover_grow + 1,) * 2, np.uint8)
+    ko = np.ones((2 * old_grow + 1,) * 2, np.uint8)
+    kt = np.ones((13, 13), np.uint8)
     out = []
     for f in range(n):
-        cover = cv2.dilate(old[f].astype(np.uint8), k41) > 0
         base = frames[f].astype(np.float32)
         if old[f].any():
-            ao = _soft(old[f], old_grow, 3)
-            base = base * (1 - ao) + matched_plate(frames[f], plate, cover) * ao
+            m = old[f].astype(np.uint8)
+            fill = matched_plate(frames[f], plate, cv2.dilate(m, kc) > 0)
+            reg = cv2.dilate(m, ko) > 0
+            tight = cv2.dilate(m, kt) > 0
+            other = (np.abs(base - pf).max(2) > 45) & ~tight
+            other = cv2.dilate(other.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+            a = cv2.GaussianBlur((reg & ~other).astype(np.float32), (0, 0), 10)[..., None]
+            a = np.maximum(a, cv2.GaussianBlur(tight.astype(np.float32), (0, 0), 2)[..., None])
+            base = base * (1 - a) + fill * a
         u = np.zeros_like(car[0])
         for j in range(max(0, f - 1), min(n, f + 2)):
             u |= car[j]
@@ -327,7 +343,7 @@ def main():
         old = track_car(src, job.get("noun", "car"), job["at"], n, w, h, out)
         log(f"sam track: {time.monotonic() - t0:.0f}s, car in {sum(m.any() for m in old)}/{n} frames")
         tr.free()
-        plate, cover = clean_plate(frames, old)
+        plate, cover = clean_plate(frames, old, grow=60)
         cv2.imwrite(os.path.join(out, "plate.png"), plate)
         refs, new, _ = build_edit_reference(frames, old, cover, plate, job["route"], n, int(job.get("hold", 6)),
                                             job.get("end"), job.get("ease", "inout"), out)
@@ -343,7 +359,7 @@ def main():
         # paste-back mask: the region, a little wider in space and time, feathered
         comp = regions(old, new, n, int(job.get("grow_old", 18)) + 6, int(job.get("grow_new", 30)) + 6, t_pad=3)
         comp = [cv2.GaussianBlur(m.astype(np.float32), (0, 0), 5)[..., None] for m in comp]
-        old_grow, car_grow = int(job.get("old_grow", 12)), int(job.get("car_grow", 8))
+        old_grow, car_grow = int(job.get("old_grow", 48)), int(job.get("car_grow", 8))
         write_video(os.path.join(out, "oldmask.mp4"), [cv2.cvtColor(m.astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR) for m in old], lossless=True)
         for rd in job["renders"]:
             raw = os.path.join(out, f"{rd['name']}_raw.mp4")
