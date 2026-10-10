@@ -20,7 +20,7 @@ import httpx
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "worker"))
 sys.path.insert(0, os.path.join(ROOT, "worker", "edit"))
-from videogen import graphs_sam3, graphs_ttm  # noqa: E402
+from videogen import graphs_ltx_plate, graphs_sam3, graphs_ttm  # noqa: E402
 
 COMFY = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
 T = httpx.Timeout(30.0, read=600.0)
@@ -144,11 +144,27 @@ def main():
     noun = p["object"].strip()
     t0 = time.monotonic()
     src_masks = sam(noun, os.path.join(work, "move_src.mp4"), work, "sam_src")
-    other_masks = sam("car", os.path.join(work, "move_src.mp4"), work, "sam_all")
-    log(f"sam source + traffic: {time.monotonic() - t0:.0f}s")
+    log(f"sam source: {time.monotonic() - t0:.0f}s")
     spec = {k: p[k] for k in ("object", "point_norm", "route", "start_s", "start_frame", "hold_s", "arrive_s",
                               "arrive_frame", "ease", "turn") if p.get(k) is not None}
-    spec.update(work_dir=work, sam_masks=src_masks, other_masks=other_masks)
+    spec.update(work_dir=work, sam_masks=src_masks)
+    if p.get("plate", "ltx") == "ltx":  # the runner's order: the LTX clean plate, window by window
+        ltx = plan["ltx"]
+        wins = []
+        for i, (name, (s0, c)) in enumerate(zip(ltx["files"], ltx["windows"])):
+            t0 = time.monotonic()
+            graph, _ = graphs_ltx_plate.build(upload(os.path.join(work, name)), noun, *ltx["canvas"], c, 6332,
+                                              f"move_try/plate{i}")
+            raw = fetch_all(run_outputs(graph), work)
+            dest = os.path.join(work, f"plate_{i}.mp4")
+            os.replace(raw[0], dest)
+            free()
+            wins.append(dest)
+            log(f"clean plate {i + 1}/{len(ltx['files'])}: {ltx['canvas']} frames {s0}-{s0 + c - 1} in "
+                f"{time.monotonic() - t0:.0f}s")
+        spec["plate_windows"] = wins
+    else:
+        spec["other_masks"] = sam("car", os.path.join(work, "move_src.mp4"), work, "sam_all")
     stream("build", spec, work)
     names = [upload(os.path.join(work, f)) for f in ("move_ref.mp4", "move_refmask.mp4", "first.png")]
     seeds = [int(p.get("seed", 6332)) + SEED_STEP * i for i in range(int(p.get("takes", 1)))]
@@ -169,8 +185,9 @@ def main():
                        "out": os.path.join(out, "edit.mp4"), "proof": os.path.join(out, "edit-proof.png"),
                        "report": os.path.join(out, "edit-report.json")}, work)
     log(f"total {time.monotonic() - t_all:.0f}s")
-    for f in ("route.png", "plate.png"):
-        shutil.copy(os.path.join(work, f), out)
+    for f in ("route.png", "plate.png", "plate_ltx.mp4", "move_ref.mp4", "cam.json"):
+        if os.path.exists(os.path.join(work, f)):
+            shutil.copy(os.path.join(work, f), out)
     for f in os.listdir(work):
         if f.startswith("take") and f.endswith(".mp4"):
             shutil.copy(os.path.join(work, f), out)
