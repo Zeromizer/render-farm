@@ -100,7 +100,8 @@ def run_test(t, out_root, work_root):
     out = os.path.join(out_root, name)
     os.makedirs(work, exist_ok=True)
     os.makedirs(out, exist_ok=True)
-    spec = {k: v for k, v in t.items() if k not in ("name", "inputs", "prompt", "takes", "seed", "steps")}
+    spec = {k: v for k, v in t.items() if k not in ("name", "inputs", "prompt", "takes", "seed", "steps",
+                                                    "family", "edges")}
     for key, url in t["inputs"].items():
         spec[key] = fetch(url, os.path.join(work, f"{key}.mp4"))
     spec["work_dir"] = work
@@ -109,14 +110,21 @@ def run_test(t, out_root, work_root):
     plan = json.load(open(os.path.join(work, "plan.json")))
     W, H = plan["canvas"]
     names = [upload(os.path.join(work, f)) for f in ("gen_src.mp4", "gen_mask.mp4", "gen_amask.mp4")]
+    family = t.get("family", "ref2va")
+    edges = {}
+    if t.get("edges"):
+        edges = {"first_frame": upload(os.path.join(work, "edge_first.png")),
+                 "last_frame": upload(os.path.join(work, "edge_last.png"))}
     takes, seeds = [], []
     for i in range(int(t.get("takes", 2))):
         seed = int(t.get("seed", 6332)) + 1009 * i
         graph, meta = graphs_inpaint.build(*names, t["prompt"], W, H, plan["length"], seed,
-                                           f"clip_edit_try/{name}_t{i + 1}", steps=t.get("steps"))
+                                           f"clip_edit_try/{name}_t{i + 1}", steps=t.get("steps"),
+                                           family=family, **edges)
         dest = os.path.join(work, f"raw{i + 1}.mp4")
         secs = run_graph(graph, dest)
-        log(f"   take {i + 1}: {W}x{H} {plan['length']}f seed {seed} -> {secs:.0f}s")
+        log(f"   take {i + 1}: {family}{' +edges' if edges else ''} {W}x{H} {plan['length']}f seed {seed} "
+            f"steps {meta['steps']} -> {secs:.0f}s")
         takes.append(dest)
         seeds.append(seed)
     clip_edit.compose({"work_dir": work, "takes": takes, "seeds": seeds, "out": os.path.join(out, "best.mp4"),

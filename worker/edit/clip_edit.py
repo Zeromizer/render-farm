@@ -333,6 +333,8 @@ def prep(spec):
         vm_c.append(cv2.cvtColor(cv2.resize(m[ry:ry + rh_, rx:rx + rw_], (W, Hc), interpolation=cv2.INTER_NEAREST),
                                  cv2.COLOR_GRAY2BGR))
         am_c.append(np.full((Hc, W, 3), 255 if amask.get(i) else 0, np.uint8))
+    cv2.imwrite(os.path.join(work, "edge_first.png"), src_c[0])
+    cv2.imwrite(os.path.join(work, "edge_last.png"), src_c[-1])
     wav = os.path.join(work, "timeline.wav")
     write_wav(wav, tl_audio)
     L.write_clip(os.path.join(work, "gen_src.mp4"), src_c, FPS, audio_from=wav, audio_start=lo / FPS, lossless=True)
