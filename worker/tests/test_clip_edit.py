@@ -192,6 +192,22 @@ class RoundTripTest(unittest.TestCase):
         CE.clean_inputs({"work_dir": w, "clip": self.a, "size": [320, 176], "frame": 5, "out_prefix": pre})
         self.assertEqual(json.load(open(os.path.join(w, "clean.json")))["main"], 5)
 
+    def test_anchor_groups_on_entries(self):
+        # the box grows over the first clip (an object entering): the middle 4-frame latent of
+        # that clip is anchored whole, besides the key frames
+        rng = np.random.default_rng(3)
+        bg = cv2.GaussianBlur(rng.integers(0, 255, (180, 320, 3), dtype=np.uint8), (0, 0), 2)
+        img = os.path.join(self.d, "clean2.png")
+        cv2.imwrite(img, bg)
+        keys = [{"frame": 0, "box": [280, 70, 320, 110]}, {"frame": 20, "box": [200, 70, 320, 110]},
+                {"frame": 40, "box": [200, 70, 320, 110]}]
+        w = os.path.join(self.d, "groups")
+        os.makedirs(w, exist_ok=True)
+        CE.prep({"mode": "region", "clip": self.a, "regions": [{"keys": keys, "track": False}], "work_dir": w,
+                 "anchors": [{"frame": 34, "image": img}], "anchor_every": 17})
+        plan = json.load(open(os.path.join(w, "plan.json")))
+        self.assertEqual(plan["anchor_frames"], [0, 9, 10, 11, 12, 17, 34])
+
     def test_region_tracked(self):
         self._run("region", {"mode": "region", "clip": self.a,
                              "regions": [{"box": [40, 70, 90, 110], "frame": 0, "track": True}]}, 41)

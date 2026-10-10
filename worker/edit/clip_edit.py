@@ -327,6 +327,16 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
         targets = keys[::step]
     else:
         targets = sorted({min(keys, key=lambda k: abs(k - a)) for a in src})
+    # where the box grows or shrinks between key frames (the object entering or leaving)
+    # H3 invents the most: also anchor the middle 4-frame latent of that clip (all four
+    # frames, or max pooling masks it again)
+    area = lambda i: float(_box_mask(vmask[i], fh, fw).sum())  # noqa: E731
+    for k in list(targets):
+        k2 = k + LATENT_CLIP
+        group = list(range(k + 9, k + 13))
+        if k2 in vmask and vmask[k2] != "full" and all(vmask.get(g) and vmask[g] != "full" for g in group)                 and abs(area(k2) - area(k)) > 0.15 * max(area(k), area(k2)) and group[-1] < n:
+            targets.extend(group)
+    targets = sorted(set(targets))
     by_src = {}
     for t in targets:
         by_src.setdefault(min(src, key=lambda a: abs(a - t)), []).append(t)
