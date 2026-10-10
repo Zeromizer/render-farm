@@ -138,7 +138,10 @@ def _boxes_per_frame(frames, regions, lo, hi):
             track = {i: b for i in range(max(lo, s), min(hi, e) + 1)}
         for i, p in track.items():
             w, h = p[2] - p[0], p[3] - p[1]
-            pad = max(float(r.get("pad_px", 0)) or 0.0, 0.12 * max(w, h), 16.0)
+            # about a latent cell (~32 canvas px) past the object, from its SHORT side and
+            # capped: a margin from the long side turned a full-width graphics band into a
+            # mask over the whole car (2026-10-10, the car warped)
+            pad = float(r["pad_px"]) if r.get("pad_px") else min(max(0.1 * min(w, h), 16.0), 40.0)
             out.setdefault(i, []).append(L.clamp_box([p[0] - pad, p[1] - pad, p[2] + pad, p[3] + pad], fw, fh))
     return out
 
