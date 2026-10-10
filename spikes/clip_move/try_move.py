@@ -144,10 +144,11 @@ def main():
     noun = p["object"].strip()
     t0 = time.monotonic()
     src_masks = sam(noun, os.path.join(work, "move_src.mp4"), work, "sam_src")
-    log(f"sam source: {time.monotonic() - t0:.0f}s")
+    other_masks = sam("car", os.path.join(work, "move_src.mp4"), work, "sam_all")
+    log(f"sam source + traffic: {time.monotonic() - t0:.0f}s")
     spec = {k: p[k] for k in ("object", "point_norm", "route", "start_s", "start_frame", "hold_s", "arrive_s",
                               "arrive_frame", "ease", "turn") if p.get(k) is not None}
-    spec.update(work_dir=work, sam_masks=src_masks)
+    spec.update(work_dir=work, sam_masks=src_masks, other_masks=other_masks)
     stream("build", spec, work)
     names = [upload(os.path.join(work, f)) for f in ("move_ref.mp4", "move_refmask.mp4", "first.png")]
     seeds = [int(p.get("seed", 6332)) + SEED_STEP * i for i in range(int(p.get("takes", 1)))]

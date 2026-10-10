@@ -172,13 +172,17 @@ def _run_move(jid, p, clip, work_dir, stream, heartbeat, cancel_check, deadline,
         try:
             src_masks = _sam_tracks(jid, noun, os.path.join(work_dir, "move_src.mp4"), work_dir, "sam_src",
                                     cancel_check, deadline, log)
+            # every car, so other traffic stays out of the clean plate
+            db.set_phase(jid, "tracking other traffic", 8)
+            other_masks = _sam_tracks(jid, "car", os.path.join(work_dir, "move_src.mp4"), work_dir, "sam_all",
+                                      cancel_check, deadline, log)
         finally:
             comfy_client.free()
     if not src_masks:
         raise RuntimeError(f'SAM 3.1 found no {noun!r} in the clip; name the car the way it looks ("red car")')
     spec = {k: p[k] for k in ("object", "point_norm", "route", "start_s", "start_frame", "hold_s", "arrive_s",
                               "arrive_frame", "ease", "turn") if p.get(k) is not None}
-    spec.update(work_dir=work_dir, sam_masks=src_masks)
+    spec.update(work_dir=work_dir, sam_masks=src_masks, other_masks=other_masks)
     stream("build", spec, 10, 16)
 
     seeds = [p["seed"] + SEED_STEP * i for i in range(p["takes"])]

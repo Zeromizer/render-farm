@@ -188,7 +188,11 @@ class RoundTripTest(unittest.TestCase):
         src_masks = [os.path.join(self.dir, "src_obj0.mp4"), os.path.join(self.dir, "src_obj1.mp4")]
         _mask_video(src_masks[0], [(int(W * 0.8), int(H * 0.8), int(W * 0.9), int(H * 0.9))] * plan["length"], W, H)
         _mask_video(src_masks[1], [sc(old_box(min(f, n - 1))) for f in range(plan["length"])], W, H)
-        CM.build({"work_dir": self.dir, "sam_masks": src_masks, "point_norm": [0.2, 0.4],
+        # SAM's generic "car" pass finds the white car too
+        white = os.path.join(self.dir, "all_obj0.mp4")
+        _mask_video(white, [(int((w * 0.12 + (f - park) * 2) * sx), int(h * 0.47 * sy), int((w * 0.12 + (f - park) * 2 + 30) * sx),
+                             int(h * 0.55 * sy)) if park < f < n else None for f in range(plan["length"])], W, H)
+        CM.build({"work_dir": self.dir, "sam_masks": src_masks, "other_masks": [white], "point_norm": [0.2, 0.4],
                   "route": [[0.5, 0.4], [0.5, 0.1], [0.5, -0.3]], "hold_s": 0, "arrive_s": (n - 1) / CM.FPS})
         with open(os.path.join(self.dir, "poses.json")) as fh:
             pz = json.load(fh)

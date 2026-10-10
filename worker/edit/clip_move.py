@@ -304,29 +304,35 @@ def fill_gaps(masks, max_gap=12):
 
 # ---------------------------------------------------------------- plate + grade
 
-def clean_plate(frames, old, grow, outlier=25):
-    """Locked-off camera: the empty road, per pixel. Pass 1, the plain median over every
-    frame (the road, wherever nothing sits for half the clip). Pass 2, the median of the
-    samples that agree with it (within `outlier` levels) and are not under the car or its
-    shadow halo (`grow` px round it): so other traffic passing through drops out too - with
-    the car excluded alone, a spot near where it was parked kept few frames and a passing
-    SUV won the median (a white patch in the edit, 2026-10-10). frames/old may be a sample."""
-    k = _disk(grow)
+def clean_plate(frames, old, grow, others=None, other_grow=None):
+    """Locked-off camera: the empty road, per pixel - the median over the frames where no car
+    is: not the one being moved (with its shadow halo, `grow` px round it) and not any other
+    traffic SAM found (`others`, `other_grow` px round each). Guessing traffic from pixel
+    statistics failed both ways (2026-10-10): with only the moved car excluded, a passing SUV
+    won the median near where the car had waited; a median-agreement filter then let the car
+    itself in where it had sat most of the clip. Where every frame has a car, fall back to
+    the frames clear of the moved car, then to the plain median. frames/old/others may be a
+    sample of the clip."""
     h, w = frames[0].shape[:2]
-    cover = [cv2.dilate(m.astype(np.uint8), k) > 0 for m in old]
+    own = [cv2.dilate(m.astype(np.uint8), _disk(grow)) > 0 for m in old]
+    body = [cv2.dilate(m.astype(np.uint8), _disk(max(2, grow // 8))) > 0 for m in old]
+    traffic = [np.zeros((h, w), bool)] * len(old)
+    if others is not None:
+        ko = _disk(other_grow if other_grow is not None else grow // 2)
+        traffic = [cv2.dilate(o.astype(np.uint8), ko) > 0 for o in others]
+    # best first: no car and no shadow; then only the moved car's soft shadow (road, a little
+    # shaded: far better than another car); then clear of the moved car; then anything
+    tiers = ([o | t for o, t in zip(own, traffic)], [b | t for b, t in zip(body, traffic)], own)
     plate = np.zeros((h, w, 3), np.uint8)
     for y0 in range(0, h, 48):
         blk = np.stack([f[y0:y0 + 48] for f in frames]).astype(np.float32)
-        cv = np.stack([c[y0:y0 + 48] for c in cover])
-        first = np.median(blk, axis=0)
-        agree = blk.copy()
-        agree[np.abs(blk - first[None]).max(axis=3) > outlier] = np.nan
-        best = agree.copy()
-        best[cv] = np.nan
-        with np.errstate(all="ignore"):
-            med = np.nanmedian(best, axis=0)       # agrees with the road and clear of the car
-            near = np.nanmedian(agree, axis=0)     # else agrees with it, maybe in the car's halo
-        med = np.where(np.isnan(med), np.where(np.isnan(near), first, near), med)
+        med = np.median(blk, axis=0)
+        for tier in reversed(tiers):
+            x = blk.copy()
+            x[np.stack([c[y0:y0 + 48] for c in tier])] = np.nan
+            with np.errstate(all="ignore"):
+                m = np.nanmedian(x, axis=0)
+            med = np.where(np.isnan(m), med, m)
         plate[y0:y0 + 48] = np.clip(med, 0, 255).astype(np.uint8)
     return plate
 
@@ -454,10 +460,18 @@ def build(spec):
     log(f"MEASURED old track: object {k}, in {seen}/{n - s0} frames from frame {s0}")
     emit("PROGRESS", 15)
 
+    # other traffic (SAM's generic "car" pass): kept out of the clean plate
+    others = [np.zeros((H, W), bool) for _ in range(length)]
+    for pth in spec.get("other_masks") or []:
+        for f, m in enumerate(read_masks(pth, length, (W, H))):
+            others[f] |= m
+    write_masks(os.path.join(work, "othermask.mp4"), others)
+
     # clean plate (a sample of up to ~96 frames is plenty for a median)
     step = max(1, n // 96)
     idx = list(range(0, n, step))
-    plate = clean_plate([frames[i] for i in idx], [old[i] for i in idx], px(60, W))
+    plate = clean_plate([frames[i] for i in idx], [old[i] for i in idx], px(60, W),
+                        [others[i] for i in idx], px(30, W))
     cv2.imwrite(os.path.join(work, "plate.png"), plate)
     emit("PROGRESS", 35)
 
@@ -598,17 +612,22 @@ def compose(spec):
     # the plate again at the source's own size (from a sample of frames + upscaled masks)
     emit("PHASE", "clean plate at full size")
     old_small = read_masks(os.path.join(work, "oldmask.mp4"), length)
+    om_path = os.path.join(work, "othermask.mp4")
+    other_small = read_masks(om_path, length) if os.path.exists(om_path) else None
+    up = lambda m: cv2.resize(m.astype(np.uint8), (fw, fh), interpolation=cv2.INTER_LINEAR) > 0  # noqa: E731
     step = max(1, n // 96)
     rd = Reader(spec["clip"])
-    sample, sample_m = [], []
+    sample, sample_m, sample_o = [], [], []
     for f in range(n):
         fr = rd.next()
         if f % step == 0:
             sample.append(fr.copy())
-            sample_m.append(cv2.resize(old_small[f].astype(np.uint8), (fw, fh), interpolation=cv2.INTER_LINEAR) > 0)
+            sample_m.append(up(old_small[f]))
+            if other_small is not None:
+                sample_o.append(up(other_small[f]))
     rd.close()
-    plate = clean_plate(sample, sample_m, px(60, fw))
-    del sample, sample_m
+    plate = clean_plate(sample, sample_m, px(60, fw), sample_o if other_small is not None else None, px(30, fw))
+    del sample, sample_m, sample_o
 
     outs = {}
     for r in good:
