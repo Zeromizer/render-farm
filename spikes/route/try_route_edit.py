@@ -241,7 +241,7 @@ def regions(old, new, n, g_old=18, g_new=30, t_pad=2):
     return out
 
 
-def matched_plate(frame, plate, cover):
+def matched_plate(frame, plate, cover, sigma=25):
     """The clean plate brought to this frame's grade: a smooth correction field measured on
     the static pixels around (frame - plate, where the two agree and no car is). H3 footage
     drifts in brightness over a clip, so the plain plate showed as a dark car-shaped patch.
@@ -251,8 +251,8 @@ def matched_plate(frame, plate, cover):
     p = plate.astype(np.float32)
     d = frame.astype(np.float32) - p
     valid = ((np.abs(d).max(2) < 20) & ~cover).astype(np.float32)
-    num = cv2.GaussianBlur(d * valid[..., None], (0, 0), 25)
-    den = cv2.GaussianBlur(valid, (0, 0), 25)[..., None]
+    num = cv2.GaussianBlur(d * valid[..., None], (0, 0), sigma)
+    den = cv2.GaussianBlur(valid, (0, 0), sigma)[..., None]
     return p + num / np.maximum(den, 1e-3)
 
 
@@ -281,24 +281,26 @@ def compose(frames, old, car, plate, res, old_grow=48, car_grow=8, cover_grow=60
     pf = plate.astype(np.float32)
     kc = np.ones((2 * cover_grow + 1,) * 2, np.uint8)
     ko = np.ones((2 * old_grow + 1,) * 2, np.uint8)
-    kt = np.ones((13, 13), np.uint8)
+    sc = old_grow / 48.0  # the fixed sizes below were tuned with old_grow 48 on 832-wide footage
+    kt = np.ones((2 * max(1, round(6 * sc)) + 1,) * 2, np.uint8)
+    ke = np.ones((2 * max(1, round(4 * sc)) + 1,) * 2, np.uint8)
     out = []
     for f in range(n):
         base = frames[f].astype(np.float32)
         if old[f].any():
             m = old[f].astype(np.uint8)
-            fill = matched_plate(frames[f], plate, cv2.dilate(m, kc) > 0)
+            fill = matched_plate(frames[f], plate, cv2.dilate(m, kc) > 0, sigma=25 * sc)
             reg = cv2.dilate(m, ko) > 0
             tight = cv2.dilate(m, kt) > 0
             other = (np.abs(base - pf).max(2) > 45) & ~tight
-            other = cv2.dilate(other.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
-            a = cv2.GaussianBlur((reg & ~other).astype(np.float32), (0, 0), 10)[..., None]
-            a = np.maximum(a, cv2.GaussianBlur(tight.astype(np.float32), (0, 0), 2)[..., None])
+            other = cv2.dilate(other.astype(np.uint8), ke) > 0
+            a = cv2.GaussianBlur((reg & ~other).astype(np.float32), (0, 0), 10 * sc)[..., None]
+            a = np.maximum(a, cv2.GaussianBlur(tight.astype(np.float32), (0, 0), 2 * sc)[..., None])
             base = base * (1 - a) + fill * a
         u = np.zeros_like(car[0])
         for j in range(max(0, f - 1), min(n, f + 2)):
             u |= car[j]
-        ac = _soft(u, car_grow, 2.5)
+        ac = _soft(u, car_grow, 2.5 * sc)
         out.append(np.clip(base * (1 - ac) + res[f].astype(np.float32) * ac, 0, 255).astype(np.uint8))
     return out
 
@@ -343,23 +345,25 @@ def main():
         old = track_car(src, job.get("noun", "car"), job["at"], n, w, h, out)
         log(f"sam track: {time.monotonic() - t0:.0f}s, car in {sum(m.any() for m in old)}/{n} frames")
         tr.free()
-        plate, cover = clean_plate(frames, old, grow=60)
+        # pixel sizes below were tuned on 832-wide footage; shadows and cars scale with the frame
+        px = lambda v: max(1, int(round(v * w / 832)))  # noqa: E731
+        plate, cover = clean_plate(frames, old, grow=px(60))
         cv2.imwrite(os.path.join(out, "plate.png"), plate)
         refs, new, _ = build_edit_reference(frames, old, cover, plate, job["route"], n, int(job.get("hold", 6)),
                                             job.get("end"), job.get("ease", "inout"), out)
-        reg = regions(old, new, n, int(job.get("grow_old", 18)), int(job.get("grow_new", 30)))
+        reg = regions(old, new, n, px(int(job.get("grow_old", 18))), px(int(job.get("grow_new", 30))))
         write_video(os.path.join(out, "reference.mp4"), refs, audio_from=src)
         write_video(os.path.join(out, "region.mp4"), [cv2.cvtColor(m.astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR) for m in reg], lossless=True)
         write_video(os.path.join(out, "amask.mp4"), [np.zeros((h, w, 3), np.uint8)] * n, lossless=True)
-        k21 = np.ones((21, 21), np.uint8)
+        k21 = np.ones((2 * px(10) + 1,) * 2, np.uint8)
         write_video(os.path.join(out, "refmask.mp4"),
                     [cv2.cvtColor(cv2.dilate(m.astype(np.uint8) * 255, k21), cv2.COLOR_GRAY2BGR) for m in new], lossless=True)
         cv2.imwrite(os.path.join(out, "first.png"), frames[0])
         names = {f: tr.upload(os.path.join(out, f)) for f in ("reference.mp4", "region.mp4", "amask.mp4", "refmask.mp4", "first.png")}
         # paste-back mask: the region, a little wider in space and time, feathered
-        comp = regions(old, new, n, int(job.get("grow_old", 18)) + 6, int(job.get("grow_new", 30)) + 6, t_pad=3)
+        comp = regions(old, new, n, px(int(job.get("grow_old", 18)) + 6), px(int(job.get("grow_new", 30)) + 6), t_pad=3)
         comp = [cv2.GaussianBlur(m.astype(np.float32), (0, 0), 5)[..., None] for m in comp]
-        old_grow, car_grow = int(job.get("old_grow", 48)), int(job.get("car_grow", 8))
+        old_grow, car_grow = px(int(job.get("old_grow", 48))), px(int(job.get("car_grow", 8)))
         write_video(os.path.join(out, "oldmask.mp4"), [cv2.cvtColor(m.astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR) for m in old], lossless=True)
         for rd in job["renders"]:
             raw = os.path.join(out, f"{rd['name']}_raw.mp4")
@@ -381,7 +385,7 @@ def main():
             log(f"render {rd['name']}: {t:.0f}s")
             car = rendered_car(raw, job.get("noun", "car"), new, n, out)
             tr.free()
-            final = compose(frames, old, car, plate, res, old_grow, car_grow)
+            final = compose(frames, old, car, plate, res, old_grow, car_grow, cover_grow=px(60))
             write_video(os.path.join(out, f"{rd['name']}.mp4"), final, audio_from=src)
             write_video(os.path.join(out, f"{rd['name']}_carmask.mp4"),
                         [cv2.cvtColor(m.astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR) for m in car], lossless=True)
