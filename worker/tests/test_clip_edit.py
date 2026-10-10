@@ -50,6 +50,12 @@ class ValidateTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             _runner.validate(_params(regions=[{"box": [10, 10, 12, 40]}]))
 
+    def test_keyframed_region(self):
+        k = [{"at_s": 0, "box_norm": [0.9, 0.3, 1, 0.7]}, {"at_s": 1, "box_norm": [0.7, 0.3, 1, 0.7]}]
+        _runner.validate(_params(regions=[{"keys": k}]))
+        with self.assertRaises(RuntimeError):
+            _runner.validate(_params(regions=[{"keys": k[:1]}]))
+
     def test_bridge_needs_second_clip(self):
         with self.assertRaises(RuntimeError):
             _runner.validate(_params(mode="bridge", seconds=1.5))
@@ -149,6 +155,10 @@ class RoundTripTest(unittest.TestCase):
     def test_region_norm_seconds(self):
         self._run("norm", {"mode": "region", "clip": self.a,
                            "regions": [{"box_norm": [0.1, 0.38, 0.3, 0.62], "at_s": 0.0, "end_s": 1.0}]}, 41)
+
+    def test_region_keyframed(self):
+        self._run("keys", {"mode": "region", "clip": self.a, "regions": [{"keys": [
+            {"frame": 0, "box_norm": [0.1, 0.38, 0.3, 0.62]}, {"frame": 40, "box_norm": [0.35, 0.38, 0.6, 0.62]}]}]}, 41)
 
     def test_audio(self):
         self._run("audio", {"mode": "audio", "clip": self.a, "start_frame": 5, "end_frame": 30}, 41)
