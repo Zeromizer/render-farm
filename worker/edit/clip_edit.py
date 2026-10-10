@@ -243,6 +243,23 @@ def _match_colour(clean, ref, mask):
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
+def _seamless(clean, ref, mask, pad=16):
+    """Gradient-domain paste (Poisson, cv2.seamlessClone) of the cleaned area into the
+    original frame: the border takes the footage's exact values and the inside keeps the
+    image model's texture, so a redrawn area lit differently (no shadow streaks, a brighter
+    grade) does not sit in the shot as a rectangle. Padded so boxes on the frame edge work."""
+    s = cv2.copyMakeBorder(clean, pad, pad, pad, pad, cv2.BORDER_REFLECT)
+    d = cv2.copyMakeBorder(ref, pad, pad, pad, pad, cv2.BORDER_REFLECT)
+    m = cv2.dilate(cv2.copyMakeBorder(mask, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0),
+                   np.ones((7, 7), np.uint8))
+    x, y, w, h = cv2.boundingRect(m)
+    try:
+        out = cv2.seamlessClone(s, d, m, (x + w // 2, y + h // 2), cv2.NORMAL_CLONE)
+    except cv2.error:
+        return _match_colour(clean, ref, mask)
+    return out[pad:-pad, pad:-pad]
+
+
 def _bg_motion(frames, a, targets, vmask, scale=0.5):
     """Homography taking frame a to each target frame, from corners tracked outside the edit,
     chained frame to frame (so a cleaned anchor can ride the camera move)."""
@@ -314,7 +331,7 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
         img, ok = _align_to(img, frames[a], 255 - cv2.dilate(m, np.ones((41, 41), np.uint8)))
         if not ok:
             warnings.append(f"anchor at frame {a}: could not line the cleaned frame up with the clip; used as is")
-        src[a] = _match_colour(img, frames[a], m)
+        src[a] = _seamless(img, frames[a], m)
     keys = [i for i in range(lo, min(hi, n - 1) + 1) if (i - lo) % LATENT_CLIP == 0
             and vmask.get(i) and vmask[i] != "full"]
     every = int(spec.get("anchor_every") or 0)
