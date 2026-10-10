@@ -286,7 +286,8 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
     """Cleaned frames the agent supplies (an image model's version of a frame with the object
     gone) pasted into the masked area on their frames. Those frames go to H3 unmasked, so it
     copies the emptiness instead of redrawing what the scene implies; anchor_every spreads
-    them along the camera move to more frames. Returns {frame: full-res frame}.
+    them along the camera move to more frames. Returns {frame: (full-res frame, mask H3
+    still fills on it)}.
 
     Anchors only count on KEY frames: H3's VAE encodes 17-frame clips whose first frame
     is a latent frame of its own, while the other 16 share latents four at a time, and a
@@ -330,17 +331,30 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
     for t in targets:
         by_src.setdefault(min(src, key=lambda a: abs(a - t)), []).append(t)
     pasted = {}
+    ones = np.full((fh, fw), 255, np.uint8)
     for a, ts in by_src.items():
         H = _bg_motion(frames, a, ts, vmask)
         for t in ts:
-            pasted[t] = src[a] if t == a else cv2.warpPerspective(src[a], H[t], (fw, fh),
-                                                                    borderMode=cv2.BORDER_REPLICATE)
+            if t == a:
+                pasted[t] = (src[a], ones)
+            else:   # where the camera has moved past the cleaned frame's edge there is nothing to carry
+                pasted[t] = (cv2.warpPerspective(src[a], H[t], (fw, fh), borderMode=cv2.BORDER_REPLICATE),
+                             cv2.warpPerspective(ones, H[t], (fw, fh), flags=cv2.INTER_NEAREST))
     out = {}
-    for a, img in pasted.items():
-        alpha = cv2.GaussianBlur(cv2.dilate(_box_mask(vmask[a], fh, fw), np.ones((9, 9), np.uint8)), (0, 0), 4.0)
-        alpha = (alpha.astype(np.float32) / 255.0)[..., None]
-        out[a] = np.clip(frames[a].astype(np.float32) * (1 - alpha) + img.astype(np.float32) * alpha,
-                         0, 255).astype(np.uint8)
+    for a, (img, valid) in pasted.items():
+        box = _box_mask(vmask[a], fh, fw)
+        # H3 still draws a band inside the box edge and anything the warp could not cover,
+        # so the cleaned area blends into the footage instead of sitting in it as a patch
+        bs = np.array(vmask[a], np.float32)
+        band = int(min(max(0.12 * float(np.min(np.minimum(bs[:, 2] - bs[:, 0], bs[:, 3] - bs[:, 1]))), 12), 40))
+        keep = cv2.erode(box, np.ones((2 * band + 1, 2 * band + 1), np.uint8))
+        keep &= cv2.erode(valid, np.ones((9, 9), np.uint8))
+        if keep.sum() < 0.25 * box.sum():
+            warnings.append(f"anchor at frame {a} dropped: the cleaned frame covers too little of the box there")
+            continue
+        alpha = (cv2.GaussianBlur(keep, (0, 0), 3.0).astype(np.float32) / 255.0)[..., None]
+        out[a] = (np.clip(frames[a].astype(np.float32) * (1 - alpha) + img.astype(np.float32) * alpha,
+                          0, 255).astype(np.uint8), cv2.bitwise_and(box, cv2.bitwise_not(keep)))
     return out
 
 
@@ -461,7 +475,7 @@ def prep(spec):
         if crop_mode == "auto":
             crop_mode = "full" if big else "crop"
         anchors = _anchors(spec, frames, vmask, lo, hi, warnings)
-        for a, f in anchors.items():
+        for a, (f, _) in anchors.items():
             tl[a] = f
     elif mode == "audio":
         for key, fkey in (("start_s", "start_frame"), ("end_s", "end_frame")):
@@ -542,9 +556,12 @@ def prep(spec):
         f = tl[i] if tl[i] is not None else grey
         src_c.append(cv2.resize(f[ry:ry + rh_, rx:rx + rw_], (W, Hc), interpolation=cv2.INTER_AREA))
         m = np.zeros((fh, fw), np.uint8)
-        # anchor frames carry the cleaned area as given: H3 keeps them and fills around them
+        # anchor frames carry the cleaned area as given: H3 keeps it and fills only the band
+        # around it (and the frames in between)
         v = None if i in anchors else vmask.get(i)
-        if v == "full":
+        if i in anchors:
+            m = anchors[i][1].copy()
+        elif v == "full":
             m[:] = 255
         elif v:
             for b in v:

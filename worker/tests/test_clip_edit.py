@@ -148,7 +148,7 @@ class RoundTripTest(unittest.TestCase):
     def test_region_anchor(self):
         # the cleaned frame is the plain background, shifted 3 px the way an image model's
         # redraw can be; it must line up, land in the box on its frames, and those frames
-        # must go to H3 unmasked
+        # must go to H3 unmasked but for a band at the box edge
         rng = np.random.default_rng(3)
         bg = cv2.GaussianBlur(rng.integers(0, 255, (180, 320, 3), dtype=np.uint8), (0, 0), 2)
         img = os.path.join(self.d, "clean.png")
@@ -162,8 +162,9 @@ class RoundTripTest(unittest.TestCase):
         self.assertEqual(plan["anchor_frames"], [0, 17, 34])   # key frames only
         masks, _ = CE.L.read_clip(os.path.join(w, "gen_mask.mp4"))
         lo = plan["window"][0]
-        for a in plan["anchor_frames"]:
-            self.assertEqual(int(masks[a - lo].max()), 0)
+        for a in plan["anchor_frames"]:   # only a band inside the box edge is left for H3
+            on = float((masks[a - lo] > 127).mean())
+            self.assertTrue(0 < on < 0.6 * float((masks[a - lo + 1] > 127).mean()), (a, on))
         self.assertGreater(int(masks[25 - lo].max()), 200)
         tl, _ = CE.L.read_clip(os.path.join(w, "timeline.mp4"))
         patch = tl[17][75:105, 76:122].astype(np.int16)   # where the green box was on frame 17
