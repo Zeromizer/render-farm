@@ -253,6 +253,9 @@ def _object_masks(r, fh, fw, n, lo, hi):
     if not cands:
         raise RuntimeError(f"no {r.get('object', 'object')} was tracked in this clip")
     a = min(max(0, int(r["frame"])), n - 1)
+    if r.get("every"):   # every tracked instance of the noun (remove all the people)
+        best = [np.logical_or.reduce([c[i] for c in cands if i < len(c)]) for i in range(max(len(c) for c in cands))]
+        return _masks_out(best, r, fh, fw, lo, hi)
     hint = np.zeros((fh, fw), bool)
     if r.get("box") is not None:
         b = r["box"]
@@ -279,6 +282,10 @@ def _object_masks(r, fh, fw, n, lo, hi):
                 todo.append(d)
     best = [np.logical_or.reduce([cands[c][i] if i < len(cands[c]) else np.zeros((fh, fw), bool) for c in group])
             for i in range(max(len(cands[c]) for c in group))]
+    return _masks_out(best, r, fh, fw, lo, hi)
+
+
+def _masks_out(best, r, fh, fw, lo, hi):
     out = {}
     for i in range(max(lo, r["start_frame"]), min(hi, r["end_frame"], len(best) - 1) + 1):
         m = best[i]
@@ -599,7 +606,7 @@ def prep(spec):
             if r.get("object_masks"):
                 if r.get("point_norm") is not None:
                     r["point"] = [r["point_norm"][0] * fw, r["point_norm"][1] * fh]
-                if r.get("box") is None and r.get("point") is None:
+                if r.get("box") is None and r.get("point") is None and not r.get("every"):
                     raise RuntimeError("an object region needs a hint: box/box_norm or point/point_norm on the object")
             elif "box" not in r:
                 raise RuntimeError("each region needs box (pixels), box_norm (0-1 of the frame) or keys")

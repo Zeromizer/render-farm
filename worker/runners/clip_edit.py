@@ -13,8 +13,8 @@ params (jsonb):
                       0-1 of the frame, frame | at_s (where the box is drawn), track
                       (default true; false for overlays that do not move),
                       or {object: a noun SAM 3.1 tracks ("car"), box | box_norm | point |
-                      point_norm on that object at frame | at_s} (the object's outline, not a
-                      box, is redrawn; start/end as above),
+                      point_norm on that object at frame | at_s, or every: true for all of
+                      them} (its tracked box is redrawn; start/end as above),
                       start_frame | start_s, end_frame | end_s} or {keys: [{at_s | frame,
                       box | box_norm}, ...] (2-12, linear in between), end_frame | end_s}], 1-4
     crop              region: auto | crop | full (default auto)
@@ -97,7 +97,8 @@ def validate(p):
             if r.get("object") is not None:
                 if not (isinstance(r["object"], str) and 0 < len(r["object"].strip()) <= 60):
                     raise RuntimeError("object must be a short noun for what to track (\"car\", \"person\")")
-                if keys is not None or not (box_ok(r) if (r.get("box") or r.get("box_norm")) else point_ok(r)):
+                if keys is not None or not (r.get("every") is True or (
+                        box_ok(r) if (r.get("box") or r.get("box_norm")) else point_ok(r))):
                     raise RuntimeError("an object region needs a hint on the object: box/box_norm or point/point_norm "
                                        "at frame | at_s (no keys)")
                 continue
