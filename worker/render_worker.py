@@ -60,14 +60,14 @@ import venvs
 from heartbeat import Heartbeat
 from job_stats import JobStats
 import queue_status
-from runners import (asset_check, audio_gen, blender, footage, frame_extract, hyperframes, lettering_fix,
-                     matte, planar_patch, python_script, reference_extract, remotion, video_gen,
-                     video_split, voiceover)
+from runners import (asset_check, audio_gen, blender, clip_edit, footage, frame_extract, hyperframes,
+                     lettering_fix, matte, planar_patch, python_script, reference_extract, remotion,
+                     video_gen, video_split, voiceover)
 from videogen import comfy_client
 
 # Engines whose runners drive the headless ComfyUI; after one of these the
 # worker checks ComfyUI's host RAM (comfy_client.recycle_if_bloated).
-COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix"}
+COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit"}
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            "python": python_script.run,
@@ -95,6 +95,10 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # reference photo through the clip (masked inpaint, ComfyUI-vlo nodes).
            # Reads as the model's own pixels where a corner pin reads as pasted on.
            "lettering_fix": lettering_fix.run,
+           # Surgical H3 edits of a generated clip: remove/replace what is in boxes,
+           # extend/prepend seconds, bridge two shots, retake the sound. Same masked
+           # inpaint graph as lettering_fix; untouched pixels are put back exactly.
+           "clip_edit": clip_edit.run,
            # An instrumental music bed from a description (YuE2 + instrumental
            # LoRA) in the same headless ComfyUI video_gen uses. Feeds the
            # platform's music library; a minute or two per bed.
@@ -111,7 +115,8 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
 # Engines that work on a storage object, not a repo — the clone is skipped and
 # repo_url is a "-" placeholder (the column is NOT NULL).
 NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split",
-            "matte", "video_gen", "planar_patch", "audio_gen", "footage", "voiceover", "lettering_fix"}
+            "matte", "video_gen", "planar_patch", "audio_gen", "footage", "voiceover", "lettering_fix",
+            "clip_edit"}
 
 
 def log(msg):

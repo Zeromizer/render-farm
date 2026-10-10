@@ -48,7 +48,7 @@ LIGHT_ENGINES = {"hyperframes", "remotion", "reference_extract", "planar_patch",
                  "frame_extract", "video_split", "asset_check"}
 POLL_SECONDS = 3
 # Render-loop engines that need the whole box; see "Pause during video_gen".
-PAUSE_DURING = {e.strip() for e in os.environ.get("LIGHT_LANE_PAUSE_DURING", "video_gen,lettering_fix").split(",")
+PAUSE_DURING = {e.strip() for e in os.environ.get("LIGHT_LANE_PAUSE_DURING", "video_gen,lettering_fix,clip_edit").split(",")
                 if e.strip()}
 # The engine the render loop is running now (set by render_worker.process_job).
 main_engine = [None]
