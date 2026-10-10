@@ -28,7 +28,7 @@ import httpx
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "worker"))
 sys.path.insert(0, os.path.join(ROOT, "worker", "edit"))
-from videogen import graphs_clean, graphs_inpaint  # noqa: E402
+from videogen import graphs_clean, graphs_inpaint, graphs_sam3  # noqa: E402
 import clip_edit  # noqa: E402
 
 COMFY = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
@@ -99,6 +99,64 @@ def fetch(url, dest):
     return dest
 
 
+def run_graph_all(graph, dest_dir, timeout_s=1800):
+    """Run a graph and download every saved mp4 into dest_dir; returns the paths."""
+    r = httpx.post(COMFY + "/prompt", json={"prompt": graph, "client_id": str(uuid.uuid4())}, timeout=T)
+    if r.status_code != 200:
+        raise RuntimeError(f"/prompt rejected {r.status_code}: {r.text[:2000]}")
+    pid = r.json()["prompt_id"]
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout_s:
+        try:
+            e = httpx.get(COMFY + f"/history/{pid}", timeout=60).json().get(pid)
+        except httpx.TimeoutException:
+            continue
+        if e:
+            st = e.get("status") or {}
+            if st.get("status_str") == "error":
+                msgs = st.get("messages") or []
+                err = next((m[1] for m in msgs if m[0] == "execution_error"), {})
+                raise RuntimeError(f"execution error at {err.get('node_type')}: {err.get('exception_message')}")
+            paths = []
+            for node_out in (e.get("outputs") or {}).values():
+                for key in ("videos", "images", "gifs"):
+                    for f in node_out.get(key, []) or []:
+                        if f.get("type", "output") == "output" and f["filename"].lower().endswith(".mp4"):
+                            dest = os.path.join(dest_dir, os.path.basename(f["filename"]))
+                            params = {"filename": f["filename"], "subfolder": f.get("subfolder", ""), "type": "output"}
+                            with httpx.stream("GET", COMFY + "/view", params=params, timeout=T) as resp:
+                                resp.raise_for_status()
+                                with open(dest, "wb") as out:
+                                    for chunk in resp.iter_bytes(1 << 20):
+                                        out.write(chunk)
+                            paths.append(dest)
+            return paths
+        time.sleep(2)
+    raise RuntimeError(f"timed out after {timeout_s}s")
+
+
+def track_objects(t, spec, work):
+    """Object regions: SAM 3.1 per-object mask videos, as the runner does."""
+    import re
+    regions = spec.get("regions") or []
+    nouns = sorted({r["object"].strip() for r in regions if r.get("object")})
+    if not nouns:
+        return
+    src = upload(spec["clip"])
+    found = {}
+    for k, noun in enumerate(nouns):
+        d = os.path.join(work, f"sam{k}")
+        os.makedirs(d, exist_ok=True)
+        t0 = time.monotonic()
+        paths = run_graph_all(graphs_sam3.build(src, noun, f"clip_edit_try/{t['name']}_sam{k}"), d)
+        found[noun] = sorted(paths, key=lambda q: int(re.search(r"_obj(\d+)", q).group(1)))
+        log(f"   sam {noun!r}: {len(paths)} objects in {time.monotonic() - t0:.0f}s")
+    httpx.post(COMFY + "/free", json={"unload_models": True, "free_memory": True}, timeout=60)
+    for r in regions:
+        if r.get("object"):
+            r["object_masks"] = found[r["object"].strip()]
+
+
 def krea_clean(t, spec, work, out):
     """Cleaned anchor frames from Krea 2, the production path: a first prep for the boxes,
     clip_edit.clean_inputs for the frames + masks, videogen/graphs_clean for the graph."""
@@ -135,6 +193,10 @@ def run_test(t, out_root, work_root):
     for key, url in t["inputs"].items():
         spec[key] = fetch(url, os.path.join(work, f"{key}.mp4"))
     spec["work_dir"] = work
+    spec["regions"] = json.loads(json.dumps(spec.get("regions") or [])) or spec.get("regions")
+    if not spec["regions"]:
+        spec.pop("regions")
+    track_objects(t, spec, work)
     if t.get("krea_clean"):
         spec["anchors"] = krea_clean(t, spec, work, out)
     log(f"== {name}: prep {json.dumps({k: v for k, v in spec.items() if k not in ('clip', 'clip_b')})[:400]}")

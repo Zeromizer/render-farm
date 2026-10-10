@@ -12,6 +12,9 @@ params (jsonb):
     regions           region: [{box: [x0, y0, x1, y1] in source px | box_norm: the same in
                       0-1 of the frame, frame | at_s (where the box is drawn), track
                       (default true; false for overlays that do not move),
+                      or {object: a noun SAM 3.1 tracks ("car"), box | box_norm | point |
+                      point_norm on that object at frame | at_s} (the object's outline, not a
+                      box, is redrawn; start/end as above),
                       start_frame | start_s, end_frame | end_s} or {keys: [{at_s | frame,
                       box | box_norm}, ...] (2-12, linear in between), end_frame | end_s}], 1-4
     crop              region: auto | crop | full (default auto)
@@ -43,6 +46,7 @@ gate, TTS pause and /free.
 """
 import json
 import os
+import re
 import time
 
 import config
@@ -51,7 +55,7 @@ import proc
 from venvs import venv_python
 from runners import gate_common
 from runners.video_gen import _run_prompt
-from videogen import comfy_client, graphs_clean, graphs_inpaint, media_type, ram_gate, tts_guard
+from videogen import comfy_client, graphs_clean, graphs_inpaint, graphs_sam3, media_type, ram_gate, tts_guard
 
 _WORKER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EDIT_DIR = os.path.join(_WORKER_DIR, "edit")
@@ -84,8 +88,19 @@ def validate(p):
             gap = 0.002 if norm else 4
             return (isinstance(b, (list, tuple)) and len(b) == 4 and all(isinstance(v, (int, float)) for v in b)
                     and b[2] > b[0] + gap and b[3] > b[1] + gap and (not norm or all(0 <= v <= 1 for v in b)))
+        def point_ok(o):
+            pt, norm = (o.get("point_norm"), True) if o.get("point_norm") is not None else (o.get("point"), False)
+            return (isinstance(pt, (list, tuple)) and len(pt) == 2 and all(isinstance(v, (int, float)) for v in pt)
+                    and (not norm or all(0 <= v <= 1 for v in pt)))
         for r in regs:
             keys = r.get("keys")
+            if r.get("object") is not None:
+                if not (isinstance(r["object"], str) and 0 < len(r["object"].strip()) <= 60):
+                    raise RuntimeError("object must be a short noun for what to track (\"car\", \"person\")")
+                if keys is not None or not (box_ok(r) if (r.get("box") or r.get("box_norm")) else point_ok(r)):
+                    raise RuntimeError("an object region needs a hint on the object: box/box_norm or point/point_norm "
+                                       "at frame | at_s (no keys)")
+                continue
             if keys is not None:
                 if not (isinstance(keys, list) and 2 <= len(keys) <= 12 and all(
                         box_ok(k) and (k.get("at_s") is not None or k.get("frame") is not None) for k in keys)):
@@ -122,6 +137,42 @@ def validate(p):
     if not 1 <= takes <= MAX_TAKES:
         raise RuntimeError(f"takes must be 1-{MAX_TAKES}")
     return dict(p, takes=takes, seed=int(p.get("seed") if p.get("seed") is not None else 6332))
+
+
+def _track_objects(jid, regions, clip, work_dir, cancel_check, deadline, log):
+    """Object regions: SAM 3.1 tracks every instance of each noun through the clip, one mask
+    video per object; clip_edit keeps the one under the region's hint. Sets object_masks."""
+    nouns = sorted({r["object"].strip() for r in regions if r.get("object")})
+    if not nouns:
+        return
+    db.set_phase(jid, f"tracking {', '.join(nouns)}", 2)
+    comfy_client.ensure_server(log)
+    found = {}
+    with tts_guard.paused(log):
+        missing = [n for n in graphs_sam3.REQUIRED_NODES if n not in comfy_client.object_info()]
+        if missing:
+            raise RuntimeError(f"ComfyUI is missing nodes {missing} for object tracking (needs ComfyUI >= 0.37)")
+        src = comfy_client.upload_input(clip, subfolder="clip_edit")
+        try:
+            for k, noun in enumerate(nouns):
+                d = os.path.join(work_dir, f"sam{k}")
+                os.makedirs(d, exist_ok=True)
+                pid = comfy_client.submit(graphs_sam3.build(src, noun, f"clip_edit/{jid}_sam{k}"))
+                try:
+                    outputs = comfy_client.wait(pid, lambda *_: None, cancel_check,
+                                                max(60, int(deadline - time.monotonic())))
+                except comfy_client._CanceledSignal:
+                    raise proc.Canceled()
+                paths = sorted(comfy_client.fetch_outputs(outputs, d),
+                               key=lambda q: int(re.search(r"_obj(\d+)", os.path.basename(q)).group(1))
+                               if re.search(r"_obj(\d+)", os.path.basename(q)) else 99)
+                found[noun] = paths
+                log(f"objects: SAM 3.1 tracked {noun!r}: {len(paths)} mask video(s)")
+        finally:
+            comfy_client.free()
+    for r in regions:
+        if r.get("object"):
+            r["object_masks"] = found.get(r["object"].strip(), [])
 
 
 def _clean_anchors(jid, p, spec, clip, work_dir, stream, cancel_check, deadline, log):
@@ -207,6 +258,9 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     spec = {k: p[k] for k in ("mode", "regions", "crop", "seconds", "context_s", "start_frame", "end_frame",
                               "start_s", "end_s") if p.get(k) is not None}
     spec.update(clips, work_dir=work_dir)
+    if spec.get("regions"):
+        spec["regions"] = [dict(r) for r in spec["regions"]]
+        _track_objects(jid, spec["regions"], clips["clip"], work_dir, cancel_check, deadline, log)
     clean_local = None
     if p.get("anchors"):
         anchors = []

@@ -210,6 +210,38 @@ class RoundTripTest(unittest.TestCase):
         plan = json.load(open(os.path.join(w, "plan.json")))
         self.assertEqual(plan["anchor_frames"], list(range(0, 18)) + [34])
 
+    def test_object_region(self):
+        # two tracked objects (SAM 3 per-object mask videos); the hint box picks the green
+        # card, whose outline (plus margin) is the edit mask instead of a rectangle
+        w = os.path.join(self.d, "object")
+        os.makedirs(w, exist_ok=True)
+        m0, m1 = [], []
+        for i in range(41):
+            a = np.zeros((180, 320, 3), np.uint8)
+            x = 40 + 2 * i
+            cv2.circle(a, (x + 25, 90), 18, (255, 255, 255), -1)   # a round object inside the card
+            b = np.zeros((180, 320, 3), np.uint8)
+            cv2.rectangle(b, (250, 10), (300, 40), (255, 255, 255), -1)
+            m0.append(a)
+            m1.append(b)
+        p0, p1 = os.path.join(w, "obj0.mp4"), os.path.join(w, "obj1.mp4")
+        CE.L.write_clip(p0, m0, 24, lossless=True)
+        CE.L.write_clip(p1, m1, 24, lossless=True)
+        rep = self._run("object", {"mode": "region", "clip": self.a, "crop": "full", "regions": [
+            {"object": "card", "object_masks": [p1, p0], "box": [55, 75, 75, 105], "frame": 5, "pad_px": 4}]}, 41)
+        self.assertEqual(rep["warnings"], [])
+        plan = json.load(open(os.path.join(w, "plan.json")))
+        self.assertTrue(plan["region_mask"])
+        masks, _ = CE.L.read_clip(os.path.join(w, "gen_mask.mp4"))
+        lo = plan["window"][0]
+        g = cv2.resize(masks[10 - lo], (320, 180), interpolation=cv2.INTER_NEAREST)[..., 1]
+        self.assertGreater(int(g[90, 85]), 127)    # circle centre on frame 10 (x = 60 + 25)
+        self.assertLess(int(g[72, 62]), 128)       # card corner, outside the round outline
+        self.assertLess(int(g[25, 275]), 128)      # the other object is not edited
+        with self.assertRaises(RuntimeError):      # a hint on nothing tracked
+            CE.prep({"mode": "region", "clip": self.a, "work_dir": os.path.join(self.d, "object_bad"),
+                     "regions": [{"object": "card", "object_masks": [p0], "box": [0, 150, 20, 170], "frame": 5}]})
+
     def test_region_tracked(self):
         self._run("region", {"mode": "region", "clip": self.a,
                              "regions": [{"box": [40, 70, 90, 110], "frame": 0, "track": True}]}, 41)

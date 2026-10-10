@@ -198,6 +198,77 @@ def _box_mask(boxes, fh, fw, grow=0):
     return m
 
 
+# Per-frame bitmaps (full-res uint8) when a region is a tracked object (SAM 3 outline + margin)
+# instead of a rectangle; prep fills it, compose reloads it from regionmask.mp4. Frames not in
+# it use their boxes.
+REGION_MASKS = {}
+
+
+def _frame_mask(i, vmask, fh, fw, grow=0):
+    """The edit mask of frame i: the object outline(s) and boxes prep merged, else its boxes."""
+    m = REGION_MASKS.get(i)
+    if m is None:
+        return _box_mask(vmask.get(i) or [], fh, fw, grow)
+    return cv2.dilate(m, np.ones((2 * grow + 1, 2 * grow + 1), np.uint8)) if grow else m
+
+
+def _read_masks(path, n=None):
+    """A mask video as a list of bool arrays (frame size as stored)."""
+    cap = cv2.VideoCapture(path)
+    out = []
+    while n is None or len(out) < n:
+        ok, f = cap.read()
+        if not ok:
+            break
+        out.append(f[..., 1] > 127)
+    cap.release()
+    return out
+
+
+def _object_masks(r, fh, fw, n, lo, hi):
+    """A tracked-object region: pick, among the objects SAM 3 tracked for the noun, the one
+    under the agent's hint (a box or point at a time), and return {frame: uint8 mask} with
+    the margin added, from start_frame to end_frame."""
+    cands = []
+    for p in r["object_masks"]:
+        ms = _read_masks(p, n)
+        if ms:
+            ms = [cv2.resize(m.astype(np.uint8) * 255, (fw, fh), interpolation=cv2.INTER_NEAREST) > 127
+                  if m.shape != (fh, fw) else m for m in ms]
+            cands.append(ms)
+    if not cands:
+        raise RuntimeError(f"no {r.get('object', 'object')} was tracked in this clip")
+    a = min(max(0, int(r["frame"])), n - 1)
+    hint = np.zeros((fh, fw), bool)
+    if r.get("box") is not None:
+        b = r["box"]
+        hint[int(b[1]):int(math.ceil(b[3])), int(b[0]):int(math.ceil(b[2]))] = True
+    else:
+        x, y = r["point"]
+        hint[max(0, int(y) - 6):int(y) + 7, max(0, int(x) - 6):int(x) + 7] = True
+
+    def score(ms):
+        near = [ms[j] for j in range(max(0, a - 3), min(len(ms), a + 4))]
+        return max(float((m & hint).sum()) for m in near) if near else 0.0
+    best = max(cands, key=score)
+    if score(best) <= 0:
+        raise RuntimeError(f"none of the tracked {r.get('object', 'objects')} is under the hint at frame {a}; "
+                           f"draw the hint box on the object at a time it is visible")
+    out = {}
+    for i in range(max(lo, r["start_frame"]), min(hi, r["end_frame"], len(best) - 1) + 1):
+        m = best[i]
+        if m.sum() < 16:
+            continue
+        ys, xs = np.nonzero(m)
+        pad = r.get("pad_px")
+        if pad is None:
+            short = min(xs.max() - xs.min(), ys.max() - ys.min())
+            pad = min(max(0.1 * short, 16), 40)
+        k = int(pad)
+        out[i] = cv2.dilate(m.astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1)))
+    return out
+
+
 def _cover(img, w, h):
     """Scale and centre-crop an image to exactly w x h (an image model may return another shape)."""
     ih, iw = img.shape[:2]
@@ -272,7 +343,7 @@ def _bg_motion(frames, a, targets, vmask, scale=0.5):
         v = vmask.get(i)
         m = np.full((fh, fw), 255, np.uint8)
         if v and v != "full":
-            m[_box_mask(v, fh, fw, grow=20) > 0] = 0
+            m[_frame_mask(i, vmask, fh, fw, 20) > 0] = 0
         return cv2.resize(m, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
 
     out = {a: np.eye(3)}
@@ -327,7 +398,7 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
         if img is None:
             raise RuntimeError(f"anchor image for frame {a} is not a readable image")
         img = _cover(img, fw, fh)
-        m = _box_mask(v, fh, fw)
+        m = _frame_mask(a, vmask, fh, fw)
         img, ok = _align_to(img, frames[a], 255 - cv2.dilate(m, np.ones((41, 41), np.uint8)))
         if not ok:
             warnings.append(f"anchor at frame {a}: could not line the cleaned frame up with the clip; used as is")
@@ -347,7 +418,7 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
     # where the box grows or shrinks between key frames (the object entering or leaving)
     # H3 invents the most (half-drawn ghosts of the object): anchor that whole clip, its four
     # 4-frame latents (all four frames each, or max pooling masks the latent again)
-    area = lambda i: float(_box_mask(vmask[i], fh, fw).sum())  # noqa: E731
+    area = lambda i: float(_frame_mask(i, vmask, fh, fw).sum())  # noqa: E731
     for k in list(targets):
         k2 = k + LATENT_CLIP
         if not (k2 in vmask and vmask[k2] != "full" and abs(area(k2) - area(k)) > 0.15 * max(area(k), area(k2))):
@@ -363,10 +434,10 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
     motion = {a: _bg_motion(frames, a, targets, vmask) for a in src}
     pasted = {}
     for t in targets:
-        box_t = _box_mask(vmask[t], fh, fw)
+        box_t = _frame_mask(t, vmask, fh, fw)
         best = None
         for a in src:
-            cleaned = _box_mask(vmask[a], fh, fw)
+            cleaned = _frame_mask(a, vmask, fh, fw)
             if t == a:
                 cand = (src[a], cleaned)
             else:
@@ -379,7 +450,7 @@ def _anchors(spec, frames, vmask, lo, hi, warnings):
         pasted[t] = best[1]
     out = {}
     for a, (img, valid) in pasted.items():
-        box = _box_mask(vmask[a], fh, fw)
+        box = _frame_mask(a, vmask, fh, fw)
         # H3 still draws a band inside the box edge and anything the warp could not cover,
         # so the cleaned area blends into the footage instead of sitting in it as a patch
         bs = np.array(vmask[a], np.float32)
@@ -487,7 +558,12 @@ def prep(spec):
             for key, fkey in (("at_s", "frame"), ("start_s", "start_frame"), ("end_s", "end_frame")):
                 if r.get(key) is not None:
                     r[fkey] = int(round(float(r[key]) * FPS))
-            if "box" not in r:
+            if r.get("object_masks"):
+                if r.get("point_norm") is not None:
+                    r["point"] = [r["point_norm"][0] * fw, r["point_norm"][1] * fh]
+                if r.get("box") is None and r.get("point") is None:
+                    raise RuntimeError("an object region needs a hint: box/box_norm or point/point_norm on the object")
+            elif "box" not in r:
                 raise RuntimeError("each region needs box (pixels), box_norm (0-1 of the frame) or keys")
             r["frame"] = min(max(0, int(r.get("frame", 0))), n - 1)
             r.setdefault("start_frame", 0)
@@ -499,10 +575,25 @@ def prep(spec):
         lo, length = window_around(n + pad, s, e, int(spec.get("context_frames", 24)))
         hi = lo + length - 1
         emit("PHASE", "tracking regions")
-        vmask = _boxes_per_frame(frames, regions, lo, min(hi, n - 1))
+        REGION_MASKS.clear()
+        box_regs = [r for r in regions if not r.get("object_masks")]
+        vmask = _boxes_per_frame(frames, box_regs, lo, min(hi, n - 1)) if box_regs else {}
+        obj = {}
+        for r in regions:
+            if r.get("object_masks"):
+                for i, m in _object_masks(r, fh, fw, n, lo, min(hi, n - 1)).items():
+                    obj[i] = m if i not in obj else cv2.bitwise_or(obj[i], m)
+        for i, m in obj.items():
+            # an object frame's mask is its outline plus any boxes on it; the boxes list keeps
+            # the outline's bounding box for the crop window and the anchor sizes
+            ys, xs = np.nonzero(m)
+            REGION_MASKS[i] = cv2.bitwise_or(m, _box_mask(vmask.get(i) or [], fh, fw))
+            vmask[i] = (vmask.get(i) or []) + [[float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)]]
         for i in range(n, n + pad):   # padding frames hold the last frame's mask
             if n - 1 in vmask:
                 vmask[i] = vmask[n - 1]
+                if n - 1 in REGION_MASKS:
+                    REGION_MASKS[i] = REGION_MASKS[n - 1]
         if not vmask:
             raise RuntimeError("nothing to edit: no region box falls inside the clip")
         allb = np.array([b for bs in vmask.values() for b in bs])
@@ -601,8 +692,7 @@ def prep(spec):
         elif v == "full":
             m[:] = 255
         elif v:
-            for b in v:
-                m[int(b[1]):int(math.ceil(b[3])), int(b[0]):int(math.ceil(b[2]))] = 255
+            m = _frame_mask(i, vmask, fh, fw).copy()
         vm_c.append(cv2.cvtColor(cv2.resize(m[ry:ry + rh_, rx:rx + rw_], (W, Hc), interpolation=cv2.INTER_NEAREST),
                                  cv2.COLOR_GRAY2BGR))
         am_c.append(np.full((Hc, W, 3), 255 if amask.get(i) else 0, np.uint8))
@@ -616,12 +706,17 @@ def prep(spec):
     # the timeline itself (grey where H3 fills in) for compose
     L.write_clip(os.path.join(work, "timeline.mp4"), [f if f is not None else grey for f in tl], FPS,
                  audio_from=wav, lossless=True)
+    if REGION_MASKS:   # object outlines, for compose and clean_inputs
+        zero = np.zeros((fh, fw), np.uint8)
+        L.write_clip(os.path.join(work, "regionmask.mp4"),
+                     [cv2.cvtColor(REGION_MASKS.get(i, zero), cv2.COLOR_GRAY2BGR) for i in range(N)], FPS, lossless=True)
 
     plan = {"mode": mode, "fps": FPS, "frames": N, "width": fw, "height": fh, "window": [lo, hi],
             "length": length, "canvas": [W, Hc], "regs": regs, "crop": crop_mode,
             "vmask": {str(k): v for k, v in vmask.items()}, "amask": sorted(amask),
             "generated": [i for i in range(N) if tl[i] is None], "src_ranges": src_ranges, "pad_tail": pad,
-            "anchor_frames": sorted(anchors), "feather": 16 if anchors else 8, "warnings": warnings}
+            "anchor_frames": sorted(anchors), "feather": 16 if anchors else 8,
+            "region_mask": bool(REGION_MASKS), "warnings": warnings}
     json.dump(plan, open(os.path.join(work, "plan.json"), "w"), indent=1)
     emit("PROGRESS", "100")
 
@@ -656,6 +751,14 @@ def continuity(jump):
     return "smooth" if jump < 5 else "pop" if jump < 20 else "cut"
 
 
+def _load_region_masks(work, plan):
+    REGION_MASKS.clear()
+    if plan.get("region_mask"):
+        for i, m in enumerate(_read_masks(os.path.join(work, "regionmask.mp4"))):
+            if m.any():
+                REGION_MASKS[i] = m.astype(np.uint8) * 255
+
+
 def compose_take(work, plan, take, out_path):
     """Put one H3 take back on the timeline. Returns (frames, audio, metrics)."""
     tl, _ = L.read_clip(os.path.join(work, "timeline.mp4"))
@@ -666,6 +769,7 @@ def compose_take(work, plan, take, out_path):
     fh, fw = plan["height"], plan["width"]
     mode = plan["mode"]
     vmask = {int(k): v for k, v in plan["vmask"].items()}
+    _load_region_masks(work, plan)
     out = [f.copy() for f in tl]
     # a removed object leaves new content against old (cleaned paving beside the car's own
     # shadow): anchor removals blend wider; overlays keep a tight edge off the car
@@ -681,9 +785,7 @@ def compose_take(work, plan, take, out_path):
         if v == "full":
             out[i][ry:ry + rh, rx:rx + rw] = back
             continue
-        m = np.zeros((fh, fw), np.uint8)
-        for b in v:
-            m[int(b[1]):int(math.ceil(b[3])), int(b[0]):int(math.ceil(b[2]))] = 255
+        m = _frame_mask(i, vmask, fh, fw)
         mf = cv2.GaussianBlur(cv2.dilate(m, np.ones((feather, feather), np.uint8)), (0, 0), feather / 2.0)
         a = (mf[ry:ry + rh, rx:rx + rw].astype(np.float32) / 255.0)[..., None]
         reg = out[i][ry:ry + rh, rx:rx + rw].astype(np.float32)
@@ -832,13 +934,14 @@ def clean_inputs(spec):
     boxed = {int(k): v for k, v in plan["vmask"].items() if v != "full" and int(k) < n}
     if not boxed:
         raise RuntimeError("cleaning needs region boxes")
+    _load_region_masks(work, plan)
     keys = sorted(k for k in boxed if (k - lo) % LATENT_CLIP == 0)
     if spec.get("frame") is not None:
         a = int(spec["frame"])
         if a not in boxed:
             a = min(boxed, key=lambda k: abs(k - a))
     else:
-        area = {k: float(_box_mask(v, fh, fw).sum()) for k, v in boxed.items()}
+        area = {k: float(_frame_mask(k, boxed, fh, fw).sum()) for k in boxed}
         top = max(area.values())
         full = sorted(k for k, s in area.items() if s >= 0.98 * top)
         # prefer a key frame (window start + 17k): there the cleaned frame is an anchor as is
@@ -846,7 +949,7 @@ def clean_inputs(spec):
         a = (key or full)[len(key or full) // 2]
     # entries and exits: key frames where the box changes size against the next or previous
     # key frame get their own cleaned view (a neighbour's cleaned box does not reach)
-    karea = {k: float(_box_mask(boxed[k], fh, fw).sum()) for k in keys}
+    karea = {k: float(_frame_mask(k, boxed, fh, fw).sum()) for k in keys}
     moving = [k for i, k in enumerate(keys) if any(
         abs(karea[k] - karea[j]) > 0.15 * max(karea[k], karea[j]) for j in keys[max(0, i - 1):i + 2] if j != k)]
     picks = [a] + [k for k in (keys[:1] + keys[-1:] + moving) if abs(k - a) >= LATENT_CLIP]
@@ -864,7 +967,7 @@ def clean_inputs(spec):
     out = []
     for k in picks:
         img, mask = f"{spec['out_prefix']}{k}.png", f"{spec['out_prefix']}{k}_mask.png"
-        m = _box_mask(boxed[k], fh, fw, grow=int(spec.get("grow", 24)))
+        m = _frame_mask(k, boxed, fh, fw, grow=int(spec.get("grow", 24)))
         cv2.imwrite(img, cv2.resize(got[k], (kw, kh), interpolation=cv2.INTER_AREA))
         cv2.imwrite(mask, cv2.resize(m, (kw, kh), interpolation=cv2.INTER_NEAREST))
         out.append({"frame": k, "image": img, "mask": mask})
