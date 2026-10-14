@@ -1,0 +1,4 @@
+edge-tts==7.2.8
+faster-whisper==1.1.1
+# faster_whisper.utils imports requests; huggingface_hub >= 1.0 stopped pulling it in.
+requests>=2.31

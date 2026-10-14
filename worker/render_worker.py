@@ -4,13 +4,18 @@ GPU (Remotion / Blender), uploads results to the 'renders' bucket.
 pythonw-safe (tees output to worker.log). Crash-only: uncaught errors exit the
 process and the supervisor restarts it; stale jobs are reclaimed via RPC.
 """
+import contextlib
 import os
 import shutil
 import sys
+import threading
 import traceback
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
+# `type nul > worker\restart-requested` = finish the current job, then exit so the
+# supervisor restarts the worker on the checked-out code (no mid-job kill).
+RESTART_FLAG = os.path.join(_HERE, "restart-requested")
 
 
 class _Tee:
@@ -45,14 +50,27 @@ import time
 import assets
 import config
 import db
+from still import make_still
+import fetch_lane
 import git_cache
+import light_lane
+import locks
 import proc
 import venvs
 from heartbeat import Heartbeat
+from job_stats import JobStats
 import queue_status
-from runners import (asset_check, audio_gen, blender, footage, frame_extract, hyperframes, matte,
-                     planar_patch, python_script, reference_extract, remotion, video_gen,
-                     video_split)
+from runners import (asset_check, audio_gen, blender, clip_edit, footage, frame_extract, hyperframes,
+                     lettering_fix, matte, planar_patch, python_script, reference_extract, remotion,
+                     video_gen, video_split, voiceover)
+from videogen import comfy_client
+
+# Engines whose runners drive the headless ComfyUI; after one of these the
+# worker checks ComfyUI's host RAM (comfy_client.recycle_if_bloated).
+COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit"}
+# Plus python: spike scripts drive ComfyUI over HTTP and leave it bloated too
+# (2026-10-10: 16.3 GB after an H3 spike). Under the threshold it is a no-op.
+RECYCLE_AFTER = COMFY_ENGINES | {"python"}
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            "python": python_script.run,
@@ -76,6 +94,14 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # Tracked corner-pin of clean artwork (plate, badge) onto a finished
            # clip: fixes the text H3 gets wrong without regenerating. CPU only.
            "planar_patch": planar_patch.run,
+           # Correct plates/badges by letting H3 propagate the REAL lettering from a
+           # reference photo through the clip (masked inpaint, ComfyUI-vlo nodes).
+           # Reads as the model's own pixels where a corner pin reads as pasted on.
+           "lettering_fix": lettering_fix.run,
+           # Surgical H3 edits of a generated clip: remove/replace what is in boxes,
+           # extend/prepend seconds, bridge two shots, retake the sound. Same masked
+           # inpaint graph as lettering_fix; untouched pixels are put back exactly.
+           "clip_edit": clip_edit.run,
            # An instrumental music bed from a description (YuE2 + instrumental
            # LoRA) in the same headless ComfyUI video_gen uses. Feeds the
            # platform's music library; a minute or two per bed.
@@ -83,19 +109,24 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # Non-linear footage timeline: probe/assemble are CPU-only and
            # answer with a manifest, never a media file, so they keep the
            # separate collector video_gen's MP4 one would misfile.
-           "footage": footage.run}
+           "footage": footage.run,
+           # Narration with per-word timings: the TTS studio's OmniVoice /
+           # Chatterbox (loaded per job) or edge-tts, timed by faster-whisper
+           # and mapped back onto the written script. Explainers key off it.
+           "voiceover": voiceover.run}
 
 # Engines that work on a storage object, not a repo — the clone is skipped and
 # repo_url is a "-" placeholder (the column is NOT NULL).
 NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split",
-            "matte", "video_gen", "planar_patch", "audio_gen", "footage"}
+            "matte", "video_gen", "planar_patch", "audio_gen", "footage", "voiceover", "lettering_fix",
+            "clip_edit"}
 
 
 def log(msg):
     print(f"[{db.now_iso()}] {msg}", flush=True)
 
 
-def run_job(job):
+def run_job(job, log=log):
     jid = job["id"]
     engine = job["engine"]
     runner = RUNNERS.get(engine)
@@ -109,36 +140,54 @@ def run_job(job):
     def cancel_check():
         return db.cancel_requested(jid)
 
+    # A checkout is shared by every job on that repo, in either lane
+    # (worker/light_lane.py): hold it from checkout until the render is done.
+    repo_lock = (contextlib.nullcontext() if engine in NO_CLONE
+                 else locks.named(f"repo:{git_cache.repo_dir(job['repo_url'])}"))
     with Heartbeat(jid) as hb:
-        if engine in NO_CLONE:
-            db.set_phase(jid, "downloading", 1)
-            repo = None
-        else:
-            db.set_phase(jid, "cloning", 1)
-            repo = git_cache.checkout(job["repo_url"], job.get("git_ref") or "main", log)
+        with repo_lock:
+            if engine in NO_CLONE:
+                db.set_phase(jid, "downloading", 1)
+                repo = None
+            else:
+                db.set_phase(jid, "cloning", 1)
+                repo = git_cache.checkout(job["repo_url"], job.get("git_ref") or "main", log)
 
-            manifest = (job.get("params") or {}).get("assets")
-            if manifest:
-                db.set_phase(jid, "syncing_assets", 2)
-                assets.ensure(manifest, repo, log)
+                manifest = (job.get("params") or {}).get("assets")
+                if manifest:
+                    db.set_phase(jid, "syncing_assets", 2)
+                    assets.ensure(manifest, repo, log)
 
-        db.set_phase(jid, "rendering", 2)
-        out_local, ext, content_type = runner(
-            job, repo, work_dir, hb, log, cancel_check, timeout_seconds
-        )
+            db.set_phase(jid, "rendering", 2)
+            out_local, ext, content_type = runner(
+                job, repo, work_dir, hb, log, cancel_check, timeout_seconds
+            )
 
         db.set_phase(jid, "uploading", 99)
         remote = db.upload_output(jid, out_local, ext, content_type)
         signed = db.create_signed_url(remote)
 
+        # The video's still, from the file already on this disk (worker/still.py):
+        # the platform shows it instead of opening the master. Best effort.
+        poster = None
+        still_local = make_still(out_local, ext, os.path.join(work_dir, "still.jpg"), log)
+        if still_local:
+            try:
+                poster = db.upload_file(f"outputs/{jid}.jpg", still_local, "image/jpeg")
+            except Exception as e:
+                log(f"still: upload failed ({str(e)[:160]})")
+
     db.update_job(jid, {
         "status": "done",
         "output_path": remote,
         "output_ext": ext,
+        **({"poster_path": poster} if poster else {}),
         "signed_url": signed,
         "signed_url_expires_at": db.now_iso(),  # informational; MCP re-mints anyway
         "progress": 100,
-        "phase": "done",
+        # a runner may leave a one-line summary here (matte: "done: tensorrt
+        # 0.235 s/frame"); status, not phase, is what says the job finished
+        "phase": job.get("_done_phase") or "done",
         "completed_at": db.now_iso(),
     })
     shutil.rmtree(work_dir, ignore_errors=True)
@@ -161,16 +210,39 @@ def main():
     sweep_caches()
     last_sweep = time.time()
     try:
+        # A ComfyUI left bloated by jobs the previous worker ran (no job of ours
+        # is running yet, so this is the same between-jobs moment as the loop's).
+        comfy_client.recycle_if_bloated(log)
+    except Exception as e:  # noqa: BLE001
+        log(f"comfyui recycle error (continuing): {str(e)[:160]}")
+    try:
         n = db.reclaim_stale()
         if n:
             log(f"reclaimed {n} stale job(s)")
     except Exception as e:
         log(f"reclaim error (continuing): {str(e)[:160]}")
     try:
+        # Provider downloads (Seedance clips from a Beijing CDN the platform's
+        # servers cannot reach) run beside this loop, never queued behind it.
+        fetch_lane.start(log)
+    except Exception as e:  # noqa: BLE001
+        log(f"fetch lane not started (continuing): {str(e)[:160]}")
+    try:
         # Tells the platform which subjects have planar_patch artwork on this box.
         planar_patch.publish_library_index(log)
     except Exception as e:
         log(f"patch library index not published (continuing): {str(e)[:160]}")
+
+    light = None
+    heavy_exclude = set()
+    if config.LIGHT_LANE:
+        try:
+            heavy_exclude = light_lane.LIGHT_ENGINES | db.gated_engines()
+            light = light_lane.start(process_job, RESTART_FLAG,
+                                     lambda m: log(f"[light] {m}"))
+        except Exception as e:  # noqa: BLE001 - without the lane the loop takes every engine
+            heavy_exclude = set()
+            log(f"light lane not started (continuing single-lane): {str(e)[:160]}")
 
     claim_err_logged = False
     polls = 0
@@ -186,8 +258,17 @@ def main():
                 queue_status.annotate(log)   # "queued: N ahead, starts in ~M min" on waiting rows
             except Exception as e:
                 log(f"queue annotate error (ignored): {str(e)[:120]}")
+        if os.path.exists(RESTART_FLAG):
+            # Clean deploy: exit between jobs, the supervisor respawns us on the new code.
+            if light is not None:
+                light_lane.drain(log)
+            os.remove(RESTART_FLAG)
+            log("restart requested: exiting between jobs")
+            sys.exit(0)
         try:
-            job = db.claim_job()
+            # With the light lane on, this loop leaves its engines to it; the RPC
+            # cannot filter by engine, so it claims with a conditional update.
+            job = db.claim_conditional(exclude=heavy_exclude) if light is not None else db.claim_job()
             claim_err_logged = False
         except Exception as e:
             if not claim_err_logged:
@@ -202,22 +283,45 @@ def main():
                 last_sweep = time.time()
             time.sleep(config.POLL_SECONDS)
             continue
+        process_job(job, log)
 
-        jid = job["id"]
-        log(f"claimed {jid} engine={job['engine']} repo={job['repo_url']}@{job.get('git_ref')}")
+
+def process_job(job, log):
+    """Run one claimed job to its final status. Called by this loop and by the
+    light lane's thread (worker/light_lane.py), each with its own log."""
+    jid = job["id"]
+    lane = "light" if threading.current_thread().name == "light-lane" else "main"
+    log(f"claimed {jid} engine={job['engine']} repo={job['repo_url']}@{job.get('git_ref')}")
+    if lane == "main":
+        # Tells the light lane what is running here; it stays off the box
+        # during engines that need all of it (light_lane.PAUSE_DURING).
+        light_lane.main_engine[0] = job["engine"]
+        if config.LIGHT_LANE and job["engine"] in light_lane.PAUSE_DURING:
+            light_lane.wait_for_light(log)
+    try:
+        # RAM/VRAM/GPU/CPU this job cost, to the log and job_stats.jsonl
+        with JobStats(jid, job["engine"], log, lane=lane):
+            remote = run_job(job, log)
+        log(f"done {jid} -> {remote}")
+    except proc.Canceled:
+        db.update_job(jid, {"status": "canceled", "phase": "canceled",
+                            "completed_at": db.now_iso()})
+        log(f"canceled {jid}")
+    except Exception as e:
+        traceback.print_exc()
+        db.update_job(jid, {"status": "failed", "error": str(e)[:2000],
+                            "phase": "failed", "completed_at": db.now_iso()})
+        log(f"failed {jid}: {str(e)[:300]}")
+    # Here, between jobs, nothing of ours is using ComfyUI, so restarting it
+    # cannot fail a job (2026-09-27: a restart from outside the worker did).
+    # These engines are never light-lane engines, so this is still the loop.
+    if job["engine"] in RECYCLE_AFTER:
         try:
-            remote = run_job(job)
-            log(f"done {jid} -> {remote}")
-        except proc.Canceled:
-            db.update_job(jid, {"status": "canceled", "phase": "canceled",
-                                "completed_at": db.now_iso()})
-            log(f"canceled {jid}")
-        except Exception as e:
-            traceback.print_exc()
-            db.update_job(jid, {"status": "failed", "error": str(e)[:2000],
-                                "phase": "failed", "completed_at": db.now_iso()})
-            log(f"failed {jid}: {str(e)[:300]}")
-
+            comfy_client.recycle_if_bloated(log)
+        except Exception as e:  # noqa: BLE001 - housekeeping must not stop the loop
+            log(f"comfyui recycle error (ignored): {str(e)[:200]}")
+    if lane == "main":
+        light_lane.main_engine[0] = None
 
 if __name__ == "__main__":
     main()

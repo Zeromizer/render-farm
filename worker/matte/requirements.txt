@@ -28,3 +28,11 @@
 rembg[gpu]==2.0.67
 onnxruntime-gpu[cuda,cudnn]==1.29.0
 Pillow==11.3.0
+#
+# tensorrt-cu13 10.x, NOT 11: onnxruntime-gpu 1.29's TensorRT provider links
+# nvinfer_10.dll / nvonnxparser_10.dll (checked in the provider DLL), and an 11
+# install leaves the provider unloadable - matte.py would quietly run capped
+# CUDA. The pin also keys the engine cache: warmup_trt.py records this version
+# and a job only takes TensorRT when it still matches. The wheel carries the
+# DLLs (tensorrt_cu13_libs), so there is no system install, same as CUDA above.
+tensorrt-cu13==10.16.1.11

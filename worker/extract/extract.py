@@ -64,11 +64,23 @@ def _find_ffmpeg_tool(name):
 FFMPEG = None
 FFPROBE = None  # resolved once in main()
 
-ALL_STAGES = ["probe", "frames", "shots", "audio", "motion", "grade", "text", "composition"]
+ALL_STAGES = ["probe", "frames", "shots", "audio", "motion", "grade", "text", "kinetic", "composition"]
 PROGRESS_AT = {"probe": 5, "frames": 15, "shots": 35, "audio": 50, "motion": 65,
-               "grade": 75, "text": 90, "composition": 95}
+               "grade": 72, "text": 82, "kinetic": 92, "composition": 95}
 SAMPLE_FPS = 2.0
 MAX_FRAMES = 300
+# The text pass samples denser than the shared frames: at 2 fps a word on screen
+# for half a second is seen once and dropped as noise, and those are exactly the
+# kinetic punchlines a reading-time check needs (job 58274d99 v1 lost SELL.,
+# HIGH, BUY?, CUT YOUR PRICE and TITAN MOTORING that way). Capped by frame count,
+# so a long reference falls back towards SAMPLE_FPS.
+OCR_FPS = 6.0
+OCR_MAX_FRAMES = 360
+# ...on frames scaled to this height: EasyOCR's detector misses very tall
+# condensed display type at full 1920 px (BUY? held 1.4 s and was never read),
+# and a third of the pixels roughly halves the pass. Small print suffers; it is
+# not what this pass is for.
+OCR_HEIGHT = 1280
 BEAT_TOLERANCE_S = 0.08
 SAFE_TOP = 0.12     # vertical-ad safe zone: avoid top 12% and bottom 20%
 SAFE_BOTTOM = 0.80
@@ -656,10 +668,15 @@ def stage_text(ctx):
     if ctx["ocr_fps"] and ctx["ocr_fps"] < ctx["sample_rate_fps"]:
         step = max(1, round(ctx["sample_rate_fps"] / ctx["ocr_fps"]))
         frames, times = frames[::step], times[::step]
+    else:
+        frames, times = _ocr_frames(ctx, frames, times)
 
     reader = easyocr.Reader(["en"], gpu=True, verbose=False)
     tracks = []  # {text, t0, t1, boxes:[bbox], texts:[(t,text)], confs:[..]}
-    W, H = ctx["w"], ctx["h"]
+    # boxes come back in the pixels of the frames read (the OCR frames are
+    # scaled, and a rotated phone clip's frames are upright)
+    first = cv2.imread(frames[0])
+    H, W = first.shape[:2] if first is not None else (ctx["h"], ctx["w"])
     for path, t in zip(frames, times):
         try:
             dets = reader.readtext(path, paragraph=False)
@@ -673,7 +690,8 @@ def stage_text(ctx):
             bbox = (min(xs) / W, min(ys) / H, max(xs) / W, max(ys) / H)
             _track_text(tracks, text.strip(), bbox, float(conf), t)
 
-    blocks = [_finish_track(tr) for tr in tracks
+    parts = [part for tr in tracks for part in _split_resets(tr)]
+    blocks = [_finish_track(tr) for tr in parts
               if (tr["t1"] - tr["t0"]) >= 0.4 or len(tr["texts"]) >= 2]
     inside = [b for b in blocks if SAFE_TOP <= (b["bbox"][1] + b["bbox"][3]) / 2 <= SAFE_BOTTOM]
     wps_peak = _words_per_second_peak(blocks, ctx["duration"])
@@ -682,6 +700,24 @@ def stage_text(ctx):
         "safe_zone_ratio": round(len(inside) / len(blocks), 2) if blocks else None,
         "words_per_second_peak": wps_peak,
     }
+
+
+def _ocr_frames(ctx, frames, times):
+    """Frames for the text pass: its own denser sampling (OCR_FPS, at most
+    OCR_MAX_FRAMES, at most OCR_HEIGHT tall), or the shared frames when that
+    would be no denser."""
+    rate = float(ctx["ocr_fps"] or min(OCR_FPS, OCR_MAX_FRAMES / max(ctx["duration"], 0.1)))
+    if rate <= ctx["sample_rate_fps"] * 1.2:
+        return frames, times
+    ocr_dir = os.path.join(ctx["out_dir"], "ocr_frames")
+    os.makedirs(ocr_dir, exist_ok=True)
+    _run([FFMPEG, "-y", "-v", "error", "-i", ctx["video"],
+          "-vf", f"fps={rate:.6f},scale=-2:'min({OCR_HEIGHT},ih)'", "-q:v", "2",
+          os.path.join(ocr_dir, "o_%04d.jpg")])
+    files = sorted(f for f in os.listdir(ocr_dir) if f.startswith("o_"))
+    if not files:
+        return frames, times
+    return [os.path.join(ocr_dir, f) for f in files], [i / rate for i in range(len(files))]
 
 
 def _iou(a, b):
@@ -694,37 +730,113 @@ def _iou(a, b):
     return inter / max(area, 1e-9)
 
 
-def _track_text(tracks, text, bbox, conf, t):
+def _same_words(prev, text, counting=True):
+    """One reading continuing another: a re-read or OCR garble of the same words
+    (similar), a word-by-word build (one contains the other), or a count-up (both
+    mostly digits, while `counting`: the number was still changing). A different
+    word swapped into the same spot is none of these, and nor is a new price
+    after one that held."""
     import difflib
 
+    a, b = prev.lower(), text.lower()
+    if difflib.SequenceMatcher(None, a, b).ratio() > 0.6:
+        return True
+    short, long_ = sorted((a, b), key=len)
+    if len(short) >= 3 and short in long_:
+        return True
+
+    def digits(x):
+        alnum = [c for c in x if c.isalnum()]
+        n = sum(c.isdigit() for c in alnum)
+        return n >= 3 and n >= 0.5 * len(alnum)
+
+    return counting and digits(a) and digits(b)
+
+
+def _track_text(tracks, text, bbox, conf, t):
+    """Join a reading to the open track it continues. The words must continue
+    (_same_words): overlapping boxes alone once merged every punchline swapped
+    into the same spot into one track, and the longest reading hid the rest
+    (job 58274d99 v1: HIGH, BUY?, HEARING inside "SINGAPORE?"). Nor may a line of
+    small print absorb display type over it: box heights within 1.7x."""
     best, score = None, 0.0
+    h = bbox[3] - bbox[1]
     for tr in tracks:
         if t - tr["t1"] > 1.5:  # track went dark, leave it closed
             continue
-        sim = difflib.SequenceMatcher(None, tr["texts"][-1][1].lower(), text.lower()).ratio()
-        prefixy = tr["texts"][-1][1].lower() in text.lower() or text.lower() in tr["texts"][-1][1].lower()
-        s = _iou(tr["boxes"][-1], bbox) + (0.6 if (sim > 0.6 or prefixy) else 0)
+        last = tr["boxes"][-1]
+        lh = last[3] - last[1]
+        counting = t - tr["changed"] < 0.5
+        if not _same_words(tr["texts"][-1][1], text, counting) or max(h, lh) > 1.7 * max(min(h, lh), 1e-6):
+            continue
+        s = _iou(last, bbox) + 0.6
         if s > score:
             best, score = tr, s
     if best is not None and score >= 0.5:
+        if text.lower() != best["texts"][-1][1].lower():
+            best["changed"] = t
         best["t1"] = t
         best["boxes"].append(bbox)
         best["texts"].append((t, text))
         best["confs"].append(conf)
     else:
-        tracks.append({"t0": t, "t1": t, "boxes": [bbox], "texts": [(t, text)], "confs": [conf]})
+        tracks.append({"t0": t, "t1": t, "changed": t, "boxes": [bbox], "texts": [(t, text)], "confs": [conf]})
+
+
+def _final_text(texts):
+    """What a track said once complete: the reading seen most often among the
+    longest (a held phrase is read the same way many times; a garble as it fades,
+    "buv?" for BUY?, once), then the longest, then the latest (a count-up with no
+    hold ends on its final value)."""
+    from collections import Counter
+
+    m = max(len(x) for _, x in texts)
+    longest = [(t, x) for t, x in texts if len(x) >= m - 1]
+    counts = Counter(x for _, x in longest)
+    return max(longest, key=lambda p: (counts[p[1]], len(p[1]), p[0]))[1]
+
+
+def _split_resets(tr):
+    """One track per text: split where a reading much shorter than the text held
+    so far starts a build that ends somewhere else — the next price built digit
+    by digit where the last one sat ("$12" after $124,888, growing to $129,888).
+    A fragment as a text fades out never grows into anything, so it stays."""
+    import difflib
+
+    texts = tr["texts"]
+    cuts, start = [], 0
+    for k in range(1, len(texts)):
+        held = _final_text(texts[start:k])
+        if len(texts[k][1]) > len(held) - 2:
+            continue
+        after = _final_text(texts[k:])
+        if len(after) >= len(held) - 1 and difflib.SequenceMatcher(None, after.lower(), held.lower()).ratio() < 0.9:
+            cuts.append(k)
+            start = k
+    if not cuts:
+        return [tr]
+    bounds = [0] + cuts + [len(texts)]
+    return [{"t0": texts[a][0], "t1": texts[b - 1][0], "changed": texts[a][0], "boxes": tr["boxes"][a:b],
+             "texts": texts[a:b], "confs": tr["confs"][a:b]} for a, b in zip(bounds, bounds[1:])]
 
 
 def _finish_track(tr):
+    import difflib
+
     boxes = np.array(tr["boxes"])
     bbox = [round(float(v), 3) for v in
             (boxes[:, 0].min(), boxes[:, 1].min(), boxes[:, 2].max(), boxes[:, 3].max())]
-    final = max(tr["texts"], key=lambda p: len(p[1]))[1]
+    final = _final_text(tr["texts"])
+    # when the words were first complete: a word-by-word build or a count-up is
+    # read in pieces from t0. Measured against the final text, not the last
+    # reading, which during a blur-out is a fragment ("$124,", "ELL") and made a
+    # phrase look complete only as it left (job 58274d99 v4).
+    t_full = next(t for t, x in tr["texts"] if difflib.SequenceMatcher(None, x.lower(), final.lower()).ratio() >= 0.9)
     cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
     zone = f"{_third(cy, 'top', 'centre', 'bottom')}-{_third(cx, 'left', 'centre', 'right')}"
     return {
         "text": final,
-        "t0": round(tr["t0"], 2), "t1": round(tr["t1"], 2),
+        "t0": round(tr["t0"], 2), "t1": round(tr["t1"], 2), "t_full": round(t_full, 2),
         "bbox": bbox,
         "size_ratio": round(float((boxes[:, 3] - boxes[:, 1]).mean()), 3),
         "zone": zone,
@@ -772,6 +884,147 @@ def _words_per_second_peak(blocks, duration):
     return round(float(per_sec.max()), 1)
 
 
+KINETIC_MAX_EVENTS = 30
+# Event slots go to display type first (at least KINETIC_DISPLAY of the frame
+# height: the punchlines), then captions, then small print (under
+# KINETIC_SMALL_PRINT: a phone screen, a document page), each tier spread over
+# the clip. A render can carry 45 blocks of real type; spread evenly, the cap
+# dropped BUY? and TITAN (job 58274d99 v1).
+KINETIC_DISPLAY = 0.05
+KINETIC_SMALL_PRINT = 0.02
+KINETIC_PER_SHEET = 5
+KINETIC_LABEL_W = 150
+
+
+def stage_kinetic(ctx):
+    """HOW the words move: each text event's entrance and exit measured at the
+    native frame rate (kinetic.py), plus strip sheets kf_words_NN.jpg — one
+    IN row and one OUT row per event — for the annotate pass to name the
+    mechanism by eye. The runner uploads kf_* next to the keyframes, so the
+    sheets land at refs/<id>/kf_words_NN.jpg with no runner change."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    import kinetic
+
+    text = (ctx.get("sections") or {}).get("text") or {}
+    if text.get("status") != "ok":
+        raise RuntimeError("needs the text stage")
+    blocks = text.get("blocks") or []
+    duration, fps = ctx["duration"], ctx["fps"]
+    cuts = [b[0] for b in (ctx.get("shot_bounds") or [])[1:]]
+
+    # skip labels up for most of the clip (a watermark, a price bar) and OCR
+    # junk (zigzags read as 'YYYYYY'): neither animates
+    persistent = junk = 0
+    picked = []
+    for i, b in enumerate(blocks):
+        if b["t1"] - b["t0"] >= max(6.0, 0.8 * duration):
+            persistent += 1
+        elif not kinetic.looks_like_text(b["text"]):
+            junk += 1
+        else:
+            picked.append(i)
+    picked.sort(key=lambda i: blocks[i]["t0"])
+    capped = 0
+    if len(picked) > KINETIC_MAX_EVENTS:
+        # display type, then captions, then small print; each spread over the
+        # clip, not its first half
+        def spread(ids, n):
+            if n <= 0 or not ids:
+                return []
+            if len(ids) <= n:
+                return ids
+            keep = np.linspace(0, len(ids) - 1, n).round().astype(int)
+            return [ids[k] for k in sorted(set(keep.tolist()))]
+
+        size = lambda i: blocks[i].get("size_ratio", 1)  # noqa: E731
+        chosen = []
+        for tier in ([i for i in picked if size(i) >= KINETIC_DISPLAY],
+                     [i for i in picked if KINETIC_SMALL_PRINT <= size(i) < KINETIC_DISPLAY],
+                     [i for i in picked if size(i) < KINETIC_SMALL_PRINT]):
+            chosen += spread(tier, KINETIC_MAX_EVENTS - len(chosen))
+        capped = len(picked) - len(chosen)
+        picked = sorted(chosen, key=lambda i: blocks[i]["t0"])
+
+    jobs = [(ctx["video"], blocks[i], fps, duration, cuts) for i in picked]
+    workers = max(1, min(6, (os.cpu_count() or 2) - 2, len(jobs)))
+    if workers > 1:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(kinetic.analyse_event_job, jobs))
+    else:
+        results = [kinetic.analyse_event_job(j) for j in jobs]
+
+    events, rows = [], []
+    for n, (i, r) in enumerate(zip(picked, results)):
+        b = blocks[i]
+        ev = {"i": n, "block": i, "t0": b["t0"], "t1": b["t1"], "zone": b.get("zone"),
+              "words": len(b["text"].split())}
+        if "error" in r:  # unmeasured; any strips still go on the sheet
+            ev["error"] = r["error"]
+        else:
+            ev["entry"] = {k: v for k, v in r["entry"].items() if not k.startswith("_")}
+            ev["exit"] = {k: v for k, v in r["exit"].items() if not k.startswith("_")}
+        s_in, s_out = r.get("_strip", (None, None))
+        if s_in is not None or s_out is not None:
+            rows.append((n, b, s_in, s_out))
+        events.append(ev)
+
+    sheets = []
+    for k in range(0, len(rows), KINETIC_PER_SHEET):
+        group = rows[k:k + KINETIC_PER_SHEET]
+        name = f"kf_words_{len(sheets) + 1:02d}.jpg"
+        cv2.imwrite(os.path.join(ctx["out_dir"], name), _kinetic_sheet(group), [cv2.IMWRITE_JPEG_QUALITY, 82])
+        for pos, (n, *_rest) in enumerate(group, start=1):
+            events[n]["sheet"], events[n]["sheet_row"] = name, pos
+        sheets.append(name)
+
+    ok = [e for e in events if "error" not in e]
+    moves = [e["entry"] for e in ok if e["entry"].get("t_start") is not None]
+    carried = {c: sum(1 for m in moves if m.get("carried_by") == c) for c in ("cut", "scene")}
+    own = [m for m in moves if not m.get("carried_by") and m.get("type") != "cut"]
+    hints = {}
+    for m in own:
+        hints[m.get("type", "unknown")] = hints.get(m.get("type", "unknown"), 0) + 1
+    return {
+        "version": 1,
+        "events": events,
+        "sheets": sheets,
+        "summary": {
+            "analysed": len(ok),
+            "failed": len(events) - len(ok),
+            "entries_measured": len(moves),
+            "carried_by": carried,
+            "own_entries": len(own),
+            "entry_hints": hints,
+            "median_entry_s": round(float(np.median([m["duration_s"] for m in own])), 3) if own else None,
+        },
+        "skipped": {"persistent": persistent, "junk": junk, "capped": capped},
+    }
+
+
+def _kinetic_sheet(group):
+    """Stack each event's IN strip over its OUT strip, a label panel on the
+    left (#n = the event's index in kinetic.events, its time and first words)."""
+    blocks_img = []
+    for n, b, s_in, s_out in group:
+        for tag, s in (("IN", s_in), ("OUT", s_out)):
+            if s is None:
+                continue
+            label = np.zeros((s.shape[0], KINETIC_LABEL_W, 3), np.uint8)
+            t = b["t0"] if tag == "IN" else b["t1"]
+            snippet = "".join(c for c in b["text"] if 32 <= ord(c) < 127)[:16]
+            for y, line in ((14, f"#{n} {tag}"), (30, f"{t:.2f}s"), (46, snippet)):
+                if y < s.shape[0] - 2:
+                    cv2.putText(label, line, (4, y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+            blocks_img.append(cv2.hconcat([label, s]))
+        blocks_img.append(None)  # separator between events
+    w = max(im.shape[1] for im in blocks_img if im is not None)
+    padded = [np.full((6, w, 3), 70, np.uint8) if im is None else
+              cv2.copyMakeBorder(im, 0, 0, 0, w - im.shape[1], cv2.BORDER_CONSTANT, value=(16, 16, 16))
+              for im in blocks_img]
+    return cv2.vconcat(padded[:-1])
+
+
 def stage_composition(ctx):
     kfs = ctx.get("keyframes") or []
     if not kfs:
@@ -802,11 +1055,11 @@ def stage_composition(ctx):
 STAGE_FNS = {
     "probe": stage_probe, "frames": stage_frames, "shots": stage_shots,
     "audio": stage_audio, "motion": stage_motion, "grade": stage_grade,
-    "text": stage_text, "composition": stage_composition,
+    "text": stage_text, "kinetic": stage_kinetic, "composition": stage_composition,
 }
 SECTION_FOR = {"probe": "probe", "shots": "shots", "audio": "audio",
                "motion": "motion", "grade": "grade", "text": "text",
-               "composition": "composition"}
+               "kinetic": "kinetic", "composition": "composition"}
 
 
 def main():
@@ -847,6 +1100,8 @@ def main():
     wanted = set(stages) | {"probe"}
     if wanted & {"audio", "motion", "grade", "composition"}:
         wanted |= {"shots"}
+    if "kinetic" in wanted:  # measures the text stage's events, carried-by-cut needs shots
+        wanted |= {"text", "shots"}
     if "text" in wanted:
         wanted |= {"frames"}
     stages = [s for s in ALL_STAGES if s in wanted]
@@ -864,6 +1119,7 @@ def main():
             spec["status"] = "partial"
         dt = round(time.monotonic() - t0, 2)
         spec["timings"][s] = dt
+        ctx.setdefault("sections", {})[s] = section
         if s != "frames":  # frames is plumbing, not a schema section
             spec[SECTION_FOR[s]] = section
         print(f"STAGE {s} {dt}s {section['status']}")

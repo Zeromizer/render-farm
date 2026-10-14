@@ -46,7 +46,24 @@ COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
 # of a video job; "0" to leave them alone.
 VIDEO_GEN_PAUSE_TTS = os.environ.get("VIDEO_GEN_PAUSE_TTS", "1") not in ("0", "false", "no")
 TTS_STUDIO_DIR = os.environ.get("TTS_STUDIO_DIR", r"C:\Coding\Voice Output")
+# Before an H3 job touches ComfyUI, wait until this much physical RAM is available
+# (free + standby) so the --fast-disk weights don't thrash the pagefile
+# (videogen/ram_gate.py). "0" disables. Gives up and starts anyway after the max wait.
+VIDEO_GEN_MIN_AVAIL_RAM_GB = float(os.environ.get("VIDEO_GEN_MIN_AVAIL_RAM_GB", "12"))
+VIDEO_GEN_RAM_WAIT_MAX_MINUTES = int(os.environ.get("VIDEO_GEN_RAM_WAIT_MAX_MINUTES", "20"))
+# After a job that used ComfyUI, restart it (idle only) when its python holds more
+# private memory than this: /free does not give back the host RAM an H3 run leaves
+# behind (videogen/comfy_client.recycle_if_bloated). "0" disables.
+COMFYUI_RECYCLE_ABOVE_GB = float(os.environ.get("COMFYUI_RECYCLE_ABOVE_GB", "8"))
 VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES = int(os.environ.get("VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES", "60"))
+
+# --- light lane (worker/light_lane.py): CPU engines beside the render loop ---
+LIGHT_LANE = os.environ.get("LIGHT_LANE", "0") in ("1", "true", "yes")
+# A light job starts only while all three hold, so it cannot push a running H3
+# job into the commit-limit wedge (WinError 1455, 2026-09-14).
+LIGHT_LANE_MIN_AVAIL_RAM_GB = float(os.environ.get("LIGHT_LANE_MIN_AVAIL_RAM_GB", "16"))
+LIGHT_LANE_MIN_COMMIT_GB = float(os.environ.get("LIGHT_LANE_MIN_COMMIT_GB", "8"))
+LIGHT_LANE_MIN_FREE_VRAM_MIB = int(os.environ.get("LIGHT_LANE_MIN_FREE_VRAM_MIB", "2048"))
 
 for _d in (REPOS_DIR, WORK_DIR, ASSETS_DIR):
     os.makedirs(_d, exist_ok=True)

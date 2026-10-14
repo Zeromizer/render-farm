@@ -17,6 +17,35 @@ def claim_job():
     return rows[0] if rows else None
 
 
+def claim_conditional(include=None, exclude=()):
+    """Claim the next pending job (priority, then age) whose engine is in include
+    / not in exclude, as claim_farm_job() would set it. A conditional update,
+    atomic per row: used when the light lane splits engines between two claimers
+    (worker/light_lane.py), since the RPC cannot filter by engine."""
+    q = (sb.table("farm_render_jobs").select("id,attempts")
+         .eq("status", "pending").eq("cancel_requested", False))
+    if include:
+        q = q.in_("engine", sorted(include))
+    if exclude:
+        q = q.not_.in_("engine", sorted(exclude))
+    for r in q.order("priority").order("created_at").limit(5).execute().data or []:
+        won = (sb.table("farm_render_jobs")
+               .update({"status": "processing", "claimed_at": now_iso(), "heartbeat_at": now_iso(),
+                        "attempts": (r.get("attempts") or 0) + 1, "progress": 0,
+                        "phase": "cloning", "error": None})
+               .eq("id", r["id"]).eq("status", "pending").execute().data)
+        if won:
+            return won[0]
+    return None
+
+
+def gated_engines():
+    """Engines claim_farm_job() only gives to a worker with a capability
+    (farm_engine_capabilities); the render loop advertises none."""
+    rows = sb.table("farm_engine_capabilities").select("engine").execute().data or []
+    return {r["engine"] for r in rows}
+
+
 def reclaim_stale():
     return sb.rpc("reclaim_stale_farm_jobs", {"p_stale_minutes": config.STALE_MINUTES}).execute().data
 

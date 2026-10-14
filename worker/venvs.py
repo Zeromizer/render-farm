@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 import config
+import locks
 import proc
 
 
@@ -20,6 +21,12 @@ def venv_python(requirements_path, log, run_kw):
         return sys.executable
     with open(requirements_path, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()[:12]
+    # Both job lanes may want the same venv at once; one builds, the other waits.
+    with locks.named(f"venv:{digest}"):
+        return _venv_python(digest, requirements_path, log, run_kw)
+
+
+def _venv_python(digest, requirements_path, log, run_kw):
     venv_dir = os.path.join(config.CACHE_DIR, "venvs", digest)
     py = os.path.join(venv_dir, "Scripts", "python.exe")
     marker = os.path.join(venv_dir, ".ready")

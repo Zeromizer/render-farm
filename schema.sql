@@ -37,6 +37,10 @@ alter table farm_render_jobs add column if not exists priority int not null defa
 drop index if exists farm_render_jobs_status_idx;
 create index if not exists farm_render_jobs_status_idx on farm_render_jobs (status, priority, created_at);
 
+-- A video job's still (outputs/<id>.jpg, ~40 KB), written by the worker from the
+-- file it already has, so no viewer opens the master just to draw a tile.
+alter table farm_render_jobs add column if not exists poster_path text;
+
 -- Engines a worker may only claim when it advertises the capability of the
 -- same name. Added 2026-09-11 for the aftereffects engine, which was retired
 -- on 2026-09-12; the table and the p_capabilities parameter stay (harmless,
@@ -49,6 +53,11 @@ create table if not exists farm_engine_capabilities (
 revoke all on table public.farm_engine_capabilities from public, anon, authenticated;
 grant select, insert, update, delete on table public.farm_engine_capabilities to service_role;
 alter table public.farm_engine_capabilities enable row level security;
+-- url_fetch (2026-10-02) is gated again, but the other way round: the render loop
+-- passes no capabilities, so it never claims it, and worker/fetch_lane.py takes
+-- those rows itself beside the loop instead of queueing them behind a render.
+insert into farm_engine_capabilities (engine, capability) values ('url_fetch', 'fetch-lane')
+  on conflict (engine) do nothing;
 
 -- Atomic claim: one worker owns the job; SKIP LOCKED makes concurrent workers safe.
 -- Priority before age so reference_extract jobs (200) never starve renders (100).

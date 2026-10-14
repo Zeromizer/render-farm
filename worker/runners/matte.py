@@ -6,7 +6,9 @@ params (jsonb):
     source: {bucket, path}  the clip (platform resolves this from an asset_id,
                             and checks org ownership, so path is trusted here)
     model                 one of matte/matte.py MODELS
-    output                webm_alpha | mask_mp4 | png_sequence
+    output                webm_alpha | mask_mp4 | png_sequence | png
+                          (png = the source is ONE still image; the result is
+                          its RGBA cut-out)
     start_s / end_s       optional window; absent means the whole clip
     fps                   optional; absent means every frame at source rate
     scale                 optional long-edge px; absent means source resolution
@@ -35,7 +37,9 @@ MATTE_DIR = os.path.join(_WORKER_DIR, "matte")
 
 EXT = {"webm_alpha": ("webm", "video/webm"),
        "mask_mp4": ("mp4", "video/mp4"),
-       "png_sequence": ("zip", "application/zip")}
+       "png_sequence": ("zip", "application/zip"),
+       # A still image in, one RGBA png out: sticker cut-outs for explainers.
+       "png": ("png", "image/png")}
 
 
 def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
@@ -108,6 +112,17 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     for line in measured:
         log(line.strip())
     log(f"matte done: {kind} -> {os.path.getsize(out_local)} bytes")
+    # Which session actually ran, readable from the row afterwards: run_job
+    # writes this as the final phase instead of a bare "done".
+    # "[matte] MEASURED 0.235 s/frame for <model> at WxH over N frames ep=tensorrt"
+    if measured:
+        words = measured[-1].split()
+        ep = next((w[3:] for w in words if w.startswith("ep=")), "?")
+        try:
+            spf = words[words.index("MEASURED") + 1]
+        except (ValueError, IndexError):
+            spf = "?"
+        job["_done_phase"] = f"done: {ep} {spf} s/frame"
 
     # The proof sheet goes up as a SIBLING of the real output, at a path the
     # platform can derive from output_path without being told: replace the

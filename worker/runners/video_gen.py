@@ -79,7 +79,7 @@ import proc
 from runners import gate_common
 import json
 
-from videogen import comfy_client, estimate, graphs, media_type, segments, tts_guard
+from videogen import comfy_client, estimate, graphs, media_type, ram_gate, segments, tts_guard
 from studio import turntable as turntable_flow
 
 _IMAGE, _VIDEO, _AUDIO = ("image",), ("video",), ("audio",)
@@ -355,6 +355,14 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
                 f"vram_free={dev.get('vram_free', 0) // (1 << 20)} MiB")
         except Exception as e:  # noqa: BLE001 - telemetry only
             log(f"system_stats unavailable: {e}")
+
+        # Don't start H3 into a RAM-starved box: it crawls instead of failing (ram_gate docstring).
+        need = config.VIDEO_GEN_MIN_AVAIL_RAM_GB
+        waited = ram_gate.wait_for_ram(
+            need, config.VIDEO_GEN_RAM_WAIT_MAX_MINUTES * 60, cancel_check,
+            lambda gb: db.set_phase(jid, f"waiting for memory: {gb:.1f} GB free, needs {need:g} GB", 4),
+            log)
+        deadline += waited  # the wait is not the job's fault; don't let it eat the timeout
 
         db.set_phase(jid, "uploading inputs", 5)
         names = {}
