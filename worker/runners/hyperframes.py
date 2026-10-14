@@ -22,7 +22,8 @@ params (jsonb):
   gpu           true → --gpu (NVENC encode on the 4080). Off by default so a machine
                 without NVENC still renders.
   resolution    supersample preset (1080p, 4k, portrait-4k ...) — optional
-  crf           override CRF 0-51 — optional
+  crf           override CRF 0-51 — optional. Unset, an mp4 at standard quality from a
+                project pinned to hyperframes >= 0.8.155 renders at CRF 16 (grain, see run)
   output_kind   "still" → `hyperframes snapshot` at params.at (seconds, default 0)
                 and returns one PNG. Same name as the remotion runner uses, for the
                 same reason: params is one shared jsonb and `output` belongs to the
@@ -148,6 +149,13 @@ def _ensure_browser(cli, project_dir, log, run_kw):
     _BROWSER_READY.add(ver)
 
 
+def _at_least(ver, want):
+    try:
+        return tuple(int(x) for x in str(ver).split(".")[:3]) >= want
+    except ValueError:
+        return False
+
+
 def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     """Render and return (local_output_path, ext, content_type)."""
     params = job.get("params") or {}
@@ -192,6 +200,12 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         cmd += ["--resolution", str(params["resolution"])]
     if params.get("crf") is not None:
         cmd += ["--crf", str(int(params["crf"]))]
+    elif fmt == "mp4" and quality == "standard" and _at_least(ver, (0, 8, 155)):
+        # 0.8.155 captures frames as JPEG q100 (0.8.26: q80). The cleaner frames let x264 at CRF 18 (HyperFrames'
+        # fixed aq-mode 3 / deblock 1,1) smear fine grain: a film-grain look kept half its strength and drifted
+        # instead of changing per frame (fx-library STYL-13, 2026-10-15). CRF 16, the CLI's own default, restores
+        # 0.8.26's grain; projects pinned below 0.8.155 render as before.
+        cmd += ["--crf", "16"]
     if params.get("variables"):
         vf = os.path.join(work_dir, "variables.json")
         with open(vf, "w", encoding="utf-8") as f:
