@@ -22,7 +22,8 @@ params (jsonb):
   gpu           true → --gpu (NVENC encode on the 4080). Off by default so a machine
                 without NVENC still renders.
   resolution    supersample preset (1080p, 4k, portrait-4k ...) — optional
-  crf           override CRF 0-51 — optional
+  crf           override CRF 0-51 — optional. Unset, an mp4 at standard quality from a
+                project pinned to hyperframes >= 0.8.155 renders at CRF 16 (grain, see run)
   output_kind   "still" → `hyperframes snapshot` at params.at (seconds, default 0)
                 and returns one PNG. Same name as the remotion runner uses, for the
                 same reason: params is one shared jsonb and `output` belongs to the
@@ -129,6 +130,15 @@ def _env(tmp_dir=None):
     env["HYPERFRAMES_NO_TELEMETRY"] = "1"
     env["HYPERFRAMES_NO_UPDATE_CHECK"] = "1"
     env["CI"] = "1"  # never prompt, never open a browser tab
+    # From 0.8.4x the CLI sizes auto workers by the V8 heap: Node's default
+    # ~2.2 GB "supports ~1", so a 645-frame reel drops from 4 Chrome workers to 1
+    # and takes 85 s instead of 69 s. 8 GB brings back 4 (measured 71 s); the PC
+    # has 32 GB. An operator's own --max-old-space-size wins.
+    if "--max-old-space-size" not in env.get("NODE_OPTIONS", ""):
+        env["NODE_OPTIONS"] = (env.get("NODE_OPTIONS", "") + " --max-old-space-size=8192").strip()
+    # From 0.8.142 the CLI signs in to HeyGen with this token if it is set.
+    # Nothing on the farm talks to HeyGen.
+    env.pop("HEYGEN_ACCESS_TOKEN", None)
     d = _ffmpeg_dir()
     if d:
         # The CLI honours these two explicitly; PATH covers anything it spawns by name.
@@ -145,6 +155,13 @@ def _ensure_browser(cli, project_dir, log, run_kw):
     log("hyperframes: browser ensure (cached after the first run)")
     proc.run_streaming(cli + ["browser", "ensure"], cwd=project_dir, env=_env(), **run_kw)
     _BROWSER_READY.add(ver)
+
+
+def _at_least(ver, want):
+    try:
+        return tuple(int(x) for x in str(ver).split(".")[:3]) >= want
+    except ValueError:
+        return False
 
 
 def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
@@ -204,6 +221,12 @@ def _run(job, repo, work_dir, tmp_dir, heartbeat, log, cancel_check, timeout_sec
         cmd += ["--resolution", str(params["resolution"])]
     if params.get("crf") is not None:
         cmd += ["--crf", str(int(params["crf"]))]
+    elif fmt == "mp4" and quality == "standard" and _at_least(ver, (0, 8, 155)):
+        # 0.8.155 captures frames as JPEG q100 (0.8.26: q80). The cleaner frames let x264 at CRF 18 (HyperFrames'
+        # fixed aq-mode 3 / deblock 1,1) smear fine grain: a film-grain look kept half its strength and drifted
+        # instead of changing per frame (fx-library STYL-13, 2026-10-15). CRF 16, the CLI's own default, restores
+        # 0.8.26's grain; projects pinned below 0.8.155 render as before.
+        cmd += ["--crf", "16"]
     if params.get("variables"):
         vf = os.path.join(work_dir, "variables.json")
         with open(vf, "w", encoding="utf-8") as f:
