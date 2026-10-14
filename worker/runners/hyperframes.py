@@ -121,6 +121,15 @@ def _env():
     env["HYPERFRAMES_NO_TELEMETRY"] = "1"
     env["HYPERFRAMES_NO_UPDATE_CHECK"] = "1"
     env["CI"] = "1"  # never prompt, never open a browser tab
+    # From 0.8.4x the CLI sizes auto workers by the V8 heap: Node's default
+    # ~2.2 GB "supports ~1", so a 645-frame reel drops from 4 Chrome workers to 1
+    # and takes 85 s instead of 69 s. 8 GB brings back 4 (measured 71 s); the PC
+    # has 32 GB. An operator's own --max-old-space-size wins.
+    if "--max-old-space-size" not in env.get("NODE_OPTIONS", ""):
+        env["NODE_OPTIONS"] = (env.get("NODE_OPTIONS", "") + " --max-old-space-size=8192").strip()
+    # From 0.8.142 the CLI signs in to HeyGen with this token if it is set.
+    # Nothing on the farm talks to HeyGen.
+    env.pop("HEYGEN_ACCESS_TOKEN", None)
     d = _ffmpeg_dir()
     if d:
         # The CLI honours these two explicitly; PATH covers anything it spawns by name.
