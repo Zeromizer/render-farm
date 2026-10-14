@@ -68,6 +68,7 @@ server.tool(
     variables: z.record(z.any()).optional().describe("HyperFrames: values for data-composition-variables, passed as --variables-file --strict-variables"),
     workers: z.number().int().min(1).max(24).optional().describe("HyperFrames: parallel Chrome instances (default auto)"),
     gpu: z.boolean().optional().describe("HyperFrames: NVENC encode (--gpu)"),
+    crf: z.number().int().min(0).max(51).optional().describe("HyperFrames: encoder CRF (mp4/webm). Unset, the worker uses the CLI default, and CRF 16 for mp4 at standard quality when the project pins hyperframes >= 0.8.155"),
     at: z.number().min(0).optional().describe("HyperFrames: seconds into the composition for output_kind=still (default 0)"),
     video_gen: z.object({
       prompt: z.string().optional().describe("Required for t2v/i2v/r2v. Describe the shot, motion and the sound you want (H3 generates synced audio)."),
@@ -150,7 +151,7 @@ server.tool(
         "props", "quality", "assets", "output_kind", "image_format", "frame",
         "blend_file", "frame_start", "frame_end", "single_frame", "output_format",
         "script", "args", "requirements", "output",
-        "format", "fps", "variables", "workers", "gpu", "at", "video_gen"]) {
+        "format", "fps", "variables", "workers", "gpu", "crf", "at", "video_gen"]) {
         if (args[k] !== undefined) params[k] = args[k];
       }
       // Camera-size stills blow the desktop's RAM in LoadImage; send copies no
