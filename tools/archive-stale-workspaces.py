@@ -6,8 +6,11 @@ write a label file and rename the dir to ARCHIVED_job-<jobId>. Matching stale or
 and manager-* dirs are deleted outright. Also sweeps %TEMP%\\hf-render-*, hyperframes-*
 and remotion-* dirs untouched for a day that no process holds open.
 
-Orphan dirs (job ids not in rp_jobs), order/manager dirs that map to no job and
-unrecognised names are reported, never deleted.
+Orphan dirs (job ids not in rp_jobs, i.e. jobs deleted on the site, which never
+removes the PC folder) and order/manager dirs that map to no job are deleted outright
+once untouched for ORPHAN_IDLE_HOURS and no live turn or farm job points at them.
+A sanity guard turns that off for the run if rp_jobs comes back empty or the orphans
+are an implausible share of the job dirs. Unrecognised names are reported, never deleted.
 
 Dry run by default (read-only). --execute deletes. Nightly (tools/archive-nightly.ps1):
 
@@ -35,6 +38,9 @@ SITE = "https://render-platform-sandy.vercel.app/jobs/"
 COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
 STALE_DAYS = 7
 TEMP_MIN_AGE_DAYS = 1
+ORPHAN_IDLE_HOURS = 1
+# More orphans than this share of all job-<id> dirs means the rp_jobs read is suspect.
+ORPHAN_MAX_SHARE = 0.5
 TEMP_PREFIXES = ("hf-render-", "hyperframes-", "remotion-")
 LABEL = "ARCHIVED - safe to delete.txt"
 LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "render-farm", "logs")
@@ -251,8 +257,23 @@ def build_plan(max_jobs):
         renders_by_job.setdefault(r["job_id"], []).append(r)
     objects = storage_index()
 
-    plan = {"archive": [], "deferred": [], "skip": [], "children": [], "mismatch": [], "temp": [], "unknown": []}
+    plan = {"archive": [], "deferred": [], "skip": [], "children": [], "mismatch": [], "temp": [], "unknown": [],
+            "orphans": []}
     by_job_children = {}
+    turn_jobs = set(turn_job.values())
+    orphan_cutoff = NOW - timedelta(hours=ORPHAN_IDLE_HOURS)
+    job_dirs = 0
+
+    def orphan(rec, newest, what):
+        """A dir whose job was deleted on the site: delete once idle, unless something live points at it."""
+        if rec["job_id"] and rec["job_id"] in turn_jobs:
+            plan["skip"].append({**rec, "reason": f"{what}, but a turn still names this job (report only)"})
+        elif os.path.normcase(os.path.normpath(rec["path"])) in active_repos:
+            plan["skip"].append({**rec, "reason": f"{what}, but an active farm job points here (report only)"})
+        elif newest is not None and newest > orphan_cutoff:
+            plan["skip"].append({**rec, "reason": f"{what}, touched in the last {ORPHAN_IDLE_HOURS} h"})
+        else:
+            plan["orphans"].append({**rec, "reason": what})
     for e in sorted(os.scandir(WORKSPACE), key=lambda e: e.name):
         if not e.is_dir(follow_symlinks=False):
             continue
@@ -272,14 +293,15 @@ def build_plan(max_jobs):
                "files": files, "newest": ts(newest), "file_stale": bool(newest is None or newest < CUTOFF)}
         if kind != "job":
             if not jid or jid not in jobs:
-                plan["skip"].append({**rec, "reason": "maps to no job (report only)"})
+                orphan(rec, newest, "maps to no job")
             else:
                 by_job_children.setdefault(jid, []).append(rec)
             continue
 
+        job_dirs += 1
         j = jobs.get(jid)
         if not j:
-            plan["skip"].append({**rec, "reason": "job id not in rp_jobs (orphan, report only)"})
+            orphan(rec, newest, "job id not in rp_jobs (deleted on the site)")
             continue
         rec["title"] = j["title"]
         reasons = list(db_reasons.get(jid, []))
@@ -308,6 +330,13 @@ def build_plan(max_jobs):
         rec["brand"] = brands.get(j["brand_id"]) or "-"
         rec["last_activity"] = max(x for x in [rec["newest"], ts(parse(j["updated_at"]))] if x != "-")
         plan["archive"].append(rec)
+
+    job_orphans = sum(1 for o in plan["orphans"] if o["kind"] == "job")
+    if not jobs or job_orphans > max(20, ORPHAN_MAX_SHARE * job_dirs):
+        why = (f"sanity guard: {len(jobs)} rp_jobs rows, {job_orphans} of {job_dirs} job dirs look deleted "
+               f"(report only this run)")
+        plan["skip"] += [{**o, "reason": why} for o in plan["orphans"]]
+        plan["orphans"] = []
 
     plan["archive"].sort(key=lambda a: a["last_activity"])  # oldest activity first
     plan["deferred"] = [{"dir": a["dir"], "title": a["title"], "last_activity": a["last_activity"], "gb": a["gb"]}
@@ -399,6 +428,15 @@ def execute(plan, idle_gate):
             fails = delete_tree(c["path"])
             (failed if fails else done).append({"dir": c["dir"], "kind": c["kind"], "failures": fails[:20]})
 
+    orphans_deleted = 0
+    if stopped is None:
+        for o in plan["orphans"]:
+            if not gate(o["dir"]):
+                break
+            fails = delete_tree(o["path"])
+            orphans_deleted += 0 if fails else 1
+            (failed if fails else done).append({"dir": o["dir"], "kind": "orphan", "failures": fails[:20]})
+
     temp_freed = 0
     if stopped is None:
         for t in plan["temp"]:
@@ -421,6 +459,7 @@ def execute(plan, idle_gate):
     return {"freed_gb": gb(free_after - free_before), "free_before_gb": gb(free_before),
             "free_after_gb": gb(free_after), "archived": len(archived_ids),
             "children_deleted": sum(1 for d in done if d["kind"] in ("order", "manager")),
+            "orphans_deleted": orphans_deleted,
             "temp_freed_gb": gb(temp_freed), "ok": len(done), "failed": failed,
             "stopped": stopped, "not_reached": not_reached}
 
@@ -458,26 +497,30 @@ def main():
     reclaim = sum(a["bytes"] - a["final_bytes"] for a in plan["archive"])
     children_b = sum(c["bytes"] for c in plan["children"])
     temp_b = sum(t["bytes"] for t in plan["temp"])
+    orphans_b = sum(o["bytes"] for o in plan["orphans"])
     counts = {"archive": len(plan["archive"]), "deferred": len(plan["deferred"]),
               "skipped": len(plan["skip"]) + len(plan["unknown"]), "children": len(plan["children"]),
-              "temp": len(plan["temp"])}
+              "temp": len(plan["temp"]), "orphans": len(plan["orphans"])}
 
     if args.execute:
         r = execute(plan, args.idle_gate)
         plan["receipt"] = r
         fails = len(r["failed"])
         summary = (f"archive {run}: archived {r['archived']} / deferred {counts['deferred'] + len(r['not_reached'])} / "
-                   f"skipped {counts['skipped']} / order+manager {r['children_deleted']} / temp {gb(temp_b)} GB planned, "
+                   f"skipped {counts['skipped']} / order+manager {r['children_deleted']} / "
+                   f"deleted-job dirs {r['orphans_deleted']} of {counts['orphans']} / temp {gb(temp_b)} GB planned, "
                    f"{r['temp_freed_gb']} GB freed / freed {r['freed_gb']} GB / C: free {r['free_before_gb']} -> "
                    f"{r['free_after_gb']} GB / failures {fails}" + (f" / STOPPED {r['stopped']}" if r["stopped"] else ""))
     else:
         free = gb(shutil.disk_usage("C:\\").free)
         summary = (f"archive {run}: would archive {counts['archive']} ({gb(reclaim)} GB) / deferred {counts['deferred']} / "
                    f"skipped {counts['skipped']} / order+manager {counts['children']} ({gb(children_b)} GB) / "
+                   f"deleted-job dirs {counts['orphans']} ({gb(orphans_b)} GB) / "
                    f"temp {counts['temp']} ({gb(temp_b)} GB) / C: free {free} GB")
     plan["summary"] = summary
 
-    slim = {k: v for k, v in plan.items() if k not in ("archive", "children", "temp")}
+    slim = {k: v for k, v in plan.items() if k not in ("archive", "children", "temp", "orphans")}
+    slim["orphans"] = [{k: o[k] for k in ("dir", "gb", "newest", "reason")} for o in plan["orphans"]]
     slim["archive"] = [{k: a[k] for k in ("dir", "title", "last_activity", "gb")} for a in plan["archive"]]
     slim["children"] = [c["dir"] for c in plan["children"]]
     slim["temp"] = plan["temp"]
