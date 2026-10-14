@@ -168,6 +168,11 @@ def start(process_job, restart_flag, log):
     return t
 
 
+def is_idle():
+    """True when no light job is running (always true with the lane off)."""
+    return _idle.is_set()
+
+
 def wait_for_light(log, max_wait_s=240):
     """Called by the render loop before a PAUSE_DURING job, after it set
     main_engine (so no new light job starts): let the running one finish.

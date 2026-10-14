@@ -277,8 +277,9 @@ def main():
             time.sleep(config.POLL_SECONDS)
             continue
         if not job:
-            # Between jobs only: the worker is serial, so nothing is mid-render.
-            if time.time() - last_sweep > config.CLEANUP_EVERY_SECONDS:
+            # Between jobs only, and with the light lane idle too, so nothing is
+            # mid-render (the fetch lane only writes new assets, never reads old ones).
+            if time.time() - last_sweep > config.CLEANUP_EVERY_SECONDS and light_lane.is_idle():
                 sweep_caches()
                 last_sweep = time.time()
             time.sleep(config.POLL_SECONDS)
