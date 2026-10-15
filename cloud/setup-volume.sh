@@ -17,22 +17,29 @@ mkdir -p $W/opt $W/venvs $W/cache $W/models $W/logs $W/.ssh
 
 echo "== ffmpeg (static, with NVENC)"
 if [ ! -x $W/opt/ffmpeg/bin/ffmpeg ]; then
-  curl -fsSL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
-    | tar -xJ -C $W/opt
-  mv $W/opt/ffmpeg-master-latest-linux64-gpl $W/opt/ffmpeg
+  # A release branch, not master: master's NVENC wants driver 610+, RunPod had 595.
+  curl -fsSL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz \
+    | tar -xJ --no-same-owner -C $W/opt
+  mv $W/opt/ffmpeg-n8.1-latest-linux64-gpl-8.1 $W/opt/ffmpeg
 fi
 
 echo "== Blender $BLENDER_VER"
 if [ ! -x $W/opt/blender/blender ]; then
   curl -fsSL "https://download.blender.org/release/Blender${BLENDER_VER%.*}/blender-${BLENDER_VER}-linux-x64.tar.xz" \
-    | tar -xJ -C $W/opt
+    | tar -xJ --no-same-owner -C $W/opt
   mv "$W/opt/blender-${BLENDER_VER}-linux-x64" $W/opt/blender
 fi
 
 echo "== ComfyUI @ $COMFY_REF"
-[ -d $W/ComfyUI/.git ] || git clone -q https://github.com/comfyanonymous/ComfyUI $W/ComfyUI
+# init + fetch rather than clone: the PC's S3 upload may already have made
+# ComfyUI/models/..., and git clone refuses a non-empty directory.
+mkdir -p $W/ComfyUI
+if [ ! -d $W/ComfyUI/.git ]; then
+  git -C $W/ComfyUI init -q
+  git -C $W/ComfyUI remote add origin https://github.com/comfyanonymous/ComfyUI
+fi
 git -C $W/ComfyUI fetch -q --tags origin
-git -C $W/ComfyUI checkout -q "$COMFY_REF"
+git -C $W/ComfyUI checkout -q -f "$COMFY_REF"
 [ -x $W/ComfyUI/.venv/bin/python ] || python3 -m venv $W/ComfyUI/.venv
 CPY=$W/ComfyUI/.venv/bin/python
 $CPY -m pip install -q -U pip wheel
