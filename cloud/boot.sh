@@ -15,7 +15,9 @@ LOG=/workspace/logs/boot-$(date -u +%m%d-%H%M%S).log
     libnss3 libatk-bridge2.0-0 libgbm1 libasound2t64 xvfb >/dev/null || echo "apt failed (continuing)"
 
   # Deploy key on the volume: the repo is private.
-  export GIT_SSH_COMMAND="ssh -i /workspace/.ssh/render-farm-deploy -o StrictHostKeyChecking=accept-new"
+  # The volume makes every file 0666 and ssh refuses such a key: copy it out.
+  install -D -m 600 /workspace/.ssh/render-farm-deploy /root/.ssh/render-farm-deploy
+  export GIT_SSH_COMMAND="ssh -i /root/.ssh/render-farm-deploy -o StrictHostKeyChecking=accept-new"
   cd /workspace/render-farm
   git fetch -q origin && git checkout -q -f "origin/${RF_REF:-main}" && echo "render-farm $(git log --oneline -1)"
 

@@ -67,7 +67,9 @@ if [ ! -f $W/.ssh/render-farm-deploy ]; then
   echo "ADD THIS READ-ONLY DEPLOY KEY to github.com/Zeromizer/render-farm:"
   cat $W/.ssh/render-farm-deploy.pub
 fi
-export GIT_SSH_COMMAND="ssh -i $W/.ssh/render-farm-deploy -o StrictHostKeyChecking=accept-new"
+# The volume makes every file 0666 and ssh refuses such a key: use a local copy.
+install -D -m 600 $W/.ssh/render-farm-deploy /root/.ssh/render-farm-deploy
+export GIT_SSH_COMMAND="ssh -i /root/.ssh/render-farm-deploy -o StrictHostKeyChecking=accept-new"
 if [ ! -d $W/render-farm/.git ]; then
   git clone -q git@github.com:Zeromizer/render-farm.git $W/render-farm || echo "clone failed: add the deploy key, then re-run"
 fi
