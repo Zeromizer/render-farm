@@ -24,7 +24,7 @@ def _tool(name):
     if name not in _BIN:
         from runners.hyperframes import _ffmpeg_dir
         d = _ffmpeg_dir()
-        _BIN[name] = os.path.join(d, name + ".exe") if d else name
+        _BIN[name] = os.path.join(d, name + (".exe" if os.name == "nt" else "")) if d else name
     return _BIN[name]
 
 

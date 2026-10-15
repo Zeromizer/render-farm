@@ -48,6 +48,8 @@ import re
 import shutil
 import zipfile
 
+_EXE = ".exe" if os.name == "nt" else ""
+
 import proc
 from git_cache import rmtree_robust
 
@@ -107,7 +109,7 @@ def _ffmpeg_dir():
     """
     import glob
     env_dir = os.environ.get("FFMPEG_DIR")
-    if env_dir and os.path.exists(os.path.join(env_dir, "ffmpeg.exe")):
+    if env_dir and os.path.exists(os.path.join(env_dir, "ffmpeg" + _EXE)):
         return env_dir
     local = os.environ.get("LOCALAPPDATA", "")
     for hit in sorted(glob.glob(os.path.join(
@@ -142,8 +144,8 @@ def _env(tmp_dir=None):
     d = _ffmpeg_dir()
     if d:
         # The CLI honours these two explicitly; PATH covers anything it spawns by name.
-        env["HYPERFRAMES_FFMPEG_PATH"] = os.path.join(d, "ffmpeg.exe")
-        env["HYPERFRAMES_FFPROBE_PATH"] = os.path.join(d, "ffprobe.exe")
+        env["HYPERFRAMES_FFMPEG_PATH"] = os.path.join(d, "ffmpeg" + _EXE)
+        env["HYPERFRAMES_FFPROBE_PATH"] = os.path.join(d, "ffprobe" + _EXE)
         env["PATH"] = d + os.pathsep + env.get("PATH", "")
     return env
 

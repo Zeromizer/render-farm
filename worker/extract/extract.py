@@ -42,7 +42,7 @@ def _find_ffmpeg_tool(name):
     """
     env_dir = os.environ.get("FFMPEG_DIR")
     if env_dir:
-        exe = os.path.join(env_dir, f"{name}.exe")
+        exe = os.path.join(env_dir, name + (".exe" if os.name == "nt" else ""))
         if os.path.exists(exe):
             return exe
     found = shutil.which(name)
