@@ -48,7 +48,7 @@ fi
 if [ -n "${EXTRA:-}" ]; then  # the restoration (SeedVR2) and int8_convrot (LTX plate) models
   run seedvr2_x2 video_gen "{\"mode\": \"upscale\", \"source\": {\"local\": \"$OUT/$CASE-h3_480.mp4\"}, \"upscale\": {\"method\": \"seedvr2\", \"factor\": 2.0}}"
   cp /root/rf-cache/work/smoke-video_gen/video_gen-upscaled.mp4 $OUT/$CASE-seedvr2.mp4 2>/dev/null
-  ffmpeg -loglevel error -y -i $OUT/$CASE-h3_768.mp4 -vf scale=1024:576 -frames:v 97 -an /root/ltx-src.mp4
+  ffmpeg -loglevel error -y -i $OUT/$CASE-h3_768.mp4 -vf scale=1024:576 -frames:v 97 -c:a aac /root/ltx-src.mp4
   run ltx_plate ltx_plate '{"source": "/root/ltx-src.mp4", "width": 1024, "height": 576, "frames": 97}'
   cp /root/rf-cache/work/smoke-ltx_plate/plate.mp4 $OUT/$CASE-ltx_plate.mp4 2>/dev/null
 fi
