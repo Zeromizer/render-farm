@@ -315,14 +315,20 @@ def cloud_loop():
     """The RunPod pod's loop: only WORKER_ENGINES, one job at a time, and when
     nothing has come for IDLE_EXIT_MINUTES, terminate the pod and exit."""
     claimed_by = f"cloud:{os.environ.get('RUNPOD_POD_ID', 'local')}"
+    engines = set(config.WORKER_ENGINES)
     last_work = time.time()
     claim_err_logged = False
     polls = 0
     while True:
         polls += 1
-        if polls % config.RECLAIM_EVERY_POLLS == 0:
+        if polls % config.RECLAIM_EVERY_POLLS == 1:
             try:
                 db.reclaim_stale()
+                # An engine routed back to the PC (its gpu-cloud row deleted) leaves
+                # this pod's list within a minute, not when the pod ends.
+                gated = db.gated_engines(config.CLOUD_CAPABILITY)
+                if gated:
+                    engines = set(config.WORKER_ENGINES) & gated
             except Exception:
                 pass
         if os.path.exists(RESTART_FLAG):
@@ -330,7 +336,7 @@ def cloud_loop():
             log("restart requested: exiting between jobs")
             sys.exit(0)
         try:
-            job = db.claim_conditional(include=config.WORKER_ENGINES, claimed_by=claimed_by)
+            job = db.claim_conditional(include=engines, claimed_by=claimed_by) if engines else None
             claim_err_logged = False
         except Exception as e:
             if not claim_err_logged:
