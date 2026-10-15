@@ -10,9 +10,17 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 COMFY_REF=${COMFY_REF:-73c9bad4d21e7addbe1d13bc92eee0f1431b017d}  # v0.37.0, as on the PC
 BLENDER_VER=${BLENDER_VER:-4.5.9}
-TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}
-TORCH_VER=${TORCH_VER:-2.8.0}
-TORCHVISION_VER=${TORCHVISION_VER:-0.23.0}  # torch-family versions pinned as on the PC (unpinned torchaudio came up 2.11, ABI break)
+# torch 2.9.1 built for CUDA 13 + SageAttention 2.2 compiled for sm_120: the
+# fastest combination benchmarked on the PRO 6000 (2026-10-15, cloud/bench.sh):
+# H3 480p 3 s 16.9 -> 12.7 s, 768p 5 s 88 -> 60 s vs torch 2.8 cu128 + sage 1.0.6;
+# SeedVR2 and the LTX plate run on it. YuE2 does NOT (cuDNN "No valid engine"),
+# which is why audio_gen stays on the PC. Pin all three torch-family versions
+# (an unpinned torchaudio came up 2.11: ABI break).
+TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu130}
+TORCH_VER=${TORCH_VER:-2.9.1}
+TORCHVISION_VER=${TORCHVISION_VER:-0.24.1}
+SAGE_REF=${SAGE_REF:-v2.2.0}
+CUDA_TK=${CUDA_TK:-13-0}   # nvcc to build SageAttention against torch's CUDA; runtime needs no toolkit
 W=/workspace
 mkdir -p $W/opt $W/venvs $W/cache $W/models $W/logs $W/.ssh
 
@@ -48,7 +56,6 @@ $CPY -m pip install -q -U pip wheel
 # ComfyUI's requirements without letting them swap torch. No xformers.
 $CPY -m pip install -q "torch==$TORCH_VER" "torchvision==$TORCHVISION_VER" "torchaudio==$TORCH_VER" --index-url "$TORCH_INDEX"
 $CPY -m pip install -q -r $W/ComfyUI/requirements.txt
-$CPY -m pip install -q sageattention || echo "sageattention not installed (ComfyUI runs without it)"
 while read -r name url ref; do
   case "$name" in ''|'#'*) continue ;; esac
   d=$W/ComfyUI/custom_nodes/$name
@@ -61,6 +68,15 @@ done < "$HERE/custom-nodes.txt"
 # A node pack's requirements can swap torch for a CPU or older build: put it back.
 $CPY -m pip install -q "torch==$TORCH_VER" "torchvision==$TORCHVISION_VER" "torchaudio==$TORCH_VER" --index-url "$TORCH_INDEX"
 $CPY -c "import torch; print('torch', torch.__version__, torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0))"
+
+echo "== SageAttention $SAGE_REF for sm_120 (CUDA ${CUDA_TK/-/.} toolkit)"
+if ! $CPY -c "import importlib.metadata as m, sys; sys.exit(m.version('sageattention') != '${SAGE_REF#v}')" 2>/dev/null; then
+  apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "cuda-toolkit-$CUDA_TK" >/dev/null
+  rm -rf /root/SageAttention && git clone -q https://github.com/thu-ml/SageAttention /root/SageAttention
+  git -C /root/SageAttention checkout -q "$SAGE_REF"
+  ( cd /root/SageAttention && export CUDA_HOME=/usr/local/cuda-${CUDA_TK/-/.} PATH=/usr/local/cuda-${CUDA_TK/-/.}/bin:$PATH       TORCH_CUDA_ARCH_LIST="12.0" EXT_PARALLEL=4 NVCC_APPEND_FLAGS="--threads 8" MAX_JOBS=16     && $CPY -m pip install -q --no-build-isolation . )
+fi
+$CPY -c "import importlib.metadata as m; print('sageattention', m.version('sageattention'))"
 
 echo "== render-farm checkout + worker venv"
 if [ ! -f $W/.ssh/render-farm-deploy ]; then
