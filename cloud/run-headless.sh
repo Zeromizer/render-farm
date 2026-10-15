@@ -9,6 +9,10 @@
 # volume, and ComfyUI empties its temp directory at startup.
 cd "$(dirname "$0")"
 export HF_HOME=/workspace/cache/hf PYTHONUTF8=1 PYTHONIOENCODING=utf-8
+# Kernel/compile caches on the volume, so a new pod reuses the previous pods'
+# compiled kernels instead of compiling again before its first job.
+export TORCHINDUCTOR_CACHE_DIR=/workspace/cache/torchinductor TRITON_CACHE_DIR=/workspace/cache/triton
+export CUDA_CACHE_PATH=/workspace/cache/nv-compute
 POD=${RUNPOD_POD_ID:-local}
 LOCAL=/root/comfy
 mkdir -p $LOCAL/input $LOCAL/output $LOCAL/temp /workspace/logs

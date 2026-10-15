@@ -83,3 +83,6 @@ fi
 
 echo "== done. Next: fetch_models.py, then the PC's S3 upload of local-only files."
 du -sh $W/* 2>/dev/null | sort -h | tail
+
+# Code + venvs onto one tar for fast pod starts (boot.sh unpacks it locally).
+bash "$HERE/pack-local.sh"
