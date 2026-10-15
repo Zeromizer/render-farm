@@ -9,11 +9,6 @@ LOG=/workspace/logs/boot-$(date -u +%m%d-%H%M%S).log
 
 {
   echo "boot $(date -u) pod=${RUNPOD_POD_ID:-?} gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null)"
-  # Runtime libraries for Blender (EGL/GL) and headless Chrome; not kept on the volume.
-  apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    libegl1 libgl1 libglu1-mesa libxi6 libxkbcommon0 libxrender1 libsm6 libxxf86vm1 libxfixes3 \
-    libnss3 libatk-bridge2.0-0 libgbm1 libasound2t64 xvfb >/dev/null || echo "apt failed (continuing)"
-
   # Deploy key on the volume: the repo is private.
   # The volume makes every file 0666 and ssh refuses such a key: copy it out.
   install -D -m 600 /workspace/.ssh/render-farm-deploy /root/.ssh/render-farm-deploy
@@ -21,8 +16,17 @@ LOG=/workspace/logs/boot-$(date -u +%m%d-%H%M%S).log
   cd /workspace/render-farm
   git fetch -q origin && git checkout -q -f "origin/${RF_REF:-main}" && echo "render-farm $(git log --oneline -1)"
 
-  # The launcher follows the checked-out branch (the volume copy may be older).
+  # ComfyUI first: its start takes ~2.5 min (imports from the volume), so it runs
+  # beside the apt installs instead of in front of the first job. The launcher
+  # follows the checked-out branch (the volume copy may be older).
   cp /workspace/render-farm/cloud/run-headless.sh /workspace/ComfyUI/run-headless.sh
+  setsid bash /workspace/ComfyUI/run-headless.sh < /dev/null > /dev/null 2>&1 &
+
+  # Runtime libraries for Blender (EGL/GL) and headless Chrome; not kept on the volume.
+  apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    libegl1 libgl1 libglu1-mesa libxi6 libxkbcommon0 libxrender1 libsm6 libxxf86vm1 libxfixes3 \
+    libnss3 libatk-bridge2.0-0 libgbm1 libasound2t64 xvfb >/dev/null || echo "apt failed (continuing)"
+
   set -a; . /workspace/render-farm/cloud/pod.env; set +a
   export PATH=/workspace/opt/ffmpeg/bin:/workspace/opt/blender:$PATH
 
