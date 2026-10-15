@@ -1,0 +1,5 @@
+# ComfyUI custom node packs the farm graphs need, pinned to the PC's commits
+# (render-pc report 2026-10-15). name  git-url  commit
+ComfyUI-MiniMaxH3Mod https://github.com/Luisacaotica/ComfyUI-MiniMaxH3Mod 6131c1f
+ComfyUI-vlo https://github.com/PxTicks/ComfyUI-vlo 8a7092a
+# comfyui-obvpm-timeline: footage engine only, which stays on the PC.

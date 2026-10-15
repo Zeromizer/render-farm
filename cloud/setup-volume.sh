@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # One-time (and re-runnable) setup of the RunPod network volume, run over SSH on
 # a pod with the volume at /workspace:
-#   COMFY_REF=v0.37.0 VLO_REPO=<git url> VLO_REF=8a7092a bash setup-volume.sh
-# Installs under /workspace: opt/{blender,ffmpeg}, ComfyUI (+venv, ComfyUI-vlo,
-# run-headless.sh), venvs/worker, render-farm checkout. Models come separately:
-# fetch_models.py (public files) and the PC's S3 upload (local-only files).
+#   bash cloud/setup-volume.sh
+# Installs under /workspace: opt/{blender,ffmpeg}, ComfyUI (+venv, the node
+# packs in custom-nodes.txt, run-headless.sh), venvs/worker, render-farm
+# checkout. Versions match the PC (render-pc report 2026-10-15). Models come
+# separately: fetch_models.py (public files) and the PC's S3 upload (local-only).
 set -euo pipefail
-: "${COMFY_REF:?set COMFY_REF to the tag/commit the PC runs}"
+HERE=$(cd "$(dirname "$0")" && pwd)
+COMFY_REF=${COMFY_REF:-73c9bad4d21e7addbe1d13bc92eee0f1431b017d}  # v0.37.0, as on the PC
 BLENDER_VER=${BLENDER_VER:-4.5.9}
 TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}
 TORCH_VER=${TORCH_VER:-2.8.0}
@@ -39,13 +41,17 @@ $CPY -m pip install -q -U pip wheel
 $CPY -m pip install -q "torch==$TORCH_VER" torchvision torchaudio --index-url "$TORCH_INDEX"
 $CPY -m pip install -q -r $W/ComfyUI/requirements.txt
 $CPY -m pip install -q sageattention || echo "sageattention not installed (ComfyUI runs without it)"
-if [ -n "${VLO_REPO:-}" ]; then
-  [ -d $W/ComfyUI/custom_nodes/ComfyUI-vlo/.git ] || git clone -q "$VLO_REPO" $W/ComfyUI/custom_nodes/ComfyUI-vlo
-  git -C $W/ComfyUI/custom_nodes/ComfyUI-vlo checkout -q "${VLO_REF:-HEAD}"
-  if [ -f $W/ComfyUI/custom_nodes/ComfyUI-vlo/requirements.txt ]; then
-    $CPY -m pip install -q -r $W/ComfyUI/custom_nodes/ComfyUI-vlo/requirements.txt
-  fi
-fi
+while read -r name url ref; do
+  case "$name" in ''|'#'*) continue ;; esac
+  d=$W/ComfyUI/custom_nodes/$name
+  [ -d "$d/.git" ] || git clone -q "$url" "$d"
+  git -C "$d" fetch -q origin
+  git -C "$d" checkout -q "$ref"
+  if [ -f "$d/requirements.txt" ]; then $CPY -m pip install -q -r "$d/requirements.txt"; fi
+  echo "node $name @ $(git -C "$d" rev-parse --short HEAD)"
+done < "$HERE/custom-nodes.txt"
+# A node pack's requirements can swap torch for a CPU or older build: put it back.
+$CPY -m pip install -q "torch==$TORCH_VER" torchvision torchaudio --index-url "$TORCH_INDEX"
 $CPY -c "import torch; print('torch', torch.__version__, torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0))"
 
 echo "== render-farm checkout + worker venv"
