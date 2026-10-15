@@ -20,7 +20,7 @@ lane. The PC keeps working exactly as today; nothing on the PC is switched off.
   - **Routing:** the existing `farm_engine_capabilities` gating, with a new capability `gpu-cloud`.
   - **Starting a pod:** a small controller thread in *this* worker creates a RunPod pod when
     cloud jobs are queued.
-  - **Stopping a pod:** the pod terminates itself after 15 idle minutes.
+  - **Stopping a pod:** the pod terminates itself after 2 idle minutes (`IDLE_EXIT_MINUTES`).
   - **Fallback:** if no pod comes up, the controller un-gates and the PC takes the jobs as today.
 - **RunPod side (already created):**
   - Network volume `render-farm`, id `dk8mrhu2wh`, 300 GB, data centre **EU-RO-1**. It is
