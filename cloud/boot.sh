@@ -5,6 +5,17 @@
 # setup-volume.sh puts it there once. Per boot: unpack the code+venv bundle to
 # local disk, start ComfyUI, install the apt libraries, run the worker.
 set -u
+# The pod starts whatever boot.sh the LAST pod left on the volume. Update the
+# checkout first and re-run the new script, or a change here takes effect one
+# boot late (2026-10-15: a cold test ran the previous version).
+if [ -z "${RF_BOOT_UPDATED:-}" ]; then
+  install -D -m 600 /workspace/.ssh/render-farm-deploy /root/.ssh/render-farm-deploy
+  GIT_SSH_COMMAND="ssh -i /root/.ssh/render-farm-deploy -o StrictHostKeyChecking=accept-new" \
+    git -C /workspace/render-farm fetch -q origin \
+    && git -C /workspace/render-farm checkout -q -f "origin/${RF_REF:-main}"
+  export RF_BOOT_UPDATED=1
+  exec bash /workspace/render-farm/cloud/boot.sh
+fi
 mkdir -p /workspace/logs
 LOG=/workspace/logs/boot-$(date -u +%m%d-%H%M%S)-${RUNPOD_POD_ID:-local}.log
 T0=$(date +%s)
