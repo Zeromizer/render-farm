@@ -9,7 +9,7 @@ Shawn is adding a rented **RTX PRO 6000 Blackwell (96 GB)** on RunPod as a secon
 lane. The PC keeps working exactly as today; nothing on the PC is switched off.
 
 - **Moves to the cloud (later, once proven):** the heavy ComfyUI engines `video_gen`,
-  `lettering_fix`, `clip_edit`, `audio_gen`, plus `matte` and Blender.
+  `lettering_fix`, `clip_edit`, plus `matte` and Blender. (`audio_gen`/YuE2 stays on the PC: barely faster in the cloud.)
 - **Stays on the PC for good:**
   - the relay and `rp-agent-shawn` (the Claude/Codex logins stay home)
   - the Krea fallback ComfyUI at 127.0.0.1:8188
