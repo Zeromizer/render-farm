@@ -64,10 +64,8 @@ export GIT_SSH_COMMAND="ssh -i $W/.ssh/render-farm-deploy -o StrictHostKeyChecki
 if [ ! -d $W/render-farm/.git ]; then
   git clone -q git@github.com:Zeromizer/render-farm.git $W/render-farm || echo "clone failed: add the deploy key, then re-run"
 fi
-if [ -f $W/render-farm/cloud/run-headless.sh ]; then
-  cp $W/render-farm/cloud/run-headless.sh $W/ComfyUI/run-headless.sh
-  chmod +x $W/ComfyUI/run-headless.sh
-fi
+cp "$HERE/run-headless.sh" $W/ComfyUI/run-headless.sh
+chmod +x $W/ComfyUI/run-headless.sh
 [ -x $W/venvs/worker/bin/python ] || python3 -m venv $W/venvs/worker
 if [ -f $W/render-farm/worker/requirements.txt ]; then
   $W/venvs/worker/bin/python -m pip install -q -r $W/render-farm/worker/requirements.txt httpx
