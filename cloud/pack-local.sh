@@ -13,7 +13,7 @@ mkdir -p $W/cache
 t=$(date +%s)
 tar -cf "$OUT.tmp" -C $W \
   --exclude=ComfyUI/models --exclude=ComfyUI/input --exclude=ComfyUI/output \
-  --exclude=ComfyUI/temp --exclude=ComfyUI/user --exclude='*.log' --exclude='__pycache__' \
+  --exclude=ComfyUI/temp --exclude=ComfyUI/user --exclude='ComfyUI/.venv-*' --exclude='*.log' --exclude='__pycache__' \
   ComfyUI venvs/worker
 mv "$OUT.tmp" "$OUT"
 echo "packed $(du -h "$OUT" | cut -f1) in $(( $(date +%s) - t )) s -> $OUT"
