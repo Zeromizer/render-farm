@@ -21,6 +21,8 @@ LOG=/workspace/logs/boot-$(date -u +%m%d-%H%M%S).log
   cd /workspace/render-farm
   git fetch -q origin && git checkout -q -f "origin/${RF_REF:-main}" && echo "render-farm $(git log --oneline -1)"
 
+  # The launcher follows the checked-out branch (the volume copy may be older).
+  cp /workspace/render-farm/cloud/run-headless.sh /workspace/ComfyUI/run-headless.sh
   set -a; . /workspace/render-farm/cloud/pod.env; set +a
   export PATH=/workspace/opt/ffmpeg/bin:/workspace/opt/blender:$PATH
 

@@ -27,6 +27,9 @@ CACHE_DIR = os.environ.get("RENDER_CACHE_DIR") or os.path.join(
     os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "render-farm"
 )
 REPOS_DIR = os.path.join(CACHE_DIR, "repos")
+# Built venvs (venvs.py). Separate so the cloud pods can share them on the
+# network volume while each keeps its job files on its own fast local disk.
+VENVS_DIR = os.environ.get("VENVS_DIR") or os.path.join(CACHE_DIR, "venvs")
 WORK_DIR = os.path.join(CACHE_DIR, "work")   # per-job temp render output dirs
 ASSETS_DIR = os.path.join(CACHE_DIR, "assets")  # content-addressed asset cache (files named by sha256)
 
@@ -99,6 +102,9 @@ RUNPOD_GPU_TYPES = [g.strip() for g in os.environ.get(
 RUNPOD_IMAGE = os.environ.get("RUNPOD_IMAGE", "runpod/pytorch:1.4.0-cu1281-torch280-ubuntu2404")
 # Branch the pod checks out at boot (cloud/boot.sh).
 CLOUD_GIT_REF = os.environ.get("CLOUD_GIT_REF", "main")
+# Pods at once: each is one GPU running one ComfyUI job at a time; more pods =
+# more jobs in parallel (all share the network volume). The budget counts pod-hours.
+CLOUD_MAX_PODS = int(os.environ.get("CLOUD_MAX_PODS", "2"))
 CLOUD_MAX_HOURS_PER_DAY = float(os.environ.get("CLOUD_MAX_HOURS_PER_DAY", "8"))
 
 for _d in (REPOS_DIR, WORK_DIR, ASSETS_DIR):

@@ -56,7 +56,7 @@ def delete_pod(pod_id, key=None):
 
 def create_pod(engines):
     body = {
-        "name": f"{POD_PREFIX}-{datetime.now(timezone.utc):%m%d-%H%M}",
+        "name": f"{POD_PREFIX}-{datetime.now(timezone.utc):%m%d-%H%M%S}",
         "imageName": config.RUNPOD_IMAGE,
         "cloudType": "SECURE",
         "gpuTypeIds": config.RUNPOD_GPU_TYPES,
@@ -103,15 +103,16 @@ def _pending(engines):
                .execute().data or [])
 
 
-def _last_work(pod_id):
-    """Epoch seconds of the latest heartbeat/finish of a job this pod claimed, or None."""
+def _pod_work(pod_id):
+    """(busy, last): whether this pod is running a job now, and the epoch
+    seconds of the latest heartbeat/finish of a job it claimed (None: never)."""
     rows = (db.sb.table("farm_render_jobs").select("heartbeat_at,completed_at,status")
             .eq("claimed_by", f"cloud:{pod_id}").order("claimed_at", desc=True).limit(5)
             .execute().data or [])
     if any(r["status"] == "processing" for r in rows):
-        return time.time()
+        return True, time.time()
     stamps = [r.get(k) for r in rows for k in ("completed_at", "heartbeat_at") if r.get(k)]
-    return max(datetime.fromisoformat(t).timestamp() for t in stamps) if stamps else None
+    return False, (max(datetime.fromisoformat(t).timestamp() for t in stamps) if stamps else None)
 
 
 def _tick(state, log):
@@ -128,9 +129,11 @@ def _tick(state, log):
     over_budget = state["seconds"] >= config.CLOUD_MAX_HOURS_PER_DAY * 3600
     started = state.setdefault("started", {})
 
+    spare = 0  # pods that will take a waiting job soon: booting, or up and idle
+    alive = 0
     for p in pods:
         born = started.setdefault(p["id"], now)
-        worked = _last_work(p["id"])
+        busy, worked = _pod_work(p["id"])
         why = None
         if over_budget:
             why = "daily budget used"
@@ -139,19 +142,27 @@ def _tick(state, log):
             # it or re-create it every few minutes; the PC fallback takes the jobs.
             why = f"claimed nothing in {BOOT_GRACE_MINUTES} min"
             state["retry_at"] = now + BROKEN_BACKOFF_SECONDS
-        elif worked is not None and now - worked > (config.IDLE_EXIT_MINUTES + 10) * 60:
+        elif worked is not None and not busy and now - worked > (config.IDLE_EXIT_MINUTES + 10) * 60:
             why = f"idle {(now - worked) / 60:.0f} min and did not end itself"
         if why:
             log(f"terminating pod {p['id']} ({why})")
             delete_pod(p["id"])
             started.pop(p["id"], None)
+            continue
+        alive += 1
+        if not busy:
+            spare += 1
 
-    if pending and not pods and not over_budget and now >= state.get("retry_at", 0):
+    # Parallel lane: one more pod whenever more jobs wait than pods can take
+    # them, up to CLOUD_MAX_PODS. One create per tick, so a burst of jobs does
+    # not order a fleet before the first pod has even booted.
+    if (pending > spare and alive < config.CLOUD_MAX_PODS and not over_budget
+            and now >= state.get("retry_at", 0)):
         try:
             pod = create_pod(engines)
             started[pod["id"]] = now
-            log(f"{pending} cloud job(s) waiting: created pod {pod['id']} "
-                f"(${pod.get('costPerHr', '?')}/h)")
+            log(f"{pending} cloud job(s) waiting, {alive} pod(s) up ({spare} free): "
+                f"created pod {pod['id']} (${pod.get('costPerHr', '?')}/h)")
         except Exception as e:  # noqa: BLE001 - out of stock etc.; the PC fallback covers it
             state["retry_at"] = now + CREATE_BACKOFF_SECONDS
             log(f"pod create failed, retrying in {CREATE_BACKOFF_SECONDS // 60} min: {str(e)[:200]}")

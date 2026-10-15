@@ -9,6 +9,7 @@ import hashlib
 import os
 import subprocess
 import sys
+import time
 
 import config
 import locks
@@ -22,13 +23,48 @@ def venv_python(requirements_path, log, run_kw):
     with open(requirements_path, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()[:12]
     # Both job lanes may want the same venv at once; one builds, the other waits.
-    with locks.named(f"venv:{digest}"):
+    # Cloud pods share VENVS_DIR on the network volume, so across pods too.
+    with locks.named(f"venv:{digest}"), _dir_lock(os.path.join(config.VENVS_DIR, f"{digest}.lock"), log):
         return _venv_python(digest, requirements_path, log, run_kw)
 
 
+class _dir_lock:
+    """Cross-process lock: mkdir is atomic on every filesystem, the network
+    volume included. A lock older than an hour is a dead builder's; take it."""
+
+    def __init__(self, path, log, stale_s=3600):
+        self.path, self.log, self.stale_s = path, log, stale_s
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        waited = False
+        while True:
+            try:
+                os.mkdir(self.path)
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - os.path.getmtime(self.path) > self.stale_s:
+                        os.rmdir(self.path)
+                        continue
+                except OSError:
+                    continue
+                if not waited:
+                    self.log(f"waiting for another worker to finish building {os.path.basename(self.path)[:-5]}")
+                    waited = True
+                time.sleep(5)
+
+    def __exit__(self, *exc):
+        try:
+            os.rmdir(self.path)
+        except OSError:
+            pass
+
+
 def _venv_python(digest, requirements_path, log, run_kw):
-    venv_dir = os.path.join(config.CACHE_DIR, "venvs", digest)
-    py = os.path.join(venv_dir, "Scripts", "python.exe")
+    venv_dir = os.path.join(config.VENVS_DIR, digest)
+    py = (os.path.join(venv_dir, "Scripts", "python.exe") if os.name == "nt"
+          else os.path.join(venv_dir, "bin", "python"))
     marker = os.path.join(venv_dir, ".ready")
     if os.path.exists(py) and os.path.exists(marker):
         log(f"venv cache hit: {digest}")
@@ -75,7 +111,7 @@ def cleanup_old(log):
     from then on. Being wrong here costs a multi-GB rebuild in front of a
     waiting job, which is worth one deferred sweep to avoid.
     """
-    root = os.path.join(config.CACHE_DIR, "venvs")
+    root = config.VENVS_DIR
     if not os.path.isdir(root):
         return
     max_age = float(os.environ.get("VENV_MAX_AGE_DAYS", "30")) * 86400
@@ -88,7 +124,7 @@ def cleanup_old(log):
 
     for name in os.listdir(root):
         venv_dir = os.path.join(root, name)
-        if not os.path.isdir(venv_dir):
+        if not os.path.isdir(venv_dir) or name.endswith(".lock"):
             continue
         marker = os.path.join(venv_dir, ".ready")
         ref = marker if os.path.exists(marker) else venv_dir

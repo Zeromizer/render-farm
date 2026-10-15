@@ -144,7 +144,7 @@ def ensure_server(log, wait_seconds=240):
             return
         time.sleep(2)
     raise ComfyError(f"ComfyUI did not answer on {config.COMFYUI_URL} within {wait_seconds}s "
-                     f"(see {os.path.join(config.COMFYUI_DIR, 'comfyui-headless.log')})")
+                     f"(see its log: comfyui-headless.log in COMFYUI_DIR, /workspace/logs/comfyui-<pod>.log on a cloud pod)")
 
 
 def _launch_bat(log):
