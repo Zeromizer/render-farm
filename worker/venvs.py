@@ -42,7 +42,7 @@ def _venv_python(digest, requirements_path, log, run_kw):
     log(f"creating venv {digest} (first run for these requirements)")
     os.makedirs(os.path.dirname(venv_dir), exist_ok=True)
     subprocess.run([sys.executable, "-m", "venv", venv_dir], check=True,
-                   capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                   capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     proc.run_streaming(
         [py, "-m", "pip", "install", "--no-input", "-r", requirements_path],
         cwd=venv_dir, **run_kw,

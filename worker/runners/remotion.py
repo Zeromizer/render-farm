@@ -39,6 +39,7 @@ import os
 import re
 import shutil
 
+import config
 import proc
 
 CODEC_EXT = {"h264": "mp4", "h265": "mp4", "vp8": "webm", "vp9": "webm",
@@ -82,7 +83,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         content_type = STILL_FORMATS[ext]
         out_local = os.path.join(work_dir, f"out.{ext}")
         cmd = [npx, "remotion", "still", composition, out_local,
-               "--gl=angle", f"--image-format={ext}"]
+               f"--gl={config.REMOTION_GL}", f"--image-format={ext}"]
         # --frame is singular and zero-based; --frames (plural) is a render-only
         # flag and errors out here.
         frame = params.get("frame")
@@ -98,7 +99,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         content_type = VIDEO_CONTENT_TYPE.get(ext, "application/octet-stream")
         out_local = os.path.join(work_dir, f"out.{ext}")
         cmd = [npx, "remotion", "render", composition, out_local,
-               "--gl=angle", f"--codec={codec}"]
+               f"--gl={config.REMOTION_GL}", f"--codec={codec}"]
         if params.get("frame_range"):
             cmd.append(f"--frames={params['frame_range']}")
         if quality == "draft":

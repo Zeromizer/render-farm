@@ -13,10 +13,15 @@ SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 BUCKET = "renders"
 ASSETS_BUCKET = "assets"
 
+WINDOWS = os.name == "nt"
+
 BLENDER_EXE = os.environ.get(
     "BLENDER_EXE",
-    r"C:\Users\shawn_fku5qux\AppData\Local\Programs\Blender\blender-4.5.9-windows-x64\blender.exe",
+    r"C:\Users\shawn_fku5qux\AppData\Local\Programs\Blender\blender-4.5.9-windows-x64\blender.exe"
+    if WINDOWS else "blender",
 )
+# Remotion's OpenGL backend: ANGLE over Direct3D on the PC; on Linux, ANGLE over EGL.
+REMOTION_GL = os.environ.get("REMOTION_GL", "angle" if WINDOWS else "angle-egl")
 
 CACHE_DIR = os.environ.get("RENDER_CACHE_DIR") or os.path.join(
     os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "render-farm"
@@ -40,7 +45,7 @@ CLEANUP_EVERY_SECONDS = int(os.environ.get("CLEANUP_EVERY_SECONDS", str(6 * 3600
 SIGNED_URL_SECONDS = 7 * 24 * 3600
 
 # --- video_gen (MiniMax H3 via headless ComfyUI) ---
-COMFYUI_DIR = os.environ.get("COMFYUI_DIR", r"C:\ComfyUI")
+COMFYUI_DIR = os.environ.get("COMFYUI_DIR", r"C:\ComfyUI" if WINDOWS else "/workspace/ComfyUI")
 COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
 # Pause the OmniVoice/Chatterbox TTS workers (6-8 GB VRAM) for the duration
 # of a video job; "0" to leave them alone.
@@ -64,6 +69,30 @@ LIGHT_LANE = os.environ.get("LIGHT_LANE", "0") in ("1", "true", "yes")
 LIGHT_LANE_MIN_AVAIL_RAM_GB = float(os.environ.get("LIGHT_LANE_MIN_AVAIL_RAM_GB", "16"))
 LIGHT_LANE_MIN_COMMIT_GB = float(os.environ.get("LIGHT_LANE_MIN_COMMIT_GB", "8"))
 LIGHT_LANE_MIN_FREE_VRAM_MIB = int(os.environ.get("LIGHT_LANE_MIN_FREE_VRAM_MIB", "2048"))
+
+# --- cloud GPU lane (RunPod; docs/cloud-gpu-brief.md) ---
+# On the cloud pod: the engines this worker claims (comma list). Set = cloud mode:
+# claim only these, no fetch lane, no patch library, exit (and terminate the pod)
+# after IDLE_EXIT_MINUTES with nothing to do.
+WORKER_ENGINES = {e.strip() for e in os.environ.get("WORKER_ENGINES", "").split(",") if e.strip()}
+IDLE_EXIT_MINUTES = float(os.environ.get("IDLE_EXIT_MINUTES", "15"))
+# On the PC: start a pod when engines gated to the cloud have jobs waiting (worker/cloud_lane.py).
+CLOUD_LANE = os.environ.get("CLOUD_LANE", "0") in ("1", "true", "yes")
+CLOUD_CAPABILITY = "gpu-cloud"
+# On the PC: take a cloud-gated job anyway once it has waited this long (no pod
+# came up, RunPod out of stock). "0" = never.
+CLOUD_FALLBACK_MINUTES = float(os.environ.get("CLOUD_FALLBACK_MINUTES", "15"))
+RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
+RUNPOD_VOLUME_ID = os.environ.get("RUNPOD_VOLUME_ID", "")
+RUNPOD_DATACENTER = os.environ.get("RUNPOD_DATACENTER", "")
+RUNPOD_GPU_TYPES = [g.strip() for g in os.environ.get(
+    "RUNPOD_GPU_TYPES",
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition,NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+).split(",") if g.strip()]
+RUNPOD_IMAGE = os.environ.get("RUNPOD_IMAGE", "runpod/pytorch:1.4.0-cu1281-torch280-ubuntu2404")
+# Branch the pod checks out at boot (cloud/boot.sh).
+CLOUD_GIT_REF = os.environ.get("CLOUD_GIT_REF", "main")
+CLOUD_MAX_HOURS_PER_DAY = float(os.environ.get("CLOUD_MAX_HOURS_PER_DAY", "8"))
 
 for _d in (REPOS_DIR, WORK_DIR, ASSETS_DIR):
     os.makedirs(_d, exist_ok=True)

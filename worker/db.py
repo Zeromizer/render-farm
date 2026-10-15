@@ -17,32 +17,43 @@ def claim_job():
     return rows[0] if rows else None
 
 
-def claim_conditional(include=None, exclude=()):
+def claim_conditional(include=None, exclude=(), created_before=None, claimed_by=None):
     """Claim the next pending job (priority, then age) whose engine is in include
     / not in exclude, as claim_farm_job() would set it. A conditional update,
     atomic per row: used when the light lane splits engines between two claimers
-    (worker/light_lane.py), since the RPC cannot filter by engine."""
+    (worker/light_lane.py), since the RPC cannot filter by engine, and by the
+    cloud pod, which claims only its own engines. created_before (ISO time):
+    only jobs queued before it (the PC's fallback for cloud-gated jobs).
+    claimed_by: stamped on the row ("cloud:<pod id>"), so the PC's cloud lane
+    can tell a pod that works from one that never claims."""
     q = (sb.table("farm_render_jobs").select("id,attempts")
          .eq("status", "pending").eq("cancel_requested", False))
     if include:
         q = q.in_("engine", sorted(include))
     if exclude:
         q = q.not_.in_("engine", sorted(exclude))
+    if created_before:
+        q = q.lt("created_at", created_before)
     for r in q.order("priority").order("created_at").limit(5).execute().data or []:
         won = (sb.table("farm_render_jobs")
                .update({"status": "processing", "claimed_at": now_iso(), "heartbeat_at": now_iso(),
                         "attempts": (r.get("attempts") or 0) + 1, "progress": 0,
-                        "phase": "cloning", "error": None})
+                        "phase": "cloning", "error": None,
+                        **({"claimed_by": claimed_by} if claimed_by else {})})
                .eq("id", r["id"]).eq("status", "pending").execute().data)
         if won:
             return won[0]
     return None
 
 
-def gated_engines():
+def gated_engines(capability=None):
     """Engines claim_farm_job() only gives to a worker with a capability
-    (farm_engine_capabilities); the render loop advertises none."""
-    rows = sb.table("farm_engine_capabilities").select("engine").execute().data or []
+    (farm_engine_capabilities); the render loop advertises none. With
+    capability: only the engines gated behind that one."""
+    q = sb.table("farm_engine_capabilities").select("engine")
+    if capability:
+        q = q.eq("capability", capability)
+    rows = q.execute().data or []
     return {r["engine"] for r in rows}
 
 

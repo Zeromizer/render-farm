@@ -78,7 +78,7 @@ def _free_vram_mib():
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits", "-i", "0"],
             capture_output=True, text=True, timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW).stdout.strip()
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
         return int(out)
     except Exception:  # noqa: BLE001 - no reading: don't block on it
         return None

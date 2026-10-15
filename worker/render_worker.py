@@ -48,6 +48,7 @@ sys.stderr = _Tee(sys.__stderr__, _logf)
 import time
 
 import assets
+import cloud_lane
 import config
 import db
 from still import make_still
@@ -206,7 +207,9 @@ def sweep_caches():
 def main():
     from singleton import ensure_single_instance
     ensure_single_instance("worker")
-    log(f"render worker starting (cache={config.CACHE_DIR})")
+    cloud = bool(config.WORKER_ENGINES)  # this is the RunPod pod (cloud_lane.py)
+    log(f"render worker starting (cache={config.CACHE_DIR}"
+        + (f", cloud pod for {','.join(sorted(config.WORKER_ENGINES))})" if cloud else ")"))
     sweep_caches()
     last_sweep = time.time()
     try:
@@ -221,6 +224,8 @@ def main():
             log(f"reclaimed {n} stale job(s)")
     except Exception as e:
         log(f"reclaim error (continuing): {str(e)[:160]}")
+    if cloud:
+        return cloud_loop()
     try:
         # Provider downloads (Seedance clips from a Beijing CDN the platform's
         # servers cannot reach) run beside this loop, never queued behind it.
@@ -232,6 +237,12 @@ def main():
         planar_patch.publish_library_index(log)
     except Exception as e:
         log(f"patch library index not published (continuing): {str(e)[:160]}")
+    if config.CLOUD_LANE:
+        try:
+            cloud_lane.start(log)
+        except Exception as e:  # noqa: BLE001 - without it the PC fallback still runs the jobs
+            log(f"cloud lane not started (continuing): {str(e)[:160]}")
+    cloud_gated = set()
 
     light = None
     heavy_exclude = set()
@@ -248,9 +259,13 @@ def main():
     polls = 0
     while True:
         polls += 1
-        if polls % config.RECLAIM_EVERY_POLLS == 0:
+        if polls % config.RECLAIM_EVERY_POLLS == 1:
             try:
                 db.reclaim_stale()
+                # Gating changes at runtime (an engine moved to the cloud or back).
+                cloud_gated = db.gated_engines(config.CLOUD_CAPABILITY)
+                if light is not None:
+                    heavy_exclude = light_lane.LIGHT_ENGINES | db.gated_engines()
             except Exception:
                 pass
         if polls % 10 == 1:
@@ -269,6 +284,12 @@ def main():
             # With the light lane on, this loop leaves its engines to it; the RPC
             # cannot filter by engine, so it claims with a conditional update.
             job = db.claim_conditional(exclude=heavy_exclude) if light is not None else db.claim_job()
+            if not job and cloud_gated and config.CLOUD_FALLBACK_MINUTES > 0:
+                # No pod took it in time (out of stock, budget used, broken boot).
+                job = db.claim_conditional(include=cloud_gated, created_before=cloud_lane.fallback_cutoff())
+                if job:
+                    log(f"cloud fallback: {job['engine']} job waited over "
+                        f"{config.CLOUD_FALLBACK_MINUTES:g} min; running it here")
             claim_err_logged = False
         except Exception as e:
             if not claim_err_logged:
@@ -285,6 +306,43 @@ def main():
             time.sleep(config.POLL_SECONDS)
             continue
         process_job(job, log)
+
+
+def cloud_loop():
+    """The RunPod pod's loop: only WORKER_ENGINES, one job at a time, and when
+    nothing has come for IDLE_EXIT_MINUTES, terminate the pod and exit."""
+    claimed_by = f"cloud:{os.environ.get('RUNPOD_POD_ID', 'local')}"
+    last_work = time.time()
+    claim_err_logged = False
+    polls = 0
+    while True:
+        polls += 1
+        if polls % config.RECLAIM_EVERY_POLLS == 0:
+            try:
+                db.reclaim_stale()
+            except Exception:
+                pass
+        if os.path.exists(RESTART_FLAG):
+            os.remove(RESTART_FLAG)
+            log("restart requested: exiting between jobs")
+            sys.exit(0)
+        try:
+            job = db.claim_conditional(include=config.WORKER_ENGINES, claimed_by=claimed_by)
+            claim_err_logged = False
+        except Exception as e:
+            if not claim_err_logged:
+                log(f"claim error (retrying quietly): {str(e)[:160]}")
+                claim_err_logged = True
+            time.sleep(config.POLL_SECONDS)
+            continue
+        if job:
+            process_job(job, log)
+            last_work = time.time()
+            continue
+        if time.time() - last_work > config.IDLE_EXIT_MINUTES * 60:
+            cloud_lane.terminate_self(log)
+            sys.exit(0)
+        time.sleep(config.POLL_SECONDS)
 
 
 def process_job(job, log):

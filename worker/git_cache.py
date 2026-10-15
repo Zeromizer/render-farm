@@ -19,7 +19,7 @@ def _run_git(args, cwd=None):
         text=True,
         encoding="utf-8",
         errors="replace",
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if res.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {res.stderr.strip()[:800]}")

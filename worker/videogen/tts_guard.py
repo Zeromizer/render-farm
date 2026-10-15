@@ -17,7 +17,7 @@ import subprocess
 import config
 
 _MARKS = ("supervisor.py", "tts_worker.py", "chatterbox_worker.py")
-_PS_FLAGS = subprocess.CREATE_NO_WINDOW
+_PS_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def _ps(script):
@@ -70,7 +70,7 @@ def resume(log):
         log(f"tts workers: cannot resume, missing {pyw} or {sup}")
         return
     subprocess.Popen([pyw, sup], cwd=config.TTS_STUDIO_DIR,
-                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+                     creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
                      | getattr(subprocess, "DETACHED_PROCESS", 0))
     log("tts workers: supervisor relaunched")
 

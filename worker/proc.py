@@ -1,10 +1,15 @@
 """Streamed subprocess runner with cancellation and timeout.
 
-Kills the whole process tree via taskkill /T /F so node/ffmpeg/chromium
-children spawned by npx or blender die with the parent.
+Kills the whole process tree (taskkill /T /F on Windows, the process group
+on Linux) so node/ffmpeg/chromium children spawned by npx or blender die with
+the parent.
 """
+import os
+import signal
 import subprocess
 import time
+
+WINDOWS = os.name == "nt"
 
 
 class Canceled(Exception):
@@ -15,12 +20,33 @@ class TimedOut(Exception):
     pass
 
 
+def kill_pid_tree(pid):
+    if WINDOWS:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+        return
+    import psutil
+    try:
+        root = psutil.Process(pid)
+        procs = root.children(recursive=True) + [root]
+    except psutil.NoSuchProcess:
+        return
+    for p in procs:
+        try:
+            p.kill()
+        except psutil.NoSuchProcess:
+            pass
+
+
 def _kill_tree(proc):
-    subprocess.run(
-        ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-        capture_output=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
+    if not WINDOWS:
+        # run_streaming starts each child in its own session: one signal takes
+        # the group, including grandchildren that already lost their parent.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    kill_pid_tree(proc.pid)
 
 
 def run_streaming(cmd, cwd, on_line, cancel_check, timeout_seconds, env=None):
@@ -37,7 +63,7 @@ def run_streaming(cmd, cwd, on_line, cancel_check, timeout_seconds, env=None):
         text=True,
         encoding="utf-8",
         errors="replace",
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        **({"creationflags": subprocess.CREATE_NO_WINDOW} if WINDOWS else {"start_new_session": True}),
     )
     tail = []
     started = time.monotonic()

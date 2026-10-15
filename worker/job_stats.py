@@ -41,7 +41,7 @@ def _gpu():
             ["nvidia-smi", "--query-gpu=memory.used,utilization.gpu",
              "--format=csv,noheader,nounits", "-i", "0"],
             capture_output=True, text=True, timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW).stdout.strip()
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
         used, util = (int(x) for x in out.split(","))
         return used, util
     except Exception:

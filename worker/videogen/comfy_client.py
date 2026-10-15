@@ -20,6 +20,7 @@ import uuid
 import httpx
 
 import config
+import proc
 
 _TIMEOUT = httpx.Timeout(30.0, read=600.0)
 
@@ -48,17 +49,35 @@ def server_process():
     private_gb, working_gb, cmdline), or None. PowerShell rather than psutil
     to keep the worker venv as it is; this runs between jobs, not per frame."""
     port = int(config.COMFYUI_URL.rsplit(":", 1)[-1].split("/")[0])
+    if os.name != "nt":
+        return _server_process_posix(port)
     ps = (f"$c = Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; "
           "if ($c) { $p = Get-Process -Id $c.OwningProcess; "
           "$w = Get-CimInstance Win32_Process -Filter \"ProcessId=$($p.Id)\"; "
           "'{0}|{1}|{2}|{3}|{4}' -f $p.Id, $w.ParentProcessId, $p.PrivateMemorySize64, $p.WorkingSet64, $w.CommandLine }")
     out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
-                         timeout=60, creationflags=subprocess.CREATE_NO_WINDOW).stdout.strip()
+                         timeout=60, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
     if not out:
         return None
     pid, parent, priv, ws, cmd = out.split("|", 4)
     return {"pid": int(pid), "launcher_pid": int(parent), "private_gb": int(priv) / (1 << 30),
             "working_gb": int(ws) / (1 << 30), "cmdline": cmd}
+
+
+def _server_process_posix(port):
+    """server_process() on Linux (the cloud pod): psutil is in the worker venv.
+    Private = USS (memory only this process holds), the nearest to Windows' figure."""
+    import psutil
+    for c in psutil.net_connections(kind="tcp"):
+        if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port and c.pid:
+            p = psutil.Process(c.pid)
+            try:
+                private = p.memory_full_info().uss
+            except psutil.AccessDenied:
+                private = p.memory_info().rss
+            return {"pid": p.pid, "launcher_pid": p.ppid(), "private_gb": private / (1 << 30),
+                    "working_gb": p.memory_info().rss / (1 << 30), "cmdline": " ".join(p.cmdline())}
+    return None
 
 
 def recycle_if_bloated(log, above_gb=None):
@@ -90,9 +109,10 @@ def recycle_if_bloated(log, above_gb=None):
         f"over {above_gb:g} GB; restarting it")
     # the venv launcher stub and the real python it spawned (the stub's tree
     # covers both; the second call is for a stub that already went)
-    for pid in (p["launcher_pid"], p["pid"]):
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True,
-                       creationflags=subprocess.CREATE_NO_WINDOW)
+    # On Linux the launcher is the shell running run-headless.sh; kill only the
+    # server there, or the worker's own shell could be the "launcher".
+    for pid in (p["launcher_pid"], p["pid"]) if os.name == "nt" else (p["pid"],):
+        proc.kill_pid_tree(pid)
     deadline = time.monotonic() + 30
     while is_up() and time.monotonic() < deadline:
         time.sleep(1)
@@ -104,9 +124,30 @@ def recycle_if_bloated(log, above_gb=None):
 
 
 def ensure_server(log, wait_seconds=240):
-    """Start run-headless.bat if nothing answers on COMFYUI_URL; block until it does."""
+    """Start run-headless.bat (.sh on the Linux cloud pod) if nothing answers on
+    COMFYUI_URL; block until it does."""
     if is_up():
         return
+    if os.name != "nt":
+        sh = os.path.join(config.COMFYUI_DIR, "run-headless.sh")
+        if not os.path.exists(sh):
+            raise ComfyError(f"ComfyUI launcher missing: {sh}")
+        log(f"comfyui not running; launching {sh}")
+        subprocess.Popen(["bash", sh], cwd=config.COMFYUI_DIR, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    else:
+        _launch_bat(log)
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        if is_up():
+            log("comfyui is up")
+            return
+        time.sleep(2)
+    raise ComfyError(f"ComfyUI did not answer on {config.COMFYUI_URL} within {wait_seconds}s "
+                     f"(see {os.path.join(config.COMFYUI_DIR, 'comfyui-headless.log')})")
+
+
+def _launch_bat(log):
     bat = os.path.join(config.COMFYUI_DIR, "run-headless.bat")
     if not os.path.exists(bat):
         raise ComfyError(f"ComfyUI launcher missing: {bat}")
@@ -120,14 +161,6 @@ def ensure_server(log, wait_seconds=240):
     subprocess.Popen(["cmd", "/c", bat], cwd=config.COMFYUI_DIR,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
-        if is_up():
-            log("comfyui is up")
-            return
-        time.sleep(2)
-    raise ComfyError(f"ComfyUI did not answer on {config.COMFYUI_URL} within {wait_seconds}s "
-                     f"(see {os.path.join(config.COMFYUI_DIR, 'comfyui-headless.log')})")
 
 
 def object_info():

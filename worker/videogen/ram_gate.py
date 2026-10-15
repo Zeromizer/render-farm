@@ -26,6 +26,10 @@ class _MemoryStatusEx(ctypes.Structure):
 
 
 def available_gb():
+    if not hasattr(ctypes, "windll"):
+        # Linux (the cloud pod): MemAvailable already counts the reclaimable page cache.
+        import psutil
+        return psutil.virtual_memory().available / (1 << 30)
     m = _MemoryStatusEx()
     m.dwLength = ctypes.sizeof(m)
     if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
