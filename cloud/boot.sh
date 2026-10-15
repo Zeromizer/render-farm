@@ -25,9 +25,12 @@ stamp() { echo "[boot +$(( $(date +%s) - T0 ))s] $*"; }
   WPY=/workspace/venvs/worker/bin/python
   if [ -f /workspace/cache/local-bundle.tar ]; then
     mkdir -p /root/local && tar -xf /workspace/cache/local-bundle.tar -C /root/local \
-      && ln -sfn /workspace/ComfyUI/models /root/local/ComfyUI/models \
       && COMFY=/root/local/ComfyUI && WPY=/root/local/venvs/worker/bin/python
     stamp "bundle unpacked to local disk (ComfyUI at $COMFY)"
+    # Models: symlinks to the volume at once, replaced by local copies (H3 first)
+    # in the background; cloud/stage-models.sh says why.
+    bash /workspace/render-farm/cloud/stage-models.sh "$COMFY/models" 2>&1 | while read -r l; do stamp "$l"; done &
+    for _ in $(seq 120); do [ -e "$COMFY/models/.links-ready" ] && break; sleep 0.5; done
   else
     stamp "no local bundle; running from the volume (slow start)"
   fi

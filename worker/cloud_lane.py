@@ -63,7 +63,7 @@ def create_pod(engines):
         "gpuCount": 1,
         "networkVolumeId": config.RUNPOD_VOLUME_ID,
         "volumeMountPath": "/workspace",
-        "containerDiskInGb": 50,
+        "containerDiskInGb": 200,  # models staged locally (cloud/stage-models.sh) + bundle
         "ports": ["22/tcp"],
         "supportPublicIp": True,
         "dockerStartCmd": ["bash", "-c", "bash /workspace/render-farm/cloud/boot.sh"],
