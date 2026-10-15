@@ -25,8 +25,28 @@ db.upload_file = lambda remote, local, ct: print(f"  (upload skipped: {remote})"
 
 import config  # noqa: E402
 from runners import audio_gen, video_gen  # noqa: E402
+from videogen import comfy_client, graphs_ltx_plate  # noqa: E402
 
-RUNNERS = {"video_gen": video_gen.run, "audio_gen": audio_gen.run}
+# {"local": "/path"} in place of a {bucket, path} input: a file already on the pod.
+_fetch = video_gen._fetch
+video_gen._fetch = lambda ref, *a, **k: ref["local"] if isinstance(ref, dict) and "local" in ref else _fetch(ref, *a, **k)
+
+
+def ltx_plate(job, repo, work, hb, log, cancel_check, timeout):
+    """The LTX 2.5 clean-plate graph (clip_edit's int8_convrot model) on a local clip:
+    params {"source": path, "width": 1024, "height": 576, "frames": 97}."""
+    p = job["params"]["ltx_plate"]
+    src = comfy_client.upload_input(p["source"], subfolder="clip_edit")
+    graph, _ = graphs_ltx_plate.build(src, p.get("noun", "car"), p.get("width", 1024), p.get("height", 576),
+                                      p.get("frames", 97), 6332, f"clip_edit/{job['id']}_plate")
+    pid = comfy_client.submit(graph)
+    outputs = comfy_client.wait(pid, lambda *a, **k: None, cancel_check, timeout)
+    dest = os.path.join(work, "plate.mp4")
+    comfy_client.fetch_output(outputs, dest)
+    return dest, "mp4", "video/mp4"
+
+
+RUNNERS = {"video_gen": video_gen.run, "audio_gen": audio_gen.run, "ltx_plate": ltx_plate}
 
 
 class _Heartbeat:
