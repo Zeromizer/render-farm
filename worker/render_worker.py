@@ -64,7 +64,7 @@ from heartbeat import Heartbeat
 from job_stats import JobStats
 import queue_status
 from runners import (asset_check, audio_gen, blender, clip_edit, footage, frame_extract, hyperframes,
-                     lettering_fix, matte, planar_patch, python_script, reference_extract, remotion,
+                     lettering_fix, matte, planar_patch, python_script, ramp_shot, reference_extract, remotion,
                      video_gen, video_split, voiceover)
 from videogen import comfy_client, ram_gate
 
@@ -116,7 +116,12 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # Narration with per-word timings: the TTS studio's OmniVoice /
            # Chatterbox (loaded per job) or edge-tts, timed by faster-whisper
            # and mapped back onto the written script. Explainers key off it.
-           "voiceover": voiceover.run}
+           "voiceover": voiceover.run,
+           # Speed-ramp copy (fx-library tools/ramp_copy.py): analyze a
+           # reference, or fit H3 takes / a hold still to one of its shots and
+           # render it (TIME-01 / CAM-13 in the same checkout) with its cut blur.
+           # Clones fx-library; rembg on the CPU, Remotion like the remotion engine.
+           "ramp_shot": ramp_shot.run}
 
 # Engines that work on a storage object, not a repo — the clone is skipped and
 # repo_url is a "-" placeholder (the column is NOT NULL).
