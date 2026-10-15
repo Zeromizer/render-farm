@@ -64,7 +64,7 @@ import queue_status
 from runners import (asset_check, audio_gen, blender, clip_edit, footage, frame_extract, hyperframes,
                      lettering_fix, matte, planar_patch, python_script, reference_extract, remotion,
                      video_gen, video_split, voiceover)
-from videogen import comfy_client
+from videogen import comfy_client, ram_gate
 
 # Engines whose runners drive the headless ComfyUI; after one of these the
 # worker checks ComfyUI's host RAM (comfy_client.recycle_if_bloated).
@@ -284,7 +284,8 @@ def main():
             # With the light lane on, this loop leaves its engines to it; the RPC
             # cannot filter by engine, so it claims with a conditional update.
             job = db.claim_conditional(exclude=heavy_exclude) if light is not None else db.claim_job()
-            if not job and cloud_gated and config.CLOUD_FALLBACK_MINUTES > 0:
+            if (not job and cloud_gated and config.CLOUD_FALLBACK_MINUTES > 0
+                    and ram_gate.available_gb() >= config.CLOUD_FALLBACK_MIN_AVAIL_RAM_GB):
                 # No pod took it in time (out of stock, budget used, broken boot).
                 job = db.claim_conditional(include=cloud_gated, created_before=cloud_lane.fallback_cutoff())
                 if job:

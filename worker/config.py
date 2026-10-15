@@ -82,6 +82,10 @@ CLOUD_CAPABILITY = "gpu-cloud"
 # On the PC: take a cloud-gated job anyway once it has waited this long (no pod
 # came up, RunPod out of stock). "0" = never.
 CLOUD_FALLBACK_MINUTES = float(os.environ.get("CLOUD_FALLBACK_MINUTES", "15"))
+# ...and only while this much RAM is available: once the cloud lane is live the
+# agent container may hold 8g and light jobs start at 8 GB free, so an H3
+# fallback must not walk into the commit wedge (render-pc review, 2026-10-15).
+CLOUD_FALLBACK_MIN_AVAIL_RAM_GB = float(os.environ.get("CLOUD_FALLBACK_MIN_AVAIL_RAM_GB", "24"))
 RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 RUNPOD_VOLUME_ID = os.environ.get("RUNPOD_VOLUME_ID", "")
 RUNPOD_DATACENTER = os.environ.get("RUNPOD_DATACENTER", "")
