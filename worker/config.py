@@ -81,7 +81,7 @@ LIGHT_LANE_MIN_FREE_VRAM_MIB = int(os.environ.get("LIGHT_LANE_MIN_FREE_VRAM_MIB"
 # claim only these, no fetch lane, no patch library, exit (and terminate the pod)
 # after IDLE_EXIT_MINUTES with nothing to do.
 WORKER_ENGINES = {e.strip() for e in os.environ.get("WORKER_ENGINES", "").split(",") if e.strip()}
-IDLE_EXIT_MINUTES = float(os.environ.get("IDLE_EXIT_MINUTES", "15"))
+IDLE_EXIT_MINUTES = float(os.environ.get("IDLE_EXIT_MINUTES", "20"))
 # On the PC: start a pod when engines gated to the cloud have jobs waiting (worker/cloud_lane.py).
 CLOUD_LANE = os.environ.get("CLOUD_LANE", "0") in ("1", "true", "yes")
 CLOUD_CAPABILITY = "gpu-cloud"
