@@ -12,6 +12,7 @@ COMFY_REF=${COMFY_REF:-73c9bad4d21e7addbe1d13bc92eee0f1431b017d}  # v0.37.0, as 
 BLENDER_VER=${BLENDER_VER:-4.5.9}
 TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}
 TORCH_VER=${TORCH_VER:-2.8.0}
+TORCHVISION_VER=${TORCHVISION_VER:-0.23.0}  # torch-family versions pinned as on the PC (unpinned torchaudio came up 2.11, ABI break)
 W=/workspace
 mkdir -p $W/opt $W/venvs $W/cache $W/models $W/logs $W/.ssh
 
@@ -45,7 +46,7 @@ CPY=$W/ComfyUI/.venv/bin/python
 $CPY -m pip install -q -U pip wheel
 # torch first, from the CUDA index (Blackwell sm_120 needs cu128+), then
 # ComfyUI's requirements without letting them swap torch. No xformers.
-$CPY -m pip install -q "torch==$TORCH_VER" torchvision torchaudio --index-url "$TORCH_INDEX"
+$CPY -m pip install -q "torch==$TORCH_VER" "torchvision==$TORCHVISION_VER" "torchaudio==$TORCH_VER" --index-url "$TORCH_INDEX"
 $CPY -m pip install -q -r $W/ComfyUI/requirements.txt
 $CPY -m pip install -q sageattention || echo "sageattention not installed (ComfyUI runs without it)"
 while read -r name url ref; do
@@ -58,7 +59,7 @@ while read -r name url ref; do
   echo "node $name @ $(git -C "$d" rev-parse --short HEAD)"
 done < "$HERE/custom-nodes.txt"
 # A node pack's requirements can swap torch for a CPU or older build: put it back.
-$CPY -m pip install -q "torch==$TORCH_VER" torchvision torchaudio --index-url "$TORCH_INDEX"
+$CPY -m pip install -q "torch==$TORCH_VER" "torchvision==$TORCHVISION_VER" "torchaudio==$TORCH_VER" --index-url "$TORCH_INDEX"
 $CPY -c "import torch; print('torch', torch.__version__, torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0))"
 
 echo "== render-farm checkout + worker venv"
