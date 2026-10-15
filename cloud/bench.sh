@@ -39,10 +39,19 @@ cp /root/rf-cache/work/smoke-video_gen/video_gen.mp4 $OUT/$CASE-h3_480.mp4 2>/de
 run h3_768_a    video_gen "{\"prompt\": \"$P\", \"duration_s\": 5, \"resolution\": \"768p\", \"seed\": 4}"
 run h3_768_b    video_gen "{\"prompt\": \"$P\", \"duration_s\": 5, \"resolution\": \"768p\", \"seed\": 5}"
 cp /root/rf-cache/work/smoke-video_gen/video_gen.mp4 $OUT/$CASE-h3_768.mp4 2>/dev/null
+if [ -z "${SKIP_YUE2:-}" ]; then
 T='[intro 0:00-0:05]\n[verse 0:05-0:20]\n[outro 0:20-0:30]'
 run yue2_a audio_gen "{\"prompt\": \"upbeat electronic pop, 120 bpm, synth bass, bright pads\", \"tags\": \"$T\", \"duration_s\": 30, \"seed\": 1}"
 run yue2_b audio_gen "{\"prompt\": \"upbeat electronic pop, 120 bpm, synth bass, bright pads\", \"tags\": \"$T\", \"duration_s\": 30, \"seed\": 2}"
 cp /root/rf-cache/work/smoke-audio_gen/*.wav $OUT/$CASE-yue2.wav 2>/dev/null
+fi
+if [ -n "${EXTRA:-}" ]; then  # the restoration (SeedVR2) and int8_convrot (LTX plate) models
+  run seedvr2_x2 video_gen "{\"mode\": \"upscale\", \"source\": {\"local\": \"$OUT/$CASE-h3_480.mp4\"}, \"upscale\": {\"method\": \"seedvr2\", \"factor\": 2.0}}"
+  cp /root/rf-cache/work/smoke-video_gen/video_gen-upscaled.mp4 $OUT/$CASE-seedvr2.mp4 2>/dev/null
+  ffmpeg -loglevel error -y -i $OUT/$CASE-h3_768.mp4 -vf scale=1024:576 -frames:v 97 -an /root/ltx-src.mp4
+  run ltx_plate ltx_plate '{"source": "/root/ltx-src.mp4", "width": 1024, "height": 576, "frames": 97}'
+  cp /root/rf-cache/work/smoke-ltx_plate/plate.mp4 $OUT/$CASE-ltx_plate.mp4 2>/dev/null
+fi
 grep -iE "emulat|fallback|not supported|warn.*(fp8|fp4|int8|convrot)" $LOG | sort | uniq -c | head -8 >> $R
 nvidia-smi --query-gpu=memory.used --format=csv,noheader >> $R
 echo "CASE_DONE $CASE" >> $R
