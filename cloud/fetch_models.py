@@ -39,7 +39,8 @@ def main():
     ap.add_argument("--verify", action="store_true", help="re-hash files already present")
     a = ap.parse_args()
     with open(a.manifest, encoding="utf-8") as f:
-        entries = json.load(f)
+        manifest = json.load(f)
+    entries = manifest["files"] if isinstance(manifest, dict) else manifest
     token = os.environ.get("HF_TOKEN")
     waiting, failed = [], []
     for e in entries:
