@@ -46,6 +46,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import zipfile
 
 _EXE = ".exe" if os.name == "nt" else ""
@@ -166,6 +167,61 @@ def _at_least(ver, want):
         return False
 
 
+_VIDEO_EXT = (".mp4", ".m4v", ".mov")
+_SKIP_DIRS = {".git", "node_modules", "renders", "snapshots", ".hyperframes"}
+_BSF = {"h264": "h264_metadata", "hevc": "hevc_metadata"}
+
+
+def _capture(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if r.returncode != 0:
+        raise RuntimeError(f"{os.path.basename(cmd[0])} failed: {r.stderr.strip()[-300:]}")
+    return r.stdout
+
+
+def _tag_untagged_bt601(project_dir, tmp_dir, log):
+    """Label untagged HD H.264/HEVC sources BT.601 before a render on hyperframes >= 0.8.81.
+
+    0.8.81 (HyperFrames PR #4564) decodes a tagged source with its tag and an UNTAGGED H.264 of
+    720+ lines as BT.709, the way Chrome plays it; before that every source decoded as BT.601.
+    The untagged ones we get hold BT.601 data: Seedance writes them with ffmpeg's default RGB->YUV
+    (measured against its own last_frame JPEGs, 2026-10-15: BT.601 within 1.8 levels on the most
+    colourful pixels, BT.709 3.0 off) and so does every builder clip made with plain ffmpeg. Read as
+    BT.709 they shift colour. The bitstream filter rewrites the VUI only (the pictures are the
+    same bytes), so an untagged source renders exactly as it did on 0.8.26 and a tagged one keeps
+    0.8.81's correct decode. The checkout is force-checked-out per job, so nothing leaks."""
+    d = _ffmpeg_dir()
+    ffprobe = os.path.join(d, "ffprobe" + _EXE) if d else "ffprobe"
+    ffmpeg = os.path.join(d, "ffmpeg" + _EXE) if d else "ffmpeg"
+    tagged = []
+    for root, dirs, files in os.walk(project_dir):
+        dirs[:] = [x for x in dirs if x not in _SKIP_DIRS]
+        for name in files:
+            if not name.lower().endswith(_VIDEO_EXT):
+                continue
+            path = os.path.join(root, name)
+            r = _capture([ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                  "stream=codec_name,height,color_space", "-of", "json", path])
+            try:
+                s = (json.loads(r).get("streams") or [{}])[0]
+            except ValueError:  # not a video ffprobe can read: the render will say so
+                continue
+            if s.get("codec_name") not in _BSF or int(s.get("height") or 0) < 720:
+                continue
+            if s.get("color_space") not in (None, "", "unknown"):
+                continue
+            tmp = os.path.join(tmp_dir, "bt601-" + name)
+            _capture([ffmpeg, "-v", "error", "-y", "-i", path, "-map", "0", "-c", "copy", "-bsf:v",
+                              f"{_BSF[s['codec_name']]}=colour_primaries=6:transfer_characteristics=6:"
+                              "matrix_coefficients=6:video_full_range_flag=0", tmp])
+            shutil.move(tmp, path)
+            tagged.append(os.path.relpath(path, project_dir))
+    if tagged:
+        log(f"hyperframes: tagged {len(tagged)} untagged source(s) BT.601 (no re-encode): {', '.join(tagged[:12])}"
+            + (" ..." if len(tagged) > 12 else ""))
+
+
 def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     """Render and return (local_output_path, ext, content_type).
 
@@ -191,6 +247,8 @@ def _run(job, repo, work_dir, tmp_dir, heartbeat, log, cancel_check, timeout_sec
     cli = [_npx(), "--yes", f"hyperframes@{ver}"]
     run_kw = {"cancel_check": cancel_check, "timeout_seconds": timeout_seconds}
     _ensure_browser(cli, project_dir, log, dict(run_kw, on_line=lambda l: log(f"  {_clean(l)}")))
+    if _at_least(ver, (0, 8, 81)):
+        _tag_untagged_bt601(project_dir, tmp_dir, log)
     heartbeat.progress = 3
 
     still = params.get("output_kind") == "still"
