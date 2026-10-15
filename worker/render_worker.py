@@ -264,7 +264,13 @@ def main():
         if polls % config.RECLAIM_EVERY_POLLS == 1:
             try:
                 db.reclaim_stale()
-                # Gating changes at runtime (an engine moved to the cloud or back).
+            except Exception:
+                pass
+        if polls % 5 == 1:
+            # Gating changes at runtime (an engine moved to the cloud or back). Every
+            # ~15 s: at go-live a once-a-minute read let the PC claim a job queued
+            # 20 s after its engine was gated.
+            try:
                 cloud_gated = db.gated_engines(config.CLOUD_CAPABILITY)
                 if light is not None:
                     heavy_exclude = light_lane.LIGHT_ENGINES | db.gated_engines()
