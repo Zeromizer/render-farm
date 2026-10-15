@@ -41,7 +41,9 @@ class _Tee:
         return False
 
 
-_logf = open(os.path.join(_HERE, "worker.log"), "a", buffering=1, encoding="utf-8")
+# WORKER_LOG: cloud pods share this directory on the network volume, so each
+# writes its own file (cloud/boot.sh sets /workspace/logs/worker-<pod>.log).
+_logf = open(os.environ.get("WORKER_LOG") or os.path.join(_HERE, "worker.log"), "a", buffering=1, encoding="utf-8")
 sys.stdout = _Tee(sys.__stdout__, _logf)
 sys.stderr = _Tee(sys.__stderr__, _logf)
 

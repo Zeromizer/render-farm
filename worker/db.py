@@ -1,6 +1,10 @@
 ﻿"""Supabase access for the render worker."""
 from datetime import datetime, timezone
 
+import time
+
+import httpcore
+import httpx
 from supabase import create_client
 
 import config
@@ -61,8 +65,22 @@ def reclaim_stale():
     return sb.rpc("reclaim_stale_farm_jobs", {"p_stale_minutes": config.STALE_MINUTES}).execute().data
 
 
+def _retrying(fn, attempts=3):
+    """Run a short Supabase call, retrying a dropped connection. The client keeps
+    one HTTP/2 connection; after a quiet spell (a long venv build, an H3 load)
+    the server closes it and the next call raises "Server disconnected"
+    (2026-10-15: a cloud matte job failed in its cancel check that way)."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except (httpx.TransportError, httpcore.ProtocolError):
+            if i == attempts - 1:
+                raise
+            time.sleep(1 + i)
+
+
 def update_job(job_id, fields):
-    sb.table("farm_render_jobs").update(fields).eq("id", job_id).execute()
+    _retrying(lambda: sb.table("farm_render_jobs").update(fields).eq("id", job_id).execute())
 
 
 def set_phase(job_id, phase, progress=None):
@@ -73,9 +91,11 @@ def set_phase(job_id, phase, progress=None):
 
 
 def cancel_requested(job_id):
-    rows = (
-        sb.table("farm_render_jobs").select("cancel_requested").eq("id", job_id).execute().data
-    )
+    try:
+        rows = _retrying(lambda: sb.table("farm_render_jobs").select("cancel_requested")
+                         .eq("id", job_id).execute().data)
+    except (httpx.TransportError, httpcore.ProtocolError):
+        return False  # a cancel check must never fail the job; the next one asks again
     return bool(rows and rows[0]["cancel_requested"])
 
 

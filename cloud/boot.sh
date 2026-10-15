@@ -58,7 +58,7 @@ stamp() { echo "[boot +$(( $(date +%s) - T0 ))s] $*"; }
   stamp "apt done"
 
   set -a; . /workspace/render-farm/cloud/pod.env; set +a
-  export COMFYUI_DIR=$COMFY
+  export COMFYUI_DIR=$COMFY WORKER_LOG=/workspace/logs/worker-${RUNPOD_POD_ID:-local}.log
   export PATH=/workspace/opt/ffmpeg/bin:/workspace/opt/blender:$PATH
   # Wait for it (the worker would start it too, but this marks the timing);
   # give up after 5 min and let the worker try.
