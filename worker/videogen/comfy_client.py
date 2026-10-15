@@ -229,7 +229,14 @@ def free(unload_models=True, free_memory=True, strict=False):
     strict=True raises instead of swallowing, for a caller that needs to log
     the difference between acknowledged and failed. The default keeps the
     original fire-and-forget behaviour for existing callers.
+
+    COMFYUI_FREE_AFTER_JOB=0 (the 96 GB cloud pod) makes the non-strict calls a
+    no-op: the models stay resident, so the next job skips the ~80 s model
+    initialisation that every H3 job paid after a /free (2026-10-15: 194 s per
+    480p 3 s clip with /free, sampling itself 11 s).
     """
+    if not strict and not config.COMFYUI_FREE_AFTER_JOB:
+        return True
     try:
         r = httpx.post(_url("/free"),
                        json={"unload_models": unload_models,

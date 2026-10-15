@@ -60,6 +60,9 @@ VIDEO_GEN_RAM_WAIT_MAX_MINUTES = int(os.environ.get("VIDEO_GEN_RAM_WAIT_MAX_MINU
 # private memory than this: /free does not give back the host RAM an H3 run leaves
 # behind (videogen/comfy_client.recycle_if_bloated). "0" disables.
 COMFYUI_RECYCLE_ABOVE_GB = float(os.environ.get("COMFYUI_RECYCLE_ABOVE_GB", "8"))
+# Unload ComfyUI's models after each job (the 16 GB PC must); "0" keeps them
+# resident (the 96 GB cloud pod; videogen/comfy_client.free).
+COMFYUI_FREE_AFTER_JOB = os.environ.get("COMFYUI_FREE_AFTER_JOB", "1") not in ("0", "false", "no")
 VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES = int(os.environ.get("VIDEO_GEN_DEFAULT_TIMEOUT_MINUTES", "60"))
 
 # --- light lane (worker/light_lane.py): CPU engines beside the render loop ---
