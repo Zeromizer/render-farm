@@ -107,6 +107,14 @@ You will get a separate message when this is ready. For reference, the steps wil
    `RUNPOD_DATACENTER=EU-RO-1` and `CLOUD_MAX_HOURS_PER_DAY` to `.env`. Shawn pastes the keys
    himself.
 3. Restart with the `worker\restart-requested` flag file. Never kill `pythonw.exe`.
+4. Once the gating is applied (`cloud/route-to-cloud.sql` part 2) and the PC no longer runs H3,
+   give the RAM back to the agent container; Shawn approved this on 2026-10-15:
+   - `docker update --memory 8g --memory-swap 8g rp-agent-shawn`, and the same cap in
+     `C:\rp-agent\run-agent.ps1`. It was cut from 8g to 4g on 2026-09-25 only to protect H3.
+   - Lower `LIGHT_LANE_MIN_AVAIL_RAM_GB` from 16 to about 8.
+   - Keep the Krea fallback on the PC ComfyUI, and keep `CLOUD_FALLBACK_MINUTES` at 15 until
+     the cloud has proven reliable.
+   - Go above 8g only if the WSL VM ceiling (`.wslconfig`, `docker info` Total Memory) has room.
 
 ## Leave unchanged
 
