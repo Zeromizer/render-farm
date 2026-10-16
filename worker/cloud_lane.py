@@ -54,12 +54,12 @@ def delete_pod(pod_id, key=None):
     httpx.delete(f"{API}/pods/{pod_id}", headers=_headers(key), timeout=30).raise_for_status()
 
 
-def create_pod(engines):
+def create_pod(engines, gpu_types=None):
     body = {
         "name": f"{POD_PREFIX}-{datetime.now(timezone.utc):%m%d-%H%M%S}",
         "imageName": config.RUNPOD_IMAGE,
         "cloudType": "SECURE",
-        "gpuTypeIds": config.RUNPOD_GPU_TYPES,
+        "gpuTypeIds": gpu_types or config.RUNPOD_GPU_TYPES,
         "gpuCount": 1,
         "networkVolumeId": config.RUNPOD_VOLUME_ID,
         "volumeMountPath": "/workspace",
@@ -98,9 +98,26 @@ def _save_state(state):
 
 
 def _pending(engines):
-    return len(db.sb.table("farm_render_jobs").select("id")
-               .in_("engine", sorted(engines)).eq("status", "pending")
-               .execute().data or [])
+    """(count, age_seconds of the oldest) of gated jobs waiting for a pod."""
+    rows = (db.sb.table("farm_render_jobs").select("created_at")
+            .in_("engine", sorted(engines)).eq("status", "pending")
+            .order("created_at").execute().data or [])
+    if not rows:
+        return 0, 0.0
+    return len(rows), time.time() - datetime.fromisoformat(rows[0]["created_at"]).timestamp()
+
+
+def _gpu_choice(oldest_age):
+    """The GPU list for a new pod, and whether it includes the fallback.
+
+    RunPod picks any listed type at once, with no order of preference over
+    time, so the fallback types are only listed once a job has waited
+    CLOUD_GPU_FALLBACK_MINUTES. The preferred types stay first in the list:
+    a 5090 that turns up later is still taken over a PRO 6000."""
+    fb = config.RUNPOD_FALLBACK_GPU_TYPES
+    if fb and oldest_age >= config.CLOUD_GPU_FALLBACK_MINUTES * 60:
+        return config.RUNPOD_GPU_TYPES + [g for g in fb if g not in config.RUNPOD_GPU_TYPES], True
+    return config.RUNPOD_GPU_TYPES, False
 
 
 def _pod_work(pod_id):
@@ -122,12 +139,16 @@ def _tick(state, log):
     engines = db.gated_engines(config.CLOUD_CAPABILITY)
     if not engines:
         return
-    pending = _pending(engines)
+    pending, oldest_age = _pending(engines)
+    gpu_types, with_fallback = _gpu_choice(oldest_age)
     now = time.time()
     pods = [p for p in list_pods() if p.get("desiredStatus") != "TERMINATED"]
     state["seconds"] += TICK_SECONDS * len(pods)
     over_budget = state["seconds"] >= config.CLOUD_MAX_HOURS_PER_DAY * 3600
     started = state.setdefault("started", {})
+    # Pods rented from the preferred list only; one of these that has not
+    # claimed a job when the fallback opens is replaced rather than waited on.
+    preferred_only = state.setdefault("preferred_only", {})
 
     spare = 0  # pods that will take a waiting job soon: booting, or up and idle
     alive = 0
@@ -137,6 +158,13 @@ def _tick(state, log):
         why = None
         if over_budget:
             why = "daily budget used"
+        elif (worked is None and with_fallback and preferred_only.get(p["id"])
+              and now - born > config.CLOUD_GPU_FALLBACK_MINUTES * 60):
+            # A 5090 can be rented and then never start (runtime null for 20
+            # min, pjbdk2m0ydwmg8 on 2026-10-15). Normal boots claim in ~2 min,
+            # so past the fallback mark try again with the fallback listed --
+            # no 2 h backoff, the fallback types are still untried.
+            why = f"claimed nothing in {config.CLOUD_GPU_FALLBACK_MINUTES:g} min; retrying with the fallback GPU"
         elif worked is None and now - born > BOOT_GRACE_MINUTES * 60:
             # Booted but never claimed: broken image/boot. Don't keep paying for
             # it or re-create it every few minutes; the PC fallback takes the jobs.
@@ -148,6 +176,7 @@ def _tick(state, log):
             log(f"terminating pod {p['id']} ({why})")
             delete_pod(p["id"])
             started.pop(p["id"], None)
+            preferred_only.pop(p["id"], None)
             continue
         alive += 1
         if not busy:
@@ -159,10 +188,14 @@ def _tick(state, log):
     if (pending > spare and alive < config.CLOUD_MAX_PODS and not over_budget
             and now >= state.get("retry_at", 0)):
         try:
-            pod = create_pod(engines)
+            pod = create_pod(engines, gpu_types)
             started[pod["id"]] = now
-            log(f"{pending} cloud job(s) waiting, {alive} pod(s) up ({spare} free): "
-                f"created pod {pod['id']} (${pod.get('costPerHr', '?')}/h)")
+            if not with_fallback and config.RUNPOD_FALLBACK_GPU_TYPES:
+                preferred_only[pod["id"]] = True
+            gpu = (pod.get("machine") or {}).get("gpuTypeId") or pod.get("gpuTypeId") or "/".join(gpu_types)
+            log(f"{pending} cloud job(s) waiting (oldest {oldest_age / 60:.0f} min), {alive} pod(s) up "
+                f"({spare} free): created pod {pod['id']} on {gpu} (${pod.get('costPerHr', '?')}/h)"
+                f"{' [fallback open]' if with_fallback else ''}")
         except Exception as e:  # noqa: BLE001 - out of stock etc.; the PC fallback covers it
             state["retry_at"] = now + CREATE_BACKOFF_SECONDS
             log(f"pod create failed, retrying in {CREATE_BACKOFF_SECONDS // 60} min: {str(e)[:200]}")

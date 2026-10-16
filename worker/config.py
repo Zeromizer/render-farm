@@ -101,6 +101,13 @@ RUNPOD_GPU_TYPES = [g.strip() for g in os.environ.get(
     "RUNPOD_GPU_TYPES",
     "NVIDIA RTX PRO 6000 Blackwell Server Edition,NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
 ).split(",") if g.strip()]
+# Rented only once the oldest waiting cloud job is CLOUD_GPU_FALLBACK_MINUTES
+# old (Shawn, 2026-10-16: "5090 first, PRO 6000 only if no 5090 after 10 min").
+# Empty: RUNPOD_GPU_TYPES alone, as before.
+RUNPOD_FALLBACK_GPU_TYPES = [g.strip() for g in os.environ.get(
+    "RUNPOD_FALLBACK_GPU_TYPES", "",
+).split(",") if g.strip()]
+CLOUD_GPU_FALLBACK_MINUTES = float(os.environ.get("CLOUD_GPU_FALLBACK_MINUTES", "10"))
 RUNPOD_IMAGE = os.environ.get("RUNPOD_IMAGE", "runpod/pytorch:1.4.0-cu1281-torch280-ubuntu2404")
 # Branch the pod checks out at boot (cloud/boot.sh).
 CLOUD_GIT_REF = os.environ.get("CLOUD_GIT_REF", "main")
