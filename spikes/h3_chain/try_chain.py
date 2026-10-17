@@ -316,7 +316,7 @@ def seam_stats(frames, s):
             "flow_before_px": [round(float(x), 2) for x in before], "flow_at_seam_px": [round(float(x), 2) for x in at],
             "flow_after_px": [round(float(x), 2) for x in after],
             "flow_seam_error_px": round(float(np.linalg.norm(at - ref)), 2),
-            "speed_change_pct": round(100 * (np.linalg.norm(after) - np.linalg.norm(before)) / max(1e-6, np.linalg.norm(before)), 1),
+            "speed_change_pct": round(float(100 * (np.linalg.norm(after) - np.linalg.norm(before)) / max(1e-6, np.linalg.norm(before))), 1),
             "luma_step": round(luma_after - luma_before, 2)}
 
 
@@ -370,6 +370,7 @@ def main():
     p = {"prompt": PROMPT, "width": 832, "height": 480, "frames": 243, "overlap": 39, "steps": 8,
          "seed_s1": 6332, "seed": 911, "arms": ["hold", "guide", "still", "loop"]}
     p.update(json.loads(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].strip() else {})
+    # reuse:true re-measures the newest earlier run without generating (no upload needed either)
     out = os.path.abspath(sys.argv[2] if len(sys.argv) > 2 else "out")
     os.makedirs(out, exist_ok=True)
     for name in os.listdir(out):  # the python engine's out dir is a shared cache: clear it
@@ -382,10 +383,27 @@ def main():
     N, K = p["frames"], p["overlap"]
     report = {"params": {k: v for k, v in p.items() if k != "prompt"}, "prompt": p["prompt"], "gen": {}, "seams": {}}
 
-    install_node()
+    reuse = None
+    if p.get("reuse"):
+        hits = sorted(glob.glob(os.path.join(COMFY_DIR, "output", "h3_chain", "*_S1*.mp4")), key=os.path.getmtime)
+        if not hits:
+            raise RuntimeError("reuse: no earlier S1 in ComfyUI/output/h3_chain")
+        reuse = os.path.basename(hits[-1]).split("_S1")[0]
+        report["reused_run"] = reuse
+        log(f"reusing run {reuse}")
+    else:
+        install_node()
     log("PROGRESS 3")
 
     def gen(name, graph):
+        if reuse:
+            src = sorted(glob.glob(os.path.join(COMFY_DIR, "output", "h3_chain", f"{reuse}_{name}*.mp4")))
+            if not src:
+                raise RuntimeError(f"reuse: no {name} clip for run {reuse}")
+            dest = os.path.join(out, f"{name}.mp4")
+            shutil.copyfile(src[-1], dest)
+            report["gen"][name] = {"reused": os.path.basename(src[-1]), "frames": len(read_frames(dest, (16, 16)))}
+            return dest
         t0 = time.monotonic()
         dest = fetch_mp4(run_outputs(graph), os.path.join(out, f"{name}.mp4"))
         secs = round(time.monotonic() - t0)
@@ -459,14 +477,14 @@ def main():
             rec["seam"] = seam_stats(gj, N)
             seam_strip(dest, N, os.path.join(out, f"seams_{arm}.jpg"), f"{arm}: S1 -> next shot")
         report["seams"][arm] = rec
-        log(f"{arm}: {json.dumps(rec)[:600]}")
+        log(f"{arm}: {json.dumps(rec, default=float)[:600]}")
 
     arms = [a for a in ("still", "guide", "hold") if os.path.exists(os.path.join(out, f"join_{a}.mp4"))]
     if arms:
         compare_video([os.path.join(out, f"join_{a}.mp4") for a in arms],
                       [f"{a}  (join at 10.1 s)" for a in arms], os.path.join(out, "compare.mp4"), N - 72, N + 96)
     with open(os.path.join(out, "report.json"), "w") as f:
-        json.dump(report, f, indent=1)
+        json.dump(report, f, indent=1, default=float)
     shutil.rmtree(work, ignore_errors=True)
     log("PROGRESS 100")
 
