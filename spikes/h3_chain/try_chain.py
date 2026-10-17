@@ -211,12 +211,14 @@ def free():
 
 # ---------------------------------------------------------------- graphs
 
-def build(p, seed, prefix, first_frame=None, guide_clip=None, holds=(), save_as=None):
-    """fl2va turbo graph. holds = [(source, "head"|"tail")]; guide_clip = uploaded mp4 to pin at frame 0."""
+def build(p, seed, prefix, first_frame=None, guide_clip=None, holds=(), save_as=None, steps=None, turbo=True):
+    """fl2va graph (turbo LoRA unless turbo=False). holds = [(source, "head"|"tail", frames)];
+    guide_clip = uploaded mp4 to pin at frame 0."""
+    steps = int(steps or p["steps"])
     g = {
         "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": UNET, "weight_dtype": "default"}},
         "lora": {"class_type": "LoraLoaderModelOnly",
-                 "inputs": {"model": ["unet", 0], "lora_name": TURBO[p["steps"]], "strength_model": 1.0}},
+                 "inputs": {"model": ["unet", 0], "lora_name": TURBO.get(steps, TURBO[8]), "strength_model": 1.0}},
         "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": TEXT, "type": "minimax", "device": "default"}},
         "vae": {"class_type": "VAELoader", "inputs": {"vae_name": VAE}},
         "avae": {"class_type": "VAELoader", "inputs": {"vae_name": AVAE}},
@@ -235,15 +237,18 @@ def build(p, seed, prefix, first_frame=None, guide_clip=None, holds=(), save_as=
                       "inputs": {"positive": positive, "latent": latent, "vae": ["vae", 0], "audio_vae": ["avae", 0],
                                  "image": ["gparts", 0], "audio": ["gparts", 1], "frame_idx": 0}}
         positive = ["guide", 0]
-    for i, (source, at) in enumerate(holds):
+    for i, (source, at, frames) in enumerate(holds):
         g[f"hold{i}"] = {"class_type": "AimH3Hold",
-                         "inputs": {"latent": latent, "source": source, "frames": p["overlap"], "at": at,
+                         "inputs": {"latent": latent, "source": source, "frames": frames, "at": at,
                                     "hold_audio": True}}
         latent = [f"hold{i}", 0]
-    g["guider"] = {"class_type": "BasicGuider", "inputs": {"model": ["lora", 0], "conditioning": positive}}
+    model = ["lora", 0] if turbo else ["unet", 0]
+    if not turbo:
+        del g["lora"]
+    g["guider"] = {"class_type": "BasicGuider", "inputs": {"model": model, "conditioning": positive}}
     g["sampler"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "res_multistep"}}
     g["sched"] = {"class_type": "BasicScheduler",
-                  "inputs": {"model": ["lora", 0], "scheduler": "simple", "steps": p["steps"], "denoise": 1.0}}
+                  "inputs": {"model": model, "scheduler": "simple", "steps": steps, "denoise": 1.0}}
     g["noise"] = {"class_type": "RandomNoise", "inputs": {"noise_seed": seed}}
     g["sample"] = {"class_type": "SamplerCustomAdvanced",
                    "inputs": {"noise": ["noise", 0], "guider": ["guider", 0], "sampler": ["sampler", 0],
@@ -389,21 +394,20 @@ def main():
         if not hits:
             raise RuntimeError("reuse: no earlier S1 in ComfyUI/output/h3_chain")
         reuse = os.path.basename(hits[-1]).split("_S1")[0]
+        run_id, s1_name = reuse, f"s1_{reuse}"
         report["reused_run"] = reuse
         log(f"reusing run {reuse}")
-    else:
-        install_node()
+    install_node()
     log("PROGRESS 3")
 
     def gen(name, graph):
         if reuse:
             src = sorted(glob.glob(os.path.join(COMFY_DIR, "output", "h3_chain", f"{reuse}_{name}*.mp4")))
-            if not src:
-                raise RuntimeError(f"reuse: no {name} clip for run {reuse}")
-            dest = os.path.join(out, f"{name}.mp4")
-            shutil.copyfile(src[-1], dest)
-            report["gen"][name] = {"reused": os.path.basename(src[-1]), "frames": len(read_frames(dest, (16, 16)))}
-            return dest
+            if src:
+                dest = os.path.join(out, f"{name}.mp4")
+                shutil.copyfile(src[-1], dest)
+                report["gen"][name] = {"reused": os.path.basename(src[-1]), "frames": len(read_frames(dest, (16, 16)))}
+                return dest
         t0 = time.monotonic()
         dest = fetch_mp4(run_outputs(graph), os.path.join(out, f"{name}.mp4"))
         secs = round(time.monotonic() - t0)
@@ -423,13 +427,16 @@ def main():
     s1_last = os.path.join(work, "s1_last.png")
     ff("-i", s1, "-vf", f"select=eq(n\\,{N - 1})", "-frames:v", "1", s1_last)
 
+    # loop variants: {"loop": {}, "loop_full20": {"steps": 20, "turbo": false}, "loop_t22": {"tail": 22}}
+    loops = {"loop": {}}
+    loops.update(p.get("loops") or {})
     joins = {}
     done = 20
     step = 75 // max(1, len(p["arms"]))
     for arm in p["arms"]:
         try:
             if arm == "hold":
-                path = gen("hold", build(p, p["seed"], f"h3_chain/{run_id}_hold", holds=[(s1_name, "head")]))
+                path = gen("hold", build(p, p["seed"], f"h3_chain/{run_id}_hold", holds=[(s1_name, "head", K)]))
                 joins["hold"] = (path, K)
             elif arm == "guide":
                 path = gen("guide", build(p, p["seed"], f"h3_chain/{run_id}_guide", guide_clip=upload(s1_tail)))
@@ -437,10 +444,12 @@ def main():
             elif arm == "still":
                 path = gen("still", build(p, p["seed"], f"h3_chain/{run_id}_still", first_frame=upload(s1_last)))
                 joins["still"] = (path, 1)
-            elif arm == "loop":
-                path = gen("loop", build(p, p["seed"], f"h3_chain/{run_id}_loop",
-                                         holds=[(s1_name, "head"), (s1_name, "tail")]))
-                joins["loop"] = (path, K)
+            elif arm.startswith("loop"):
+                v = loops[arm]
+                path = gen(arm, build(p, p["seed"], f"h3_chain/{run_id}_{arm}", steps=v.get("steps"),
+                                      turbo=v.get("turbo", True),
+                                      holds=[(s1_name, "head", K), (s1_name, "tail", v.get("tail", K))]))
+                joins[arm] = (path, K)
         except RuntimeError as e:
             log(f"{arm}: FAILED {e}")
             report["gen"][arm] = {"error": str(e)[:2000]}
@@ -458,18 +467,24 @@ def main():
             # how close the shot's first K frames are to the S1 frames they stand for
             rec["head_vs_S1_tail_mae"] = mae(g2[:K], g1[N - K:])
             rec["head_luma_minus_S1_tail"] = round(float(np.mean([x.mean() for x in g2[:K]]) - np.mean([x.mean() for x in g1[N - K:]])), 2)
-        if arm == "loop":
-            rec["tail_vs_S1_head_mae"] = mae(g2[N - K:], g1[:K])
-            dest = os.path.join(out, "join_loop.mp4")
-            join(s1, path, K, dest, a_end=N, b_end=N - K)
-            loop_len = N + (N - 2 * K)
-            ff("-stream_loop", "1", "-i", dest, "-c", "copy", os.path.join(out, "loop_x2.mp4"))
-            gl = read_frames(os.path.join(out, "loop_x2.mp4"), (416, 240), gray=True)
+        if arm.startswith("loop"):
+            Kt = int(loops[arm].get("tail", K))
+            rec["tail_frames"] = Kt
+            rec["tail_vs_S1_head_mae"] = mae(g2[N - Kt:], g1[:Kt])
+            dest = os.path.join(out, f"join_{arm}.mp4")
+            join(s1, path, K, dest, a_end=N, b_end=N - Kt)
+            loop_len = N + (N - Kt - K)
+            x2 = os.path.join(out, f"{arm}_x2.mp4")
+            ff("-stream_loop", "1", "-i", dest, "-c", "copy", x2)
+            gl = read_frames(x2, (416, 240), gray=True)
+            g2d = np.array([np.abs(g2[i + 1].astype(np.float32) - g2[i].astype(np.float32)).mean() for i in range(len(g2) - 1)])
+            rec["jump_into_tail"] = round(float(g2d[N - Kt - 1]), 2)
+            rec["median_frame_diff"] = round(float(np.median(g2d)), 2)
             rec["seam_into_loop_shot"] = seam_stats(gl, N)
             rec["seam_wrap_to_S1"] = seam_stats(gl, loop_len)
             rec["loop_frames"] = loop_len
-            seam_strip(os.path.join(out, "loop_x2.mp4"), loop_len, os.path.join(out, "seams_loop_wrap.jpg"), "loop: wrap back to S1 frame 0")
-            seam_strip(os.path.join(out, "loop_x2.mp4"), N, os.path.join(out, "seams_loop_in.jpg"), "loop: S1 -> in-between shot")
+            seam_strip(x2, loop_len, os.path.join(out, f"seams_{arm}_wrap.jpg"), f"{arm}: wrap back to S1 frame 0")
+            seam_strip(x2, N, os.path.join(out, f"seams_{arm}_in.jpg"), f"{arm}: S1 -> in-between shot")
         else:
             dest = os.path.join(out, f"join_{arm}.mp4")
             join(s1, path, skip, dest, a_end=N)
