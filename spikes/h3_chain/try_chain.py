@@ -41,9 +41,11 @@ T = httpx.Timeout(30.0, read=600.0)
 FPS = 24
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-UNET = "minimax_h3_fl2va_pruned_fp8_scaled.safetensors"
-TURBO = {8: "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
-         4: "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"}
+UNETS = {"fl2va": "minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
+         "ref2va": "minimax_h3_ref2va_pruned_fp8_scaled.safetensors"}
+TURBOS = {"fl2va": {8: "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+                    4: "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"},
+          "ref2va": {4: "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"}}
 TEXT = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
 VAE = "minimax_h3_video_vae_fp16.safetensors"
 AVAE = "minimax_h3_audio_vae_fp32.safetensors"
@@ -212,14 +214,18 @@ def free():
 # ---------------------------------------------------------------- graphs
 
 def build(p, seed, prefix, first_frame=None, guide_clip=None, holds=(), save_as=None, steps=None, turbo=True,
-          guide_at=0, last_frame=None):
-    """fl2va graph (turbo LoRA unless turbo=False). holds = [(source, "head"|"tail", frames)];
-    guide_clip = uploaded mp4 to pin at frame 0."""
-    steps = int(steps or p["steps"])
+          guide_at=0, last_frame=None, family="fl2va", ref_images=(), sampler="res_multistep", scheduler="simple",
+          shift=None):
+    """H3 graph (turbo LoRA unless turbo=False). holds = [(source, "head"|"tail", frames, hold_video)];
+    guide_clip = uploaded mp4 pinned at guide_at. family ref2va uses MiniMaxH3ReferenceToVideo + ref_images.
+    shift = (video, audio) adds MiniMaxH3SigmaShift (the source workflow runs 12 / 3)."""
+    turbos = TURBOS[family]
+    steps = int(steps or (p["steps"] if family == "fl2va" else 4))
     g = {
-        "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": UNET, "weight_dtype": "default"}},
+        "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": UNETS[family], "weight_dtype": "default"}},
         "lora": {"class_type": "LoraLoaderModelOnly",
-                 "inputs": {"model": ["unet", 0], "lora_name": TURBO.get(steps, TURBO[8]), "strength_model": 1.0}},
+                 "inputs": {"model": ["unet", 0], "lora_name": turbos.get(steps) or turbos[max(turbos)],
+                            "strength_model": 1.0}},
         "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": TEXT, "type": "minimax", "device": "default"}},
         "vae": {"class_type": "VAELoader", "inputs": {"vae_name": VAE}},
         "avae": {"class_type": "VAELoader", "inputs": {"vae_name": AVAE}},
@@ -232,7 +238,15 @@ def build(p, seed, prefix, first_frame=None, guide_clip=None, holds=(), save_as=
     if last_frame:
         g["last"] = {"class_type": "LoadImage", "inputs": {"image": last_frame}}
         cond["last_frame"] = ["last", 0]
-    g["cond"] = {"class_type": "MiniMaxH3ImageToVideo", "inputs": cond}
+    if family == "ref2va":
+        cond["audio_vae"] = ["avae", 0]
+        cond["ref_image_size"] = "match"
+        for i, name in enumerate(ref_images):
+            g[f"ref{i}"] = {"class_type": "LoadImage", "inputs": {"image": name}}
+            cond[f"ref_images.ref_image_{i}"] = [f"ref{i}", 0]
+        g["cond"] = {"class_type": "MiniMaxH3ReferenceToVideo", "inputs": cond}
+    else:
+        g["cond"] = {"class_type": "MiniMaxH3ImageToVideo", "inputs": cond}
     positive, latent = ["cond", 0], ["cond", 1]
     if guide_clip:
         g["gload"] = {"class_type": "LoadVideo", "inputs": {"file": guide_clip}}
@@ -241,18 +255,22 @@ def build(p, seed, prefix, first_frame=None, guide_clip=None, holds=(), save_as=
                       "inputs": {"positive": positive, "latent": latent, "vae": ["vae", 0], "audio_vae": ["avae", 0],
                                  "image": ["gparts", 0], "audio": ["gparts", 1], "frame_idx": int(guide_at)}}
         positive = ["guide", 0]
-    for i, (source, at, frames) in enumerate(holds):
+    for i, (source, at, frames, *rest) in enumerate(holds):
         g[f"hold{i}"] = {"class_type": "AimH3Hold",
                          "inputs": {"latent": latent, "source": source, "frames": frames, "at": at,
-                                    "hold_audio": True}}
+                                    "hold_audio": True, "hold_video": rest[0] if rest else True}}
         latent = [f"hold{i}", 0]
     model = ["lora", 0] if turbo else ["unet", 0]
     if not turbo:
         del g["lora"]
+    if shift:
+        g["shift"] = {"class_type": "MiniMaxH3SigmaShift",
+                      "inputs": {"model": model, "shift_video": float(shift[0]), "shift_audio": float(shift[1])}}
+        model = ["shift", 0]
     g["guider"] = {"class_type": "BasicGuider", "inputs": {"model": model, "conditioning": positive}}
-    g["sampler"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "res_multistep"}}
+    g["sampler"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": sampler}}
     g["sched"] = {"class_type": "BasicScheduler",
-                  "inputs": {"model": model, "scheduler": "simple", "steps": steps, "denoise": 1.0}}
+                  "inputs": {"model": model, "scheduler": scheduler, "steps": steps, "denoise": 1.0}}
     g["noise"] = {"class_type": "RandomNoise", "inputs": {"noise_seed": seed}}
     g["sample"] = {"class_type": "SamplerCustomAdvanced",
                    "inputs": {"noise": ["noise", 0], "guider": ["guider", 0], "sampler": ["sampler", 0],
@@ -287,14 +305,14 @@ def read_frames(path, size=None, gray=False):
 
 
 def join(a, b, skip, dest, a_end=None, b_end=None):
-    """a[0:a_end] then b[skip:b_end], audio cut at the same points with a 40 ms crossfade."""
+    """a[0:a_end] then b[skip:b_end]; audio cut at exactly the same points so it stays frame-locked."""
     a_end = a_end or len(read_frames(a, (16, 16)))
     vb = f"trim=start_frame={skip}" + (f":end_frame={b_end}" if b_end else "")
     ab = f"atrim=start={skip / FPS:.6f}" + (f":end={b_end / FPS:.6f}" if b_end else "")
     fc = (f"[0:v]trim=end_frame={a_end},setpts=PTS-STARTPTS[v0];[1:v]{vb},setpts=PTS-STARTPTS[v1];"
           f"[v0][v1]concat=n=2:v=1:a=0[v];"
           f"[0:a]atrim=end={a_end / FPS:.6f},asetpts=PTS-STARTPTS[a0];[1:a]{ab},asetpts=PTS-STARTPTS[a1];"
-          f"[a0][a1]acrossfade=d=0.04[a]")
+          f"[a0][a1]concat=n=2:v=0:a=1[a]")
     ff("-i", a, "-i", b, "-filter_complex", fc, "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-crf", "14",
        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", dest)
     return a_end
@@ -327,6 +345,24 @@ def seam_stats(frames, s):
             "flow_seam_error_px": round(float(np.linalg.norm(at - ref)), 2),
             "speed_change_pct": round(float(100 * (np.linalg.norm(after) - np.linalg.norm(before)) / max(1e-6, np.linalg.norm(before))), 1),
             "luma_step": round(luma_after - luma_before, 2)}
+
+
+def audio_seam(path, t, sr=48000):
+    """Loudness either side of t (dB over 100 ms) and click size (largest sample jump at t over the median jump)."""
+    r = subprocess.run([_ffmpeg("ffmpeg"), "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", str(sr),
+                        "-f", "f32le", "-"], capture_output=True, creationflags=NO_WINDOW)
+    a = np.frombuffer(r.stdout, np.float32)
+    i, w = int(round(t * sr)), sr // 10
+    if i < w or i > len(a) - w:
+        return None
+
+    def rms(x):
+        return 20 * np.log10(max(1e-9, float(np.sqrt(np.mean(x.astype(np.float64) ** 2)))))
+
+    d = np.abs(np.diff(a[i - w:i + w]))
+    return {"t": round(t, 3), "db_before": round(rms(a[i - w:i]), 1), "db_after": round(rms(a[i:i + w]), 1),
+            "click_ratio": round(float(d[w - 3:w + 3].max() / max(1e-9, float(np.median(d)))), 1),
+            "audio_len_s": round(len(a) / sr, 3)}
 
 
 def block_luma(frames, start=0):
@@ -456,9 +492,17 @@ def main():
             elif arm.startswith("loop"):
                 v = loops[arm]
                 mode = v.get("tail_mode", "hold")
-                holds = [(s1_name, "head", K)] + ([(s1_name, "tail", v.get("tail", K))] if mode == "hold" else [])
+                holds = [(s1_name, "head", K)]
+                if mode == "hold":
+                    holds.append((s1_name, "tail", v.get("tail", K)))
+                elif mode == "last" and v.get("tail_audio"):
+                    holds.append((s1_name, "tail", K, False))  # audio latents only
+                fam = v.get("family", "fl2va")
                 path = gen(arm, build(p, p["seed"], f"h3_chain/{run_id}_{arm}", steps=v.get("steps"),
-                                      turbo=v.get("turbo", True), holds=holds,
+                                      turbo=v.get("turbo", True), holds=holds, family=fam,
+                                      ref_images=[upload(s1_first), upload(s1_last)] if fam == "ref2va" else (),
+                                      sampler=v.get("sampler", "res_multistep"), scheduler=v.get("scheduler", "simple"),
+                                      shift=v.get("shift"),
                                       guide_clip=upload(s1_head) if mode == "guide" else None, guide_at=N - K,
                                       last_frame=upload(s1_first) if mode == "last" else None))
                 joins[arm] = (path, K)
@@ -487,10 +531,17 @@ def main():
             join(s1, path, K, dest, a_end=N, b_end=N - Kt)
             loop_len = N + (N - Kt - K)
             x2 = os.path.join(out, f"{arm}_x2.mp4")
-            ff("-stream_loop", "1", "-i", dest, "-c", "copy", x2)
+            ff("-i", dest, "-i", dest, "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
+               "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-crf", "14", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "192k", x2)
             gl = read_frames(x2, (416, 240), gray=True)
             g2d = np.array([np.abs(g2[i + 1].astype(np.float32) - g2[i].astype(np.float32)).mean() for i in range(len(g2) - 1)])
             rec["jump_into_tail"] = round(float(g2d[N - Kt - 1]), 2)
+            last12 = g2d[N - Kt - 13:N - Kt - 1]
+            rec["slowdown_last12_min_over_median"] = round(float(last12.min() / max(1e-6, np.median(g2d))), 2)
+            rec["slowdown_last12_mean_over_median"] = round(float(last12.mean() / max(1e-6, np.median(g2d))), 2)
+            rec["audio_wrap"] = audio_seam(x2, loop_len / FPS)
+            rec["audio_in"] = audio_seam(x2, N / FPS)
             rec["median_frame_diff"] = round(float(np.median(g2d)), 2)
             rec["seam_into_loop_shot"] = seam_stats(gl, N)
             rec["seam_wrap_to_S1"] = seam_stats(gl, loop_len)

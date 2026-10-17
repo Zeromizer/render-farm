@@ -83,15 +83,17 @@ class AimH3Hold:
             "frames": ("INT", {"default": 39, "min": 5, "max": 4096}),
             "at": (["head", "tail"],),
             "hold_audio": ("BOOLEAN", {"default": True}),
+        }, "optional": {
+            "hold_video": ("BOOLEAN", {"default": True}),
         }}
 
-    def hold(self, latent, source, frames, at, hold_audio):
+    def hold(self, latent, source, frames, at, hold_audio, hold_video=True):
         video, audio = (t.clone() for t in _parts(latent["samples"]))
         src = torch.load(_path(source), map_location="cpu")
         sv, sa = src["video"].to(video.dtype), src["audio"].to(audio.dtype)
         if sv.shape[1] != video.shape[1] or sv.shape[3:] != video.shape[3:]:
             raise ValueError(f"source {tuple(sv.shape)} does not match this shot {tuple(video.shape)}")
-        n = _latents_in(frames)
+        n = _latents_in(frames) if hold_video else 0
         T, Ts = video.shape[2], sv.shape[2]
         if n > min(T, Ts):
             raise ValueError(f"{frames} frames do not fit in {_frames_of(T)} / {_frames_of(Ts)} frame clips")
@@ -105,15 +107,17 @@ class AimH3Hold:
             vm, am = torch.ones_like(video), torch.ones_like(audio)
 
         if at == "head":
-            video[:, :, :n] = sv[:, :, Ts - n:]
-            vm[:, :, :n] = 0.0
+            if n:
+                video[:, :, :n] = sv[:, :, Ts - n:]
+                vm[:, :, :n] = 0.0
             if a:
                 audio[..., :a] = sa[..., sa.shape[-1] - a:]
                 am[..., :a] = 0.0
             where = f"frames 0..{frames - 1} <- source frames {_frames_of(Ts) - frames}..{_frames_of(Ts) - 1}"
         else:
-            video[:, :, T - n:] = sv[:, :, :n]
-            vm[:, :, T - n:] = 0.0
+            if n:
+                video[:, :, T - n:] = sv[:, :, :n]
+                vm[:, :, T - n:] = 0.0
             if a:
                 audio[..., audio.shape[-1] - a:] = sa[..., :a]
                 am[..., am.shape[-1] - a:] = 0.0
