@@ -211,7 +211,8 @@ def free():
 
 # ---------------------------------------------------------------- graphs
 
-def build(p, seed, prefix, first_frame=None, guide_clip=None, holds=(), save_as=None, steps=None, turbo=True):
+def build(p, seed, prefix, first_frame=None, guide_clip=None, holds=(), save_as=None, steps=None, turbo=True,
+          guide_at=0, last_frame=None):
     """fl2va graph (turbo LoRA unless turbo=False). holds = [(source, "head"|"tail", frames)];
     guide_clip = uploaded mp4 to pin at frame 0."""
     steps = int(steps or p["steps"])
@@ -228,6 +229,9 @@ def build(p, seed, prefix, first_frame=None, guide_clip=None, holds=(), save_as=
     if first_frame:
         g["first"] = {"class_type": "LoadImage", "inputs": {"image": first_frame}}
         cond["first_frame"] = ["first", 0]
+    if last_frame:
+        g["last"] = {"class_type": "LoadImage", "inputs": {"image": last_frame}}
+        cond["last_frame"] = ["last", 0]
     g["cond"] = {"class_type": "MiniMaxH3ImageToVideo", "inputs": cond}
     positive, latent = ["cond", 0], ["cond", 1]
     if guide_clip:
@@ -235,7 +239,7 @@ def build(p, seed, prefix, first_frame=None, guide_clip=None, holds=(), save_as=
         g["gparts"] = {"class_type": "GetVideoComponents", "inputs": {"video": ["gload", 0]}}
         g["guide"] = {"class_type": "MiniMaxH3AddGuide",
                       "inputs": {"positive": positive, "latent": latent, "vae": ["vae", 0], "audio_vae": ["avae", 0],
-                                 "image": ["gparts", 0], "audio": ["gparts", 1], "frame_idx": 0}}
+                                 "image": ["gparts", 0], "audio": ["gparts", 1], "frame_idx": int(guide_at)}}
         positive = ["guide", 0]
     for i, (source, at, frames) in enumerate(holds):
         g[f"hold{i}"] = {"class_type": "AimH3Hold",
@@ -424,6 +428,11 @@ def main():
     ff("-i", s1, "-vf", f"trim=start_frame={N - K},setpts=PTS-STARTPTS", "-af",
        f"atrim=start={(N - K) / FPS:.6f},asetpts=PTS-STARTPTS", "-c:v", "libx264", "-crf", "10",
        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", s1_tail)
+    s1_head = os.path.join(work, "s1_head.mp4")
+    ff("-i", s1, "-vf", f"trim=end_frame={K},setpts=PTS-STARTPTS", "-af", f"atrim=end={K / FPS:.6f},asetpts=PTS-STARTPTS",
+       "-c:v", "libx264", "-crf", "10", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", s1_head)
+    s1_first = os.path.join(work, "s1_first.png")
+    ff("-i", s1, "-vf", "select=eq(n\\,0)", "-frames:v", "1", s1_first)
     s1_last = os.path.join(work, "s1_last.png")
     ff("-i", s1, "-vf", f"select=eq(n\\,{N - 1})", "-frames:v", "1", s1_last)
 
@@ -446,9 +455,12 @@ def main():
                 joins["still"] = (path, 1)
             elif arm.startswith("loop"):
                 v = loops[arm]
+                mode = v.get("tail_mode", "hold")
+                holds = [(s1_name, "head", K)] + ([(s1_name, "tail", v.get("tail", K))] if mode == "hold" else [])
                 path = gen(arm, build(p, p["seed"], f"h3_chain/{run_id}_{arm}", steps=v.get("steps"),
-                                      turbo=v.get("turbo", True),
-                                      holds=[(s1_name, "head", K), (s1_name, "tail", v.get("tail", K))]))
+                                      turbo=v.get("turbo", True), holds=holds,
+                                      guide_clip=upload(s1_head) if mode == "guide" else None, guide_at=N - K,
+                                      last_frame=upload(s1_first) if mode == "last" else None))
                 joins[arm] = (path, K)
         except RuntimeError as e:
             log(f"{arm}: FAILED {e}")
@@ -468,7 +480,7 @@ def main():
             rec["head_vs_S1_tail_mae"] = mae(g2[:K], g1[N - K:])
             rec["head_luma_minus_S1_tail"] = round(float(np.mean([x.mean() for x in g2[:K]]) - np.mean([x.mean() for x in g1[N - K:]])), 2)
         if arm.startswith("loop"):
-            Kt = int(loops[arm].get("tail", K))
+            Kt = 1 if loops[arm].get("tail_mode") == "last" else int(loops[arm].get("tail", K))
             rec["tail_frames"] = Kt
             rec["tail_vs_S1_head_mae"] = mae(g2[N - Kt:], g1[:Kt])
             dest = os.path.join(out, f"join_{arm}.mp4")
