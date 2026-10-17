@@ -15,6 +15,7 @@ params.args = [<job json string>, <out dir>]. Job JSON (all optional):
    "overlap": 39, "seed": 2024, "ref_frames": [24, 150]}
 Writes <out>/{shot1..N.mp4, talk.mp4, sheet.jpg, joins.jpg, report.json}.
 """
+import glob
 import json
 import os
 import shutil
@@ -54,48 +55,56 @@ def prompt_for(scene, line, k):
             f'She keeps walking and talking, and says: "{line}" Then she smiles and keeps walking for a moment.')
 
 
+def prompt_fresh(scene, line):
+    """A fresh odd shot: the bridge lands on it ~3 s in, so it opens on a quiet walk (~4 s)."""
+    return (f"The woman is the same woman as in <Picture 1> and <Picture 2>, same face, hair and outfit. {scene} "
+            f'She walks quietly for about four seconds, glancing at the street, then says: "{line}" '
+            "Then she smiles and keeps walking for a moment.")
+
+
 def extract_png(video, idx, dest):
     tc.ff("-i", video, "-vf", f"select=eq(n\\,{idx})", "-frames:v", "1", dest)
     return dest
 
 
-def make_chain(paths, K, dest, xf=4, axf=0.03, sr=48000):
-    """paths[0] whole, then paths[i][K:] for i >= 1; joins blended inside the shared held stretch.
-    Returns the cumulative frame index of each join."""
+def make_chain(segs, dest, xf=4, axf=0.03, sr=48000):
+    """segs = [(path, start, end)]: each clip's frames [start, end) in order. The frames just before a
+    clip's start must be the same moments as the previous clip's last frames (a held stretch), and the
+    joins are blended inside them. Returns (cumulative frame index of each join, total frames)."""
     spf = sr // tc.FPS
-    first = cv2.VideoCapture(paths[0])
+    first = cv2.VideoCapture(segs[0][0])
     h, w = int(first.get(cv2.CAP_PROP_FRAME_HEIGHT)), int(first.get(cv2.CAP_PROP_FRAME_WIDTH))
     first.release()
     wav = dest + ".f32"
     x = int(axf * sr)
     t = np.linspace(0, np.pi / 2, x, dtype=np.float32)[:, None]
     fo, fi = np.cos(t), np.sin(t)
-    audio = tc.read_audio(paths[0], sr)
-    n0 = len(tc.read_frames(paths[0], (16, 16)))
-    audio = audio[:n0 * spf]
-    for pth in paths[1:]:
+    audio = None
+    for pth, start, end in segs:
         da = tc.read_audio(pth, sr)
-        n = len(tc.read_frames(pth, (16, 16)))
-        audio[-x:] = audio[-x:] * fo + da[K * spf - x:K * spf] * fi
-        audio = np.concatenate([audio, da[K * spf:n * spf]])
+        if audio is None:
+            audio = da[start * spf:end * spf]
+            continue
+        audio[-x:] = audio[-x:] * fo + da[start * spf - x:start * spf] * fi
+        audio = np.concatenate([audio, da[start * spf:end * spf]])
     audio.astype(np.float32).tofile(wav)
     proc = subprocess.Popen([tc._ffmpeg("ffmpeg"), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
                              "-s", f"{w}x{h}", "-r", str(tc.FPS), "-i", "-", "-f", "f32le", "-ar", str(sr), "-ac", "2",
                              "-i", wav, "-c:v", "libx264", "-crf", "14", "-pix_fmt", "yuv420p", "-c:a", "aac",
                              "-b:a", "192k", "-shortest", dest], stdin=subprocess.PIPE, creationflags=tc.NO_WINDOW)
     joins, written, held = [], 0, []  # held = the last xf frames, not written until the next clip arrives
-    for ci, pth in enumerate(paths):
+    for ci, (pth, start, end) in enumerate(segs):
         cap = cv2.VideoCapture(pth)
         i = 0
         pre = []
         while True:
             ok, f = cap.read()
-            if not ok:
+            if not ok or i >= end:
                 break
-            if ci > 0 and i < K - xf:
+            if i < start - (xf if ci else 0):
                 i += 1
                 continue
-            if ci > 0 and i < K:
+            if ci > 0 and i < start:
                 pre.append(f)
                 i += 1
                 if len(pre) == xf:  # blend the previous clip's held tail with this clip's copy of it
@@ -140,32 +149,72 @@ def main():
 
     tc.install_node()
     log("PROGRESS 3")
-    paths, refs = [], []
-    n_shots = len(p["lines"])
-    for k, line in enumerate(p["lines"]):
-        sp = {"prompt": prompt_for(p["scene"], line, k), "width": p["width"], "height": p["height"],
-              "frames": p["first_frames"] if k == 0 else p["frames"], "overlap": K, "steps": 8}
-        name = f"talk_{run_id}_{k + 1}"
-        if k == 0:
-            g = tc.build(sp, int(p["seed"]), f"h3_chain/{name}", save_as=name)
-        else:
-            g = tc.build(sp, int(p["seed"]) + k, f"h3_chain/{name}", save_as=name, family="ref2va",
-                         holds=[(f"talk_{run_id}_{k}", "head", K)], ref_images=refs,
-                         sampler="er_sde", scheduler="beta", shift=(12, 3))
+    lines = p["lines"]
+    n_shots = len(lines)
+    scheme = p.get("scheme", "chain")
+    names = [f"talk_{run_id}_{k + 1}" for k in range(n_shots)]
+    paths, refs = [None] * n_shots, []
+    done = [0]
+
+    def gen(k, g):
         t0 = time.monotonic()
         dest = tc.fetch_mp4(tc.run_outputs(g), os.path.join(out, f"shot{k + 1}.mp4"))
         secs = round(time.monotonic() - t0)
         n = len(tc.read_frames(dest, (16, 16)))
-        report["shots"].append({"shot": k + 1, "line": line, "frames": n, "seconds": secs})
+        report["shots"].append({"shot": k + 1, "line": lines[k], "frames": n, "seconds": secs})
         log(f"shot {k + 1}: {n} frames in {secs}s")
-        paths.append(dest)
-        if k == 0:
-            refs = [tc.upload(extract_png(dest, i, os.path.join(work, f"ref{i}.png"))) for i in p["ref_frames"]]
-        log(f"PROGRESS {5 + int(85 * (k + 1) / n_shots)}")
+        paths[k] = dest
+        done[0] += 1
+        log(f"PROGRESS {5 + int(85 * done[0] / n_shots)}")
+
+    def shot_params(k, prompt, frames):
+        return {"prompt": prompt, "width": p["width"], "height": p["height"], "frames": frames, "overlap": K, "steps": 8}
+
+    r2v = {"family": "ref2va", "sampler": "er_sde", "scheduler": "beta", "shift": (12, 3)}
+
+    # shot 1: fresh FL2VA, or the newest earlier run's shot 1 (its latent is talk_<id>_1)
+    if p.get("reuse_s1"):
+        hits = sorted(glob.glob(os.path.join(tc.COMFY_DIR, "output", "h3_chain", "talk_*_1_0*.mp4")), key=os.path.getmtime)
+        if not hits:
+            raise RuntimeError("reuse_s1: no earlier talk shot 1")
+        names[0] = "_".join(os.path.basename(hits[-1]).split("_")[:3])
+        paths[0] = os.path.join(out, "shot1.mp4")
+        shutil.copyfile(hits[-1], paths[0])
+        report["shots"].append({"shot": 1, "line": lines[0], "reused": os.path.basename(hits[-1])})
+        done[0] += 1
+    else:
+        gen(0, tc.build(shot_params(0, prompt_for(p["scene"], lines[0], 0), p["first_frames"]), int(p["seed"]),
+                        f"h3_chain/{names[0]}", save_as=names[0]))
+    refs = [tc.upload(extract_png(paths[0], i, os.path.join(work, f"ref{i}.png"))) for i in p["ref_frames"]]
+
+    if scheme == "chain":
+        # every shot continues the one before (chain depth grows: drift accumulates)
+        for k in range(1, n_shots):
+            gen(k, tc.build(shot_params(k, prompt_for(p["scene"], lines[k], k), p["frames"]), int(p["seed"]) + k,
+                            f"h3_chain/{names[k]}", save_as=names[k], holds=[(names[k - 1], "head", K)],
+                            ref_images=refs, **r2v))
+        segs = [(paths[0], 0, None)] + [(paths[k], K, None) for k in range(1, n_shots)]
+    else:
+        # the source workflow's order: odd shots fresh from the same refs, even shots bridge them
+        # (head = the previous shot's real end, tail = the next shot's real frames from `land_from`,
+        # past its ease-in). No shot is more than one step from a fresh one.
+        tail, land = int(p.get("tail", 22)), int(p.get("land_from", 51))
+        odd_frames = int(p.get("odd_frames", 294))
+        for k in range(2, n_shots, 2):
+            gen(k, tc.build(shot_params(k, prompt_fresh(p["scene"], lines[k]), odd_frames), int(p["seed"]) + k,
+                            f"h3_chain/{names[k]}", save_as=names[k], ref_images=refs, **r2v))
+        for k in range(1, n_shots, 2):
+            gen(k, tc.build(shot_params(k, prompt_for(p["scene"], lines[k], k), p["frames"]), int(p["seed"]) + k,
+                            f"h3_chain/{names[k]}", save_as=names[k],
+                            holds=[(names[k - 1], "head", K), (names[k + 1], "tail", tail, True, land)],
+                            ref_images=refs, **r2v))
+        segs = [(paths[0], 0, None)] + [(paths[k], K if k % 2 else land + tail, None) for k in range(1, n_shots)]
     tc.free()
+    segs = [(pth, s, len(tc.read_frames(pth, (16, 16)))) for pth, s, _ in segs]
+    report["segments"] = [{"shot": i + 1, "from": s, "to": e} for i, (_, s, e) in enumerate(segs)]
 
     final = os.path.join(out, "talk.mp4")
-    joins, total = make_chain(paths, K, final)
+    joins, total = make_chain(segs, final)
     report["total_frames"], report["seconds"] = total, round(total / tc.FPS, 2)
     g = tc.read_frames(final, (240, 416), gray=True)
     strips = []
@@ -178,6 +227,7 @@ def main():
         strips.append(np.hstack([fr[i] for i in range(j - 2, j + 2)]))
     if strips:
         cv2.imwrite(os.path.join(out, "joins.jpg"), np.vstack(strips), [cv2.IMWRITE_JPEG_QUALITY, 88])
+    report["luma_per_second"] = [round(float(np.mean([x.mean() for x in g[i:i + 24]])), 1) for i in range(0, len(g), 24)]
     # luma per shot (does a long chain darken?)
     report["luma_per_shot"] = [round(float(np.mean([x.mean() for x in tc.read_frames(pth, (60, 104), gray=True)])), 1)
                                for pth in paths]
