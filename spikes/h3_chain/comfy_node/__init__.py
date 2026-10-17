@@ -85,9 +85,11 @@ class AimH3Hold:
             "hold_audio": ("BOOLEAN", {"default": True}),
         }, "optional": {
             "hold_video": ("BOOLEAN", {"default": True}),
+            "source_from": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 17,
+                                    "tooltip": "tail only: take the source's frames from here (a multiple of 17)"}),
         }}
 
-    def hold(self, latent, source, frames, at, hold_audio, hold_video=True):
+    def hold(self, latent, source, frames, at, hold_audio, hold_video=True, source_from=0):
         video, audio = (t.clone() for t in _parts(latent["samples"]))
         src = torch.load(_path(source), map_location="cpu")
         sv, sa = src["video"].to(video.dtype), src["audio"].to(audio.dtype)
@@ -97,8 +99,14 @@ class AimH3Hold:
         T, Ts = video.shape[2], sv.shape[2]
         if n > min(T, Ts):
             raise ValueError(f"{frames} frames do not fit in {_frames_of(T)} / {_frames_of(Ts)} frame clips")
+        if source_from % BLOCK:
+            raise ValueError(f"source_from must be a multiple of {BLOCK}, got {source_from}")
+        l0 = source_from // BLOCK * 5          # latent index where that block starts
+        a0 = int(round(source_from * AUDIO_PER_FRAME))
+        if at == "tail" and l0 + n > Ts:
+            raise ValueError(f"source frames {source_from}+{frames} run past the source's {_frames_of(Ts)} frames")
         a = int(round(frames * AUDIO_PER_FRAME)) if hold_audio else 0
-        a = min(a, audio.shape[-1], sa.shape[-1])
+        a = min(a, audio.shape[-1], sa.shape[-1] - (a0 if at == "tail" else 0))
 
         old = latent.get("noise_mask")
         if isinstance(old, NestedTensor):
@@ -116,13 +124,13 @@ class AimH3Hold:
             where = f"frames 0..{frames - 1} <- source frames {_frames_of(Ts) - frames}..{_frames_of(Ts) - 1}"
         else:
             if n:
-                video[:, :, T - n:] = sv[:, :, :n]
+                video[:, :, T - n:] = sv[:, :, l0:l0 + n]
                 vm[:, :, T - n:] = 0.0
             if a:
-                audio[..., audio.shape[-1] - a:] = sa[..., :a]
+                audio[..., audio.shape[-1] - a:] = sa[..., a0:a0 + a]
                 am[..., am.shape[-1] - a:] = 0.0
             f0 = _frames_of(T - n)
-            where = f"frames {f0}..{f0 + frames - 1} <- source frames 0..{frames - 1}"
+            where = f"frames {f0}..{f0 + frames - 1} <- source frames {source_from}..{source_from + frames - 1}"
         print(f"[AimH3Hold] {at} {source}: {where}, {n} video latents, {a} audio latents")
 
         out = {k: v for k, v in latent.items() if k not in ("samples", "noise_mask")}

@@ -258,7 +258,8 @@ def build(p, seed, prefix, first_frame=None, guide_clip=None, holds=(), save_as=
     for i, (source, at, frames, *rest) in enumerate(holds):
         g[f"hold{i}"] = {"class_type": "AimH3Hold",
                          "inputs": {"latent": latent, "source": source, "frames": frames, "at": at,
-                                    "hold_audio": True, "hold_video": rest[0] if rest else True}}
+                                    "hold_audio": True, "hold_video": rest[0] if rest else True,
+                                    "source_from": rest[1] if len(rest) > 1 else 0}}
         latent = [f"hold{i}", 0]
     model = ["lora", 0] if turbo else ["unet", 0]
     if not turbo:
@@ -363,6 +364,81 @@ def audio_seam(path, t, sr=48000):
     return {"t": round(t, 3), "db_before": round(rms(a[i - w:i]), 1), "db_after": round(rms(a[i:i + w]), 1),
             "click_ratio": round(float(d[w - 3:w + 3].max() / max(1e-9, float(np.median(d)))), 1),
             "audio_len_s": round(len(a) / sr, 3)}
+
+
+def read_audio(path, sr=48000):
+    r = subprocess.run([_ffmpeg("ffmpeg"), "-v", "error", "-i", path, "-vn", "-ac", "2", "-ar", str(sr),
+                        "-f", "f32le", "-"], capture_output=True, creationflags=NO_WINDOW)
+    return np.frombuffer(r.stdout, np.float32).reshape(-1, 2).copy()
+
+
+def frames_range(path, start, stop):
+    cap = cv2.VideoCapture(path)
+    out, i = [], 0
+    while i < stop:
+        ok, f = cap.read()
+        if not ok:
+            break
+        if i >= start:
+            out.append(f)
+        i += 1
+    cap.release()
+    return out
+
+
+def make_loop(s1, d, wf, K, Kt, N, unit_path, x2_path, xf=4, axf=0.03, sr=48000):
+    """Loop unit = S1[wf:N] + D[K:N-Kt]; D's first K frames stand for S1[N-K:N] and its last Kt frames
+    for S1[wf:wf+Kt] (held latents, or the last_frame target when Kt == 1), so both joins sit inside
+    stretches the two clips share. Within that shared stretch the picture is blended over xf frames and
+    the sound over axf seconds (equal power), so decode-level differences don't pop or click. Length is
+    frame-exact: audio is cut at the same frames as the video. Writes the unit and the unit played twice."""
+    a = frames_range(s1, wf, N)
+    b = frames_range(d, max(0, K - xf), N - Kt + xf)
+    b_pre, b_main, b_post = b[:xf], b[xf:xf + (N - Kt - K)], b[xf + (N - Kt - K):]
+    a = [f.astype(np.float32) for f in a]
+    for i in range(min(xf, len(b_pre))):  # into D: the last xf frames of S1 fade towards D's copy of them
+        w = (i + 1) / (xf + 1)
+        a[len(a) - xf + i] = (1 - w) * a[len(a) - xf + i] + w * b_pre[i].astype(np.float32)
+    for i in range(min(xf, len(b_post))):  # the wrap: open on D's copy of S1[wf..] and fade to S1's own
+        w = (i + 1) / (xf + 1)
+        a[i] = w * a[i] + (1 - w) * b_post[i].astype(np.float32)
+    frames = [np.clip(f, 0, 255).astype(np.uint8) for f in a] + b_main
+    spf = sr // FPS
+    sa, da = read_audio(s1, sr), read_audio(d, sr)
+    unit_a = np.concatenate([sa[wf * spf:N * spf], da[K * spf:(N - Kt) * spf]]).copy()
+    x = int(axf * sr)
+    t = np.linspace(0, np.pi / 2, x, dtype=np.float32)[:, None]
+    fo, fi = np.cos(t), np.sin(t)
+    j = (N - wf) * spf  # into D: blend S1's last x samples with D's audio for the same moments
+    unit_a[j - x:j] = sa[N * spf - x:N * spf] * fo + da[K * spf - x:K * spf] * fi
+    tail = da[(N - Kt) * spf:(N - Kt) * spf + x]  # the wrap: D's audio carries on, fading into S1's
+    if len(tail) == x:
+        unit_a[:x] = tail * fo + sa[wf * spf:wf * spf + x] * fi
+    h, w_ = frames[0].shape[:2]
+    for path, reps in ((unit_path, 1), (x2_path, 2)):
+        wav = path + ".f32"
+        np.tile(unit_a, (reps, 1)).astype(np.float32).tofile(wav)
+        proc = subprocess.Popen([_ffmpeg("ffmpeg"), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
+                                 "-s", f"{w_}x{h}", "-r", str(FPS), "-i", "-", "-f", "f32le", "-ar", str(sr), "-ac", "2",
+                                 "-i", wav, "-c:v", "libx264", "-crf", "14", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                                 "-b:a", "192k", "-shortest", path], stdin=subprocess.PIPE, creationflags=NO_WINDOW)
+        for _ in range(reps):
+            for f in frames:
+                proc.stdin.write(f.tobytes())
+        proc.stdin.close()
+        if proc.wait():
+            raise RuntimeError(f"ffmpeg failed writing {path}")
+        os.remove(wav)
+    return len(frames)
+
+
+def bg_speed(gray_frames, s, half=16):
+    """Background speed (90th percentile |horizontal flow|, px/frame at 416 wide) for frames s-half..s+half."""
+    out = []
+    for i in range(max(0, s - half - 1), min(len(gray_frames) - 1, s + half)):
+        fl = cv2.calcOpticalFlowFarneback(gray_frames[i], gray_frames[i + 1], None, 0.5, 4, 25, 3, 7, 1.5, 0)
+        out.append(round(float(np.percentile(np.abs(fl[..., 0]), 90)), 1))
+    return out
 
 
 def block_luma(frames, start=0):
@@ -494,11 +570,11 @@ def main():
                 mode = v.get("tail_mode", "hold")
                 holds = [(s1_name, "head", K)]
                 if mode == "hold":
-                    holds.append((s1_name, "tail", v.get("tail", K)))
+                    holds.append((s1_name, "tail", v.get("tail", K), True, int(v.get("wrap_from", 0))))
                 elif mode == "last" and v.get("tail_audio"):
                     holds.append((s1_name, "tail", K, False))  # audio latents only
                 fam = v.get("family", "fl2va")
-                path = gen(arm, build(p, p["seed"], f"h3_chain/{run_id}_{arm}", steps=v.get("steps"),
+                path = gen(arm, build(p, int(v.get("seed", p["seed"])), f"h3_chain/{run_id}_{arm}", steps=v.get("steps"),
                                       turbo=v.get("turbo", True), holds=holds, family=fam,
                                       ref_images=[upload(s1_first), upload(s1_last)] if fam == "ref2va" else (),
                                       sampler=v.get("sampler", "res_multistep"), scheduler=v.get("scheduler", "simple"),
@@ -524,30 +600,30 @@ def main():
             rec["head_vs_S1_tail_mae"] = mae(g2[:K], g1[N - K:])
             rec["head_luma_minus_S1_tail"] = round(float(np.mean([x.mean() for x in g2[:K]]) - np.mean([x.mean() for x in g1[N - K:]])), 2)
         if arm.startswith("loop"):
-            Kt = 1 if loops[arm].get("tail_mode") == "last" else int(loops[arm].get("tail", K))
-            rec["tail_frames"] = Kt
-            rec["tail_vs_S1_head_mae"] = mae(g2[N - Kt:], g1[:Kt])
-            dest = os.path.join(out, f"join_{arm}.mp4")
-            join(s1, path, K, dest, a_end=N, b_end=N - Kt)
-            loop_len = N + (N - Kt - K)
+            v = loops[arm]
+            Kt = 1 if v.get("tail_mode") == "last" else int(v.get("tail", K))
+            wf = int(v.get("wrap_from", 0)) if v.get("tail_mode", "hold") == "hold" else 0
+            rec["tail_frames"], rec["wrap_from"] = Kt, wf
+            rec["tail_vs_S1_head_mae"] = mae(g2[N - Kt:], g1[wf:wf + Kt])
             x2 = os.path.join(out, f"{arm}_x2.mp4")
-            ff("-i", dest, "-i", dest, "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
-               "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-crf", "14", "-pix_fmt", "yuv420p",
-               "-c:a", "aac", "-b:a", "192k", x2)
+            loop_len = make_loop(s1, path, wf, K, Kt, N, os.path.join(out, f"join_{arm}.mp4"), x2,
+                                 xf=int(v.get("blend_frames", 4)) if wf or v.get("tail_mode", "hold") == "hold" else 0)
+            seam_in = N - wf
             gl = read_frames(x2, (416, 240), gray=True)
+            rec["speed_around_wrap"] = bg_speed(gl, loop_len)
             g2d = np.array([np.abs(g2[i + 1].astype(np.float32) - g2[i].astype(np.float32)).mean() for i in range(len(g2) - 1)])
             rec["jump_into_tail"] = round(float(g2d[N - Kt - 1]), 2)
             last12 = g2d[N - Kt - 13:N - Kt - 1]
             rec["slowdown_last12_min_over_median"] = round(float(last12.min() / max(1e-6, np.median(g2d))), 2)
             rec["slowdown_last12_mean_over_median"] = round(float(last12.mean() / max(1e-6, np.median(g2d))), 2)
             rec["audio_wrap"] = audio_seam(x2, loop_len / FPS)
-            rec["audio_in"] = audio_seam(x2, N / FPS)
+            rec["audio_in"] = audio_seam(x2, seam_in / FPS)
             rec["median_frame_diff"] = round(float(np.median(g2d)), 2)
-            rec["seam_into_loop_shot"] = seam_stats(gl, N)
+            rec["seam_into_loop_shot"] = seam_stats(gl, seam_in)
             rec["seam_wrap_to_S1"] = seam_stats(gl, loop_len)
             rec["loop_frames"] = loop_len
-            seam_strip(x2, loop_len, os.path.join(out, f"seams_{arm}_wrap.jpg"), f"{arm}: wrap back to S1 frame 0")
-            seam_strip(x2, N, os.path.join(out, f"seams_{arm}_in.jpg"), f"{arm}: S1 -> in-between shot")
+            seam_strip(x2, loop_len, os.path.join(out, f"seams_{arm}_wrap.jpg"), f"{arm}: wrap back to S1 frame {wf}")
+            seam_strip(x2, seam_in, os.path.join(out, f"seams_{arm}_in.jpg"), f"{arm}: S1 -> in-between shot")
         else:
             dest = os.path.join(out, f"join_{arm}.mp4")
             join(s1, path, skip, dest, a_end=N)
