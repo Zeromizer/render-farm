@@ -81,6 +81,12 @@ ARMS = {
     "noah_guided_wide_turbo_nolora": dict(SQ, car="noah", w=1344, n=243, steps=8, turbo=True, guides=True, orbit=False),
     "noah_q1_lora": dict(SQ, car="noah", w=1344, n=124, steps=8, turbo=True, quarter=True, prompt=QUARTER_PROMPT),
     "noah_q1_base": dict(SQ, car="noah", w=1344, n=124, steps=8, turbo=True, quarter=True, orbit=False, prompt=TT_PROMPT),
+    # round 2: 1344x768, pins = ready canvases in/pins/<set>_<deg>.png (prep_pins.py on the laptop): orig = the 4
+    # photos, toy = Toyota's 12 configurator frames (30 deg apart), mix = photos at 0/90/180/270 + Toyota between
+    "r2_mix12_124": dict(SQ, car="noah", w=1344, n=124, pins="mix", guides=True),
+    "r2_orig4_124": dict(SQ, car="noah", w=1344, n=124, pins="orig", guides=True),
+    "r2_toy12_124": dict(SQ, car="noah", w=1344, n=124, pins="toy", guides=True),
+    "r2_mix12_243": dict(SQ, car="noah", w=1344, n=243, steps=20, pins="mix", guides=True),
 }
 VIEWS = ("front", "left", "rear", "right")
 
@@ -450,7 +456,12 @@ def main():
         rec = {k2: a[k2] for k2 in ("car", "w", "h", "n", "steps", "turbo", "orbit", "guides")}
         rec["quarter"] = bool(a.get("quarter"))
         try:
-            if a["car"] == "human":
+            if a.get("pins"):
+                canv = {}
+                for p in sorted(glob.glob(os.path.join(IN, "pins", f"{a['pins']}_*.png"))):
+                    deg = int(os.path.basename(p)[:-4].rsplit("_", 1)[1])
+                    canv["front" if deg == 0 else f"d{deg:03d}"] = cv2.imread(p)
+            elif a["car"] == "human":
                 canv = {"front": human_frame(work)}
             else:
                 canv, scale = pad_set(car_photos(a["car"]), a["w"], a["h"])
@@ -463,7 +474,10 @@ def main():
             first = names_up["front"]
             last = names_up["left"] if a.get("quarter") else names_up["front"]
             guides = []
-            if a["guides"]:
+            if a.get("pins"):
+                for v in sorted(k2 for k2 in names_up if k2 != "front"):
+                    guides.append((names_up[v], round(int(v[1:]) * (a["n"] - 1) / 360)))
+            elif a["guides"]:
                 for q, v in ((1, "left"), (2, "rear"), (3, "right")):
                     guides.append((names_up[v], round(q * (a["n"] - 1) / 4)))
             rec["guide_frames"] = [i for _, i in guides]
