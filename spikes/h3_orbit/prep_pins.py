@@ -59,3 +59,24 @@ for deg in range(0, 360, 30):
     cv2.imwrite(os.path.join(OUT, f"toy_{deg:03d}.png"), place(toy[deg], s_t, ground_t))
 tiles = [cv2.resize(cv2.imread(os.path.join(OUT, f"mix_{d:03d}.png")), (336, 192)) for d in range(0, 360, 30)]
 cv2.imwrite(os.path.join(ROOT, "pins_mix_sheet.jpg"), np.vstack([np.hstack(tiles[r:r + 6]) for r in (0, 6)]))
+
+
+# "toyn": Toyota frames placed with ONE scale and ONE offset for all 12 (keeps the render's own camera:
+# fixed roof line, true turning axis). Per-view bbox placement made the car bob and drift.
+raw = []
+for i in range(12):
+    im = cv2.imread(os.path.join(ROOT, "noah360", f"frame_{i:02d}.png"), cv2.IMREAD_UNCHANGED)
+    a = im[:, :, 3:4].astype(np.float32) / 255
+    raw.append((im[:, :, :3] * a + BG * (1 - a)).astype(np.uint8))
+    ys, xs = np.nonzero(im[:, :, 3] > 200)
+    box = (xs.min(), ys.min(), xs.max(), ys.max()) if i == 0 else (min(box[0], xs.min()), min(box[1], ys.min()),
+                                                                 max(box[2], xs.max()), max(box[3], ys.max()))
+ux0, uy0, ux1, uy1 = box
+s = min(0.86 * W / (ux1 - ux0 + 1), 0.78 * H / (uy1 - uy0 + 1))
+ox = W / 2 - s * (ux0 + ux1) / 2
+oy = H / 2 - s * (uy0 + uy1) / 2
+M = np.float32([[s, 0, ox], [0, s, oy]])
+print(f"toyn: union {box}, scale {s:.3f}, offset ({ox:.1f}, {oy:.1f})")
+for i, im in enumerate(raw):
+    out = cv2.warpAffine(im, M, (W, H), flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=(BG, BG, BG))
+    cv2.imwrite(os.path.join(OUT, f"toyn_{i * 30:03d}.png"), out)
