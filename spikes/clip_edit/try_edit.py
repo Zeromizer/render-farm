@@ -3,7 +3,9 @@ farm's python engine, before the clip_edit engine exists.
 
 params.args = [<job json string>, <out dir>]. The job JSON:
   {"tests": [{"name": "...", "mode": "...", "inputs": {"clip": <url>, "clip_b": <url>},
-              ...clip_edit spec keys..., "prompt": "...", "takes": 2, "seed": 6332}]}
+              ...clip_edit spec keys..., "prompt": "...", "takes": 2, "seed": 6332,
+              "refs": [["clip_b", 0]],            # optional ref2va reference images: frame N of an input
+              "trim": {"clip": [12, -30]}}]}     # optional: keep frames [a, b) of an input (b < 0 from the end)
 Inputs are fetched from (signed) URLs, so client clips never go into the repo.
 Per test: <out>/<name>/{best.mp4, take<N>.mp4, proof.png, report.json}.
 
@@ -110,9 +112,29 @@ def run_test(t, out_root, work_root):
     os.makedirs(work, exist_ok=True)
     os.makedirs(out, exist_ok=True)
     spec = {k: v for k, v in t.items() if k not in ("name", "inputs", "prompt", "takes", "seed", "steps",
-                                                    "family", "edges")}
+                                                    "family", "edges", "refs", "trim")}
     for key, url in t["inputs"].items():
         spec[key] = fetch(url, os.path.join(work, f"{key}.mp4"))
+    ref_names = []
+    for i, (key, idx) in enumerate(t.get("refs") or []):  # before any trim: frame idx of the input as fetched
+        frames_, _ = clip_edit.L.read_clip(spec[key])
+        png = os.path.join(work, f"ref{i}.png")
+        clip_edit.cv2.imwrite(png, frames_[idx])
+        ref_names.append(upload(png))
+        log(f"   ref {i}: {key} frame {idx}")
+    for key, (a, b) in (t.get("trim") or {}).items():
+        src = spec[key]
+        n = len(clip_edit.L.read_clip(src)[0])
+        b = n + b if b <= 0 else b
+        dst = os.path.join(work, f"{key}_trim.mp4")
+        import subprocess
+        subprocess.run([clip_edit.L.find_ffmpeg_tool("ffmpeg"), "-v", "error", "-y",
+                        "-i", src, "-vf", f"trim=start_frame={a}:end_frame={b},setpts=PTS-STARTPTS",
+                        "-af", f"atrim=start={a / clip_edit.FPS}:end={b / clip_edit.FPS},asetpts=PTS-STARTPTS",
+                        "-c:v", "libx264", "-crf", "8", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", dst],
+                       check=True)
+        spec[key] = dst
+        log(f"   trim {key}: frames {a}..{b} of {n}")
     spec["work_dir"] = work
     log(f"== {name}: prep {json.dumps({k: v for k, v in spec.items() if k not in ('clip', 'clip_b')})[:400]}")
     clip_edit.prep(spec)
@@ -129,7 +151,7 @@ def run_test(t, out_root, work_root):
         seed = int(t.get("seed", 6332)) + 1009 * i
         graph, meta = graphs_inpaint.build(*names, t["prompt"], W, H, plan["length"], seed,
                                            f"clip_edit_try/{name}_t{i + 1}", steps=t.get("steps"),
-                                           family=family, **edges)
+                                           family=family, ref_images=ref_names, **edges)
         dest = os.path.join(work, f"raw{i + 1}.mp4")
         secs = run_graph(graph, dest)
         log(f"   take {i + 1}: {family}{' +edges' if edges else ''} {W}x{H} {plan['length']}f seed {seed} "

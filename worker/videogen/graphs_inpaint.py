@@ -23,14 +23,15 @@ REQUIRED_NODES = ("vloMaskToLatentMask", "vloLatentCompositeMasked", "vloSetAudi
 
 
 def build(src_name, mask_name, amask_name, prompt, width, height, length, seed, prefix,
-          steps=None, turbo=True, family="ref2va", first_frame=None, last_frame=None):
+          steps=None, turbo=True, family="ref2va", first_frame=None, last_frame=None, ref_images=()):
     """Return the API prompt dict. width/height must be multiples of 32, length 17k+5,
     and the three inputs already uploaded at exactly width x height x length.
 
     family  ref2va (default: reference-to-video, what region edits use) or fl2va (the
             first/last-frame model, vlo's flf2va inpaint: made for in-betweens, so
             bridges and extensions); fl2va may also take first_frame / last_frame
-            image names as extra conditioning."""
+            image names as extra conditioning. ref2va may take ref_images (uploaded image
+            names), e.g. the real photo of a view the generated stretch passes through."""
     if width % 32 or height % 32:
         raise ValueError(f"canvas must be 32-aligned, got {width}x{height}")
     if (length - 5) % 17:
@@ -86,6 +87,9 @@ def build(src_name, mask_name, amask_name, prompt, width, height, length, seed, 
         g["cond"] = {"class_type": "MiniMaxH3ReferenceToVideo",
                      "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "audio_vae": ["avae", 0], "prompt": prompt,
                                 "width": width, "height": height, "length": length, "ref_image_size": "match"}}
+        for i, name in enumerate(ref_images or ()):
+            g[f"ref{i}"] = {"class_type": "LoadImage", "inputs": {"image": name}}
+            g["cond"]["inputs"][f"ref_images.ref_image_{i}"] = [f"ref{i}", 0]
     else:
         cond = {"clip": ["clip", 0], "vae": ["vae", 0], "prompt": prompt,
                 "width": width, "height": height, "length": length}
