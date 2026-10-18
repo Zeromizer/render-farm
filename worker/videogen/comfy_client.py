@@ -168,6 +168,34 @@ def object_info():
     return httpx.get(_url("/object_info"), timeout=60).json()
 
 
+def ensure_model(folder, name, url, sha256, log):
+    """Make sure <COMFYUI_DIR>/models/<folder>/<name> exists, downloading it (sha256-checked) when it
+    does not: a model added after a cloud pod's volume was filled arrives on its first job. ComfyUI
+    rescans a model folder when its mtime changes, so no restart is needed."""
+    import hashlib
+    import urllib.request
+    dest = os.path.join(config.COMFYUI_DIR, "models", folder, name)
+    if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        return dest
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    part = f"{dest}.{os.getpid()}.part"
+    log(f"model {folder}/{name} missing: downloading {url}")
+    h = hashlib.sha256()
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r, open(part, "wb") as f:
+            while chunk := r.read(1 << 22):
+                h.update(chunk)
+                f.write(chunk)
+        if h.hexdigest() != sha256:
+            raise RuntimeError(f"{name}: sha256 {h.hexdigest()} does not match {sha256}")
+        os.replace(part, dest)
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
+    log(f"model {folder}/{name}: {os.path.getsize(dest)} bytes")
+    return dest
+
+
 def upload_input(local_path, subfolder="video_gen"):
     """Put a file in ComfyUI/input/<subfolder>/ and return the name a Load* node wants."""
     with open(local_path, "rb") as f:

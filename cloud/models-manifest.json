@@ -2,7 +2,7 @@
   "comfyui_root": "C:/ComfyUI",
   "cloud_root": "/workspace/ComfyUI",
   "generated": "2026-10-15",
-  "total_bytes": 145886635762,
+  "total_bytes": 146041747186,
   "local_only_bytes": 48149938271,
   "files": [
     {
@@ -84,6 +84,13 @@
       "source": "local-only",
       "url": "",
       "note": "HF copy exists but sha256 differs from the PC file"
+    },
+    {
+      "path": "models/loras/minimax_h3_360_orbit_flf2v_v1.safetensors",
+      "bytes": 155111424,
+      "sha256": "14f13e3effaf3e729fdc0c97680344aa63f473be0c55963f963d718b3db2a4d4",
+      "source": "hf",
+      "url": "https://huggingface.co/pablodawson/MiniMax-H3-360-Orbit-LoRA/resolve/5ddbc2dbbe95edbbdaf5017c3e934b1d01791697/minimax_h3_flf2v_lora_v1.safetensors"
     },
     {
       "path": "models/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",

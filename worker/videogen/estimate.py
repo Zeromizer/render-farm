@@ -22,6 +22,8 @@ LOAD_S = 25.0
 SEEDVR2_S_PER_VIDEO_S = 55.0
 LANCZOS_S = 10.0
 TURNTABLE_POST_S = 90.0
+ORBIT_GUIDE_FACTOR = 1.4     # pinned views cost on top of a plain 243-frame turbo i2v (PC: 764 s measured, 2026-10-18)
+ORBIT_POST_S = 150.0         # view checks, segment cuts, RIFE 2x to the rotation time, encode
 TURNTABLE_BRIDGE_S = 360.0   # one bridged join: prep, two Ref2VA takes, compose, checks (PC, 2026-10-18)
 
 
@@ -78,6 +80,10 @@ def job_seconds(params):
             pl = flow.plan(tt)
             n, secs = len(pl["generate"]), pl["seconds"]
             joins = len(pl["sequence"]) if pl["bridge"] else 0
+            if pl["method"] == "orbit":
+                seg = {"duration_s": pl["orbit_seconds"], "resolution": tt.get("resolution", "768p"),
+                       "ratio": tt.get("ratio", "16:9")}
+                return generation_seconds(seg, "i2v") * ORBIT_GUIDE_FACTOR + ORBIT_POST_S
         except Exception:  # noqa: BLE001 - an invalid job fails fast in the runner; estimate something
             n, secs, joins = 2, tt.get("seconds_per_half", 10), 0
         seg = {"duration_s": secs, "resolution": tt.get("resolution", "768p"), "ratio": tt.get("ratio", "16:9")}

@@ -55,6 +55,21 @@ shared-frame join at the model's own steady speed; it is RIFE'd to the output fp
 without a remap. Every bridge take is checked for a seam jump, a motion jump and a
 one-frame colour flash; a join with no clean take after a second window falls the
 whole job back to the anchor joins of step 6 (a defect says so).
+
+ORBIT (method="orbit", THE DEFAULT for a complete rotation made from photos, 2026-10-18). One H3
+generation draws the whole turn: FL2VA with the 360 orbit LoRA (graphs.ORBIT_LORA), the front photo as
+first AND last frame (so it loops), and every other view pinned at its angle's frame with core
+MiniMaxH3AddGuide (90 = left, 180 = rear, 270 = right, plus optional extra `views` at any angle). No
+joins, no remap: the speed is the model's own and even. Measured on the Toyota Noah (spike/h3-orbit):
+  - 10 s (243 frames) keeps plates and badges legible all the way round; 5 s garbles them between pins.
+  - every pin should come from ONE consistent source (same camera); mixing sources jerks at the seams.
+    pad_photos_common keeps each photo's own framing (one scale, no per-view re-centring): placing every
+    view on its own bounding box made the car bob ~60 px twice per turn.
+  - turbo-8 stacked under the orbit LoRA matches 20 full steps (13 vs 28 min on the PC).
+The clip is cut at the anchor frames into the usual segments (front_to_left ... or front_to_rear ...),
+so the manifest, segment review, single-quarter regeneration and assembly keep working; a partial
+request (`segments`) or any `ready_segments` uses the quarters method above. The master is RIFE'd from
+the native 10 s to the rotation time the old method had (seconds_per_quarter x 4 / seconds_per_half x 2).
 """
 import os
 import time
@@ -98,8 +113,15 @@ REPAIR_MOTION = ("continuing the same clockwise turn as seen from above from the
                  "it reaches the {target} shown in the last frame; the same side of the car stays visible throughout "
                  "and it never turns the other way")
 DEFAULTS = {"resolution": "768p", "ratio": "16:9", "seconds_per_half": 10, "seconds_per_quarter": 5, "seed": 21,
-            "fps": 60, "shorter_size": 1080, "density": 10, "details": "", "joins": "bridge"}
+            "fps": 60, "shorter_size": 1080, "density": 10, "details": "", "joins": "bridge", "method": "orbit",
+            "orbit_seconds": 10}
 JOINS = ("bridge", "anchor")
+METHODS = ("orbit", "quarters")
+ANCHOR_ANGLE = {"front": 0, "left": 90, "rear": 180, "right": 270}
+ORBIT_SECONDS = (5, 10)          # one generation; 768p cannot exceed 10 s, and under ~10 s lettering garbles
+ORBIT_MAX_VIEWS = 23             # extra views (15 degrees apart at most), on top of the four anchors
+ORBIT_PIN_MAX = 14.0             # frame_diff of a pinned frame vs its photo (clean pins measured 2-5)
+ORBIT_TRIES = 2
 SECONDS_LIMITS = {"two": (4, 10), "four": (3, 10)}
 TRANSITION_MAX_DIFF = 6.0      # mean luma diff (256 px grey) of the frame a seam shares: same anchor ~0-3, front vs rear view ~10
 
@@ -198,10 +220,70 @@ def plan(tt):
     joins = tt.get("joins") or DEFAULTS["joins"]
     if joins not in JOINS:
         raise ValueError(f"turntable.joins must be one of {list(JOINS)} (got {joins!r})")
+    method = tt.get("method") or DEFAULTS["method"]
+    if method not in METHODS:
+        raise ValueError(f"turntable.method must be one of {list(METHODS)} (got {method!r})")
+    views = parse_views(tt.get("views"), {a for a in ANCHORS if has[a]})
+    # The orbit is one generation of the whole turn: a partial request or reused segments need quarters.
+    orbit = method == "orbit" and complete and not ready
+    if views and not orbit:
+        raise ValueError("turntable.views (extra angles) need the orbit method and a complete rotation "
+                         "without ready_segments")
+    orbit_seconds = tt.get("orbit_seconds")
+    orbit_seconds = float(DEFAULTS["orbit_seconds"] if orbit_seconds in (None, "") else orbit_seconds)
+    if not ORBIT_SECONDS[0] <= orbit_seconds <= ORBIT_SECONDS[1]:
+        raise ValueError(f"turntable.orbit_seconds must be {ORBIT_SECONDS[0]}-{ORBIT_SECONDS[1]} (got {orbit_seconds:g})")
     return {"variant": variant, "sequence": list(seq), "segments": segments, "requested": list(requested),
             "generate": generate, "reuse": [s["name"] for s in segments if s["ready"]], "anchors": needed,
             "complete": complete, "loops": complete, "seconds": seconds,
-            "bridge": joins == "bridge" and complete}
+            "method": "orbit" if orbit else "quarters", "views": views, "orbit_seconds": orbit_seconds,
+            "bridge": joins == "bridge" and complete and not orbit}
+
+
+def parse_views(views, anchors_given):
+    """turntable.views: [{angle, image: {bucket, path}}] extra pinned angles for the orbit, in degrees of
+    the same clockwise turn (front 0, left 90, rear 180, right 270). Returns [(angle, ref)] by angle."""
+    if views in (None, "", []):
+        return []
+    if not isinstance(views, list) or not all(isinstance(v, dict) for v in views):
+        raise ValueError("turntable.views must be a list of {angle, image: {bucket, path}}")
+    if len(views) > ORBIT_MAX_VIEWS:
+        raise ValueError(f"turntable.views: at most {ORBIT_MAX_VIEWS} extra angles (got {len(views)})")
+    taken = {ANCHOR_ANGLE[a] for a in anchors_given}
+    out = []
+    for i, v in enumerate(views):
+        try:
+            angle = float(v.get("angle"))
+        except (TypeError, ValueError):
+            raise ValueError(f"turntable.views[{i}].angle must be a number of degrees")
+        if not 0 < angle < 360:
+            raise ValueError(f"turntable.views[{i}].angle must be between 0 and 360 exclusive (got {angle:g}); "
+                             "0 is the front photo")
+        if not _is_ref(v.get("image")):
+            raise ValueError(f"turntable.views[{i}].image must be {{bucket, path}}")
+        if any(abs(angle - t) < 5 for t in taken):
+            raise ValueError(f"turntable.views[{i}]: angle {angle:g} is within 5 degrees of another view")
+        taken.add(angle)
+        out.append((angle, v["image"]))
+    return sorted(out, key=lambda x: x[0])
+
+
+def orbit_frame(angle, length):
+    """Frame of a `length`-frame orbit (front at 0 and length-1) where the view at `angle` sits."""
+    return int(round(angle / 360.0 * (length - 1)))
+
+
+def orbit_cuts(variant, length):
+    """[(segment name, first frame, last frame inclusive)] of an orbit clip: consecutive segments share
+    their anchor frame, exactly like generated quarters/halves."""
+    seq = SEQUENCES[variant]
+    out = []
+    for name in seq:
+        a, b = anchors_of(name)
+        lo = orbit_frame(ANCHOR_ANGLE[a], length)
+        hi = length - 1 if b == "front" else orbit_frame(ANCHOR_ANGLE[b], length)
+        out.append((name, lo, hi))
+    return out
 
 
 def bridge_gen_frames(m_a, m_b, cut=BRIDGE_CUT):
@@ -304,14 +386,18 @@ def labels_for(pl):
 def run(opts, api, log):
     """opts: the params.video_gen.turntable object plus
              anchor_local {front|left|rear|right: local photo path} for every anchor plan() lists,
+             view_local   [(angle, local photo path)] for every plan()["views"] entry (orbit only),
              ready_local  {segment_name: local 24 fps mp4} for every ready_segments entry
        api:  work_dir; upload(local_path) -> anchor ref for submit(); submit(vg, label, prange, after_seconds,
              after_text) -> handle (runs an i2v generation, reporting progress inside prange); wait(handle, label)
-             -> local mp4; phase(text, progress); check_cancel(); bridge(spec) (bridged joins: one clip_edit
+             -> local mp4; orbit(spec) -> local mp4 (one pinned 360 generation, run_orbit);
+             phase(text, progress); check_cancel(); bridge(spec) (bridged joins: one clip_edit
              bridge, see bridge_joins) -> {"report": compose report, "takes": [composed take mp4s]}
        returns {video, joined, segments: {name: {...}}, order, complete, loops, seams, loop_seam, defects,
                 frames, fps, width, height, timing, plateau}"""
     pl = plan(opts)
+    if pl["method"] == "orbit":
+        return run_orbit(pl, opts, api, log)
     o = {**DEFAULTS, **{k: v for k, v in opts.items() if v not in (None, "")}}
     work = api.work_dir
     os.makedirs(work, exist_ok=True)
@@ -614,3 +700,125 @@ def finish_bridged(bridged, order, seg_out, seams, defects, pl, o, api, log, tim
             "frames": inf["frames"], "fps": int(o["fps"]), "width": inf["width"], "height": inf["height"],
             "canvas": list(canvas), "plateau": plateau, "profile_before": m, "timing": timing, "joins": "bridge",
             "bridges": bridged["bridges"]}
+
+
+def run_orbit(pl, opts, api, log):
+    """The orbit method (module docstring): one pinned 360 generation, checked, cut into the usual
+    segments and RIFE'd to the old rotation time. Returns the same dict as run()."""
+    o = {**DEFAULTS, **{k: v for k, v in opts.items() if v not in (None, "")}}
+    work = api.work_dir
+    os.makedirs(work, exist_ok=True)
+    timing, defects = {}, []
+    w, h = graphs.dims(o["resolution"], o["ratio"])
+    length = graphs.frames_for(pl["orbit_seconds"])
+    rotation_s = pl["seconds"] * len(pl["sequence"])
+
+    api.phase("padding photos", 3)
+    photos = {a: opts["anchor_local"][a] for a in pl["anchors"]}
+    angles = {a: float(ANCHOR_ANGLE[a]) for a in pl["anchors"]}
+    view_local = dict(opts.get("view_local") or [])
+    for angle, _ in pl["views"]:
+        key = f"view_{angle:g}"
+        photos[key], angles[key] = view_local[angle], angle
+    padded = post.pad_photos_common(photos, w, h, work)
+    pins, refs = [], {}
+    for name in sorted(padded, key=lambda n: angles[n]):
+        info = padded[name]
+        x0, y0, x1, y1 = info["box"]
+        idx = orbit_frame(angles[name], length)
+        log(f"view {name} ({angles[name]:g} deg -> frame {idx}): subject {x0:.2f}-{x1:.2f} x, {y0:.2f}-{y1:.2f} y")
+        refs[name] = (idx, info["local"])
+        if name != "front":
+            pins.append((api.upload(info["local"])["name"], idx))
+    if len({i for _, i in pins}) != len(pins):
+        raise RuntimeError("two views land on the same frame of the orbit; space the extra angles further apart")
+    front = api.upload(padded["front"]["local"])["name"]
+    if pl["variant"] == "four" and {"front", "left"} <= set(padded):
+        fw = padded["front"]["box"][2] - padded["front"]["box"][0]
+        lw = padded["left"]["box"][2] - padded["left"]["box"][0]
+        if lw < fw:
+            defects.append(f"the left photo's subject ({lw:.2f} of the width) is narrower than the front "
+                           f"photo's ({fw:.2f}); a side view of a car should be wider. Check the photo roles")
+
+    def check(path):
+        """(problems, view diffs, jumps) of one take: drift off the backdrop, a pinned view the model
+        did not land on, a one-frame colour flash; motion jumps are reported, not retried."""
+        drifted, share, _ = post.background_drift(path)
+        diffs = {}
+        for name, (idx, ref) in refs.items():
+            fr = post.extract_frame(path, idx, os.path.join(work, f"pin_{name}.png"))
+            diffs[name] = round(post.frame_diff(ref, fr), 2)
+        last = post.last_frame_png(path, os.path.join(work, "pin_last.png"))
+        diffs["front_end"] = round(post.frame_diff(refs["front"][1], last), 2)
+        n = post.info(path)["frames"]
+        flashes = flash_frames(post.yuv_profile(path), 1, n - 1)
+        jumps = jump_frames(post.motion_profile(path), 1, n - 1)
+        problems = []
+        if drifted:
+            problems.append(f"backdrop drift in {share:.0%} of frames")
+        bad = {k: v for k, v in diffs.items() if v > ORBIT_PIN_MAX}
+        if bad:
+            problems.append("missed views " + ", ".join(f"{k} {v:.0f}" for k, v in bad.items()))
+        if flashes:
+            problems.append(f"colour flash at frames {flashes[:6]}")
+        return problems, diffs, jumps
+
+    takes = []
+    for attempt in range(ORBIT_TRIES):
+        api.check_cancel()
+        label = "orbit 360" + (f" try {attempt + 1}" if attempt else "")
+        seed = int(o["seed"]) + 300 * attempt
+        spec = {"resolution": o["resolution"], "ratio": o["ratio"], "length": length, "seed": seed,
+                "turbo": o.get("turbo", True), "steps": o.get("steps"), "front": front, "pins": pins,
+                "label": label, "prange": (8, 80) if attempt == 0 else (80, 86),
+                "after_seconds": estimate.TURNTABLE_POST_S, "after_text": f" - then {int(o['fps'])} fps"}
+        t0 = time.monotonic()
+        path = api.orbit(spec)
+        timing[label] = round(time.monotonic() - t0, 1)
+        api.phase(f"{label}: checking views", 81)
+        problems, diffs, jumps = check(path)
+        log(f"{label}: seed {seed}, view diffs {diffs}, jumps {jumps or '-'}"
+            + (f" -> {'; '.join(problems)}" if problems else " -> clean"))
+        takes.append({"path": path, "seed": seed, "problems": problems, "diffs": diffs, "jumps": jumps,
+                      "worst": max(diffs.values())})
+        if not problems:
+            break
+    best = min(takes, key=lambda t: (len(t["problems"]), t["worst"]))
+    if best["problems"]:
+        defects.append(f"orbit: best of {len(takes)} takes still has: {'; '.join(best['problems'])}")
+    if best["jumps"]:
+        defects.append(f"orbit: motion jumps at frames {best['jumps'][:8]}")
+    raw = best["path"]
+
+    # ---- the usual segments, cut at the anchor frames (they share their anchor frame, like quarters)
+    api.phase("cutting segments", 87)
+    seg_out = {}
+    order = list(pl["sequence"])
+    for name, lo, hi in orbit_cuts(pl["variant"], length):
+        n = hi - lo + 1
+        clip = post.trim_copy(raw, os.path.join(work, f"seg_{name}_24.mp4"), lo, hi + 1)
+        seg_out[name] = {"local": clip, "frames": n, "pieces": 1, "attempts": len(takes), "repairs": 0,
+                         "reused": False, "seconds": round(n / float(graphs.FPS), 3)}
+    seams = [{"between": [a, b], "frame_diff": 0.0, "loop_seam": (a, b) == (order[-1], order[0]), "orbit": True}
+             for a, b in list(zip(order, order[1:])) + [(order[-1], order[0])]]
+    joined = post.trim_copy(raw, os.path.join(work, "joined_24fps.mp4"), 0, length - 1)   # last frame = first
+
+    # ---- RIFE to the rotation time the quarters method had, keeping the model's own pacing
+    api.phase("interpolating", 90)
+    m = post.motion_profile(raw)
+    plateau = post.plateau_of(m)
+    n_out = int(round(rotation_s * int(o["fps"])))
+    frames_dir = os.path.join(work, "frames")
+    # endpoint excluded: the loop wraps onto frame 0, one step after the last output frame
+    post.retime_frames(raw, frames_dir, post.dejudder_times(m, n_out + 1)[:-1], density=int(o["density"]),
+                       tmp_root=work, log=log)
+    api.phase("encoding", 93)
+    out = os.path.join(work, f"turntable_{o['shorter_size']}p{o['fps']}.mp4")
+    post.encode_frames(frames_dir, out, int(o["fps"]), o["shorter_size"])
+    inf = post.info(out)
+    return {"video": out, "joined": joined, "segments": seg_out, "order": order, "variant": pl["variant"],
+            "complete": True, "loops": True, "seams": seams, "defects": defects, "frames": inf["frames"],
+            "fps": int(o["fps"]), "width": inf["width"], "height": inf["height"], "canvas": [w, h],
+            "plateau": plateau, "profile_before": m, "timing": timing, "joins": "orbit", "method": "orbit",
+            "orbit": {"length": length, "rotation_s": rotation_s, "seed": best["seed"], "takes": len(takes),
+                      "pins": {n: i for n, (i, _) in refs.items()}, "view_diffs": best["diffs"]}}

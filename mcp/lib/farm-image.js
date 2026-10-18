@@ -93,6 +93,8 @@ export async function prepareVideoGenImages(sb, vg, log) {
   if (out.turntable) {
     const t = { ...out.turntable };
     for (const k of ["front", "rear", "left", "right"]) if (t[k]) t[k] = await farmImageRef(sb, t[k], log);
+    if (Array.isArray(t.views))
+      t.views = await Promise.all(t.views.map(async v => (v?.image ? { ...v, image: await farmImageRef(sb, v.image, log) } : v)));
     out.turntable = t;
   }
   return out;

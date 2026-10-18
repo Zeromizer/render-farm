@@ -35,7 +35,15 @@ params (jsonb):
                                                 instead of regenerating (a previous job's outputs/<id>-<name>.mp4
                                                 or a platform asset); mix with generated ones freely
                            resolution (768p), seed, fps (60), shorter_size (1080)
-                         Each segment is one image-to-video generation between its two anchor photos, drift
+                           method               orbit (default) | quarters. orbit = ONE generation of the whole
+                                                turn with the 360 orbit LoRA, every photo pinned at its angle
+                                                (studio/turntable.py run_orbit), cut into the same segments;
+                                                a partial `segments` request or any ready_segments uses quarters
+                           views                orbit only: [{angle, image: {bucket, path}}] extra pinned views in
+                                                degrees of the same turn (front 0, left 90, rear 180, right 270);
+                                                8-12 views from ONE source (a maker's 360 viewer) keep lettering best
+                           orbit_seconds        5-10, default 10 (the generation; under ~10 s lettering garbles)
+                         QUARTERS: each segment is one image-to-video generation between its two anchor photos, drift
                          and cut checked with automatic reseed/repair inside the segment, then the requested
                          segments are joined on their shared frames, checked at every seam, remapped to
                          constant speed and RIFE'd to fps. Only a complete sequence loops. Sidecars:
@@ -198,7 +206,9 @@ def turntable_manifest(jid, res):
             "joined_native": {"bucket": config.BUCKET, "path": f"outputs/{jid}-joined24.mp4"},
             "segments": segs, "seams": res["seams"], "defects": res["defects"], "timing_s": res["timing"],
             "plateau_motion": round(res["plateau"], 2), "joins": res.get("joins", "anchor"),
-            **({"bridges": res["bridges"]} if res.get("bridges") else {})}
+            "method": res.get("method", "quarters"),
+            **({"bridges": res["bridges"]} if res.get("bridges") else {}),
+            **({"orbit": res["orbit"]} if res.get("orbit") else {})}
 
 
 def _upload_turntable_sidecars(jid, res, log):
@@ -269,6 +279,24 @@ class _TurntableApi:
     def wait(self, key, label):
         return self._results[key]
 
+    def orbit(self, spec):
+        """The orbit method's one generation (graphs.build_orbit): the orbit LoRA is fetched into
+        ComfyUI's loras folder first if this machine (a fresh cloud pod) does not have it yet."""
+        comfy_client.ensure_model("loras", graphs.ORBIT_LORA, graphs.ORBIT_LORA_URL, graphs.ORBIT_LORA_SHA256, self.log)
+        self._n += 1
+        key = f"{self._n:02d}"
+        graph, meta = graphs.build_orbit(spec, spec["front"], spec["pins"], f"video_gen/{self.jid}-orbit{key}")
+        self.log(f"{spec['label']}: {meta['width']}x{meta['height']} {meta['length']}f steps={meta['steps']} "
+                 f"turbo={meta['turbo']} seed={meta['seed']} pins at {meta['pins']}")
+        dest = os.path.join(self.work_dir, f"orbit{key}.mp4")
+        lo, hi = spec.get("prange") or (8, 80)
+        lo = max(lo, int(self.heartbeat.progress))
+        vg = {"duration_s": meta["seconds"], "resolution": spec["resolution"], "ratio": spec["ratio"],
+              "turbo": meta["turbo"], "steps": meta["steps"]}
+        return _run_prompt(self.jid, graph, spec["label"][:60], self.heartbeat, self.cancel_check, self.deadline,
+                           dest, self.log, prange=(lo, max(hi, lo + 1)), hint=estimate.sampling_hint(vg, "i2v"),
+                           after_seconds=spec.get("after_seconds", 0.0), after_text=spec.get("after_text", ""))
+
     def bridge(self, spec):
         """One bridged turntable join: a clip_edit bridge (two Ref2VA inpaint takes, the shared
         photo as a reference) inside this job's ComfyUI session. Returns {report, takes}."""
@@ -314,9 +342,13 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
             tt_plan = turntable_flow.plan(tt)
         except ValueError as exc:
             raise RuntimeError(f"turntable: {exc}")
-        log(f"turntable {tt_plan['variant']}-anchor: generate {tt_plan['generate']}, reuse {tt_plan['reuse']}, "
-            f"{'complete loop' if tt_plan['complete'] else 'partial: ' + ', '.join(tt_plan['requested'])}, "
-            f"joins {'bridged' if tt_plan['bridge'] else 'on the photos'}")
+        if tt_plan["method"] == "orbit":
+            log(f"turntable {tt_plan['variant']}-anchor ORBIT: one {tt_plan['orbit_seconds']:g} s generation, "
+                f"{len(tt_plan['anchors']) + len(tt_plan['views'])} pinned views")
+        else:
+            log(f"turntable {tt_plan['variant']}-anchor: generate {tt_plan['generate']}, reuse {tt_plan['reuse']}, "
+                f"{'complete loop' if tt_plan['complete'] else 'partial: ' + ', '.join(tt_plan['requested'])}, "
+                f"joins {'bridged' if tt_plan['bridge'] else 'on the photos'}")
     if mode == "upscale":
         upscale = upscale or {}
         if not p.get("source"):
@@ -343,6 +375,8 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         inputs["anchors"] = {a: _fetch(tt[a], work_dir, a, log, _IMAGE) for a in tt_plan["anchors"]}
         inputs["ready"] = {n: _fetch(tt["ready_segments"][n], work_dir, f"ready_{n}", log, _VIDEO)
                            for n in tt_plan["reuse"]}
+        inputs["views"] = [(angle, _fetch(ref, work_dir, f"view_{angle:g}", log, _IMAGE))
+                           for angle, ref in tt_plan["views"]]
     heartbeat.progress = 3
 
     if mode == "upscale" and (upscale.get("method") or "lanczos").lower() == "lanczos":
@@ -386,7 +420,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         db.set_phase(jid, "uploading inputs", 5)
         names = {}
         for key, val in inputs.items():
-            if key in ("source", "anchors", "ready"):
+            if key in ("source", "anchors", "ready", "views"):
                 continue  # source: uploaded per segment by _upscale_clip; anchors: padded first by the turntable flow
             if isinstance(val, list):
                 names[key] = [comfy_client.upload_input(v) for v in val]
@@ -422,7 +456,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
                     out_local = _upscale_clip(jid, base_local, upscale, work_dir, heartbeat, cancel_check,
                                               deadline, os.path.join(work_dir, "video_gen-upscaled.mp4"), log)
             elif mode == "turntable":
-                opts = dict(tt, anchor_local=inputs["anchors"], ready_local=inputs["ready"])
+                opts = dict(tt, anchor_local=inputs["anchors"], ready_local=inputs["ready"], view_local=inputs["views"])
                 api = _TurntableApi(jid, work_dir, heartbeat, cancel_check, deadline, log)
                 heartbeat.progress = 5
                 res = turntable_flow.run(opts, api, log)

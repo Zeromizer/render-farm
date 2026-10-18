@@ -171,12 +171,64 @@ class Progress(unittest.TestCase):
         self.assertEqual(tt.progress_ranges(0), [])
 
 
+class Orbit(unittest.TestCase):
+    def test_orbit_is_the_default_for_a_complete_rotation(self):
+        for base in (FOUR, TWO):
+            pl = tt.plan(base)
+            self.assertEqual(pl["method"], "orbit")
+            self.assertFalse(pl["bridge"])
+            self.assertEqual(pl["generate"], list(tt.SEQUENCES[pl["variant"]]))
+            self.assertEqual(pl["orbit_seconds"], 10)
+            self.assertEqual(pl["views"], [])
+
+    def test_partial_or_reused_segments_use_quarters(self):
+        self.assertEqual(tt.plan(dict(FOUR, segments=["front_to_left"]))["method"], "quarters")
+        ready = {"front_to_left": {"bucket": "renders", "path": "outputs/j1-front_to_left.mp4"}}
+        self.assertEqual(tt.plan(dict(FOUR, ready_segments=ready))["method"], "quarters")
+        self.assertEqual(tt.plan(dict(FOUR, method="quarters"))["method"], "quarters")
+        with self.assertRaises(ValueError):
+            tt.plan(dict(FOUR, method="spin"))
+
+    def test_views(self):
+        views = [{"angle": 300, "image": REF("e")}, {"angle": 30, "image": REF("f")}]
+        pl = tt.plan(dict(FOUR, views=views))
+        self.assertEqual([a for a, _ in pl["views"]], [30, 300])
+        for bad in ([{"angle": 0, "image": REF("e")}], [{"angle": 360, "image": REF("e")}],
+                    [{"angle": 92, "image": REF("e")}],                     # on top of the left photo
+                    [{"angle": 30, "image": REF("e")}, {"angle": 33, "image": REF("f")}],
+                    [{"angle": 30, "image": "x"}], [{"angle": "a", "image": REF("e")}], {"angle": 30}):
+            with self.assertRaises(ValueError, msg=bad):
+                tt.plan(dict(FOUR, views=bad))
+        with self.assertRaises(ValueError):           # views need the orbit
+            tt.plan(dict(FOUR, views=views, segments=["front_to_left"]))
+        self.assertEqual(len(tt.plan(dict(TWO, views=[{"angle": 90, "image": REF("e")}]))["views"]), 1)
+
+    def test_orbit_seconds_range(self):
+        self.assertEqual(tt.plan(dict(FOUR, orbit_seconds=6))["orbit_seconds"], 6)
+        for bad in (4, 11):
+            with self.assertRaises(ValueError):
+                tt.plan(dict(FOUR, orbit_seconds=bad))
+
+    def test_cuts_share_anchor_frames_and_cover_the_turn(self):
+        for variant, n_seg in (("four", 4), ("two", 2)):
+            cuts = tt.orbit_cuts(variant, 243)
+            self.assertEqual([c[0] for c in cuts], list(tt.SEQUENCES[variant]))
+            self.assertEqual(cuts[0][1], 0)
+            self.assertEqual(cuts[-1][2], 242)
+            for a, b in zip(cuts, cuts[1:]):
+                self.assertEqual(a[2], b[1])
+            self.assertEqual(len(cuts), n_seg)
+        self.assertEqual(tt.orbit_cuts("four", 243), [("front_to_left", 0, 60), ("left_to_rear", 60, 121),
+                                                      ("rear_to_right", 121, 182), ("right_to_front", 182, 242)])
+        self.assertEqual(tt.orbit_frame(30, 243), 20)
+
+
 class BridgedJoins(unittest.TestCase):
     def test_bridged_by_default_only_for_a_complete_rotation(self):
-        self.assertTrue(tt.plan(FOUR)["bridge"])
-        self.assertTrue(tt.plan(TWO)["bridge"])
+        self.assertTrue(tt.plan(dict(FOUR, method="quarters"))["bridge"])
+        self.assertTrue(tt.plan(dict(TWO, method="quarters"))["bridge"])
         self.assertFalse(tt.plan(dict(FOUR, segments=["front_to_left"]))["bridge"])
-        self.assertFalse(tt.plan(dict(FOUR, joins="anchor"))["bridge"])
+        self.assertFalse(tt.plan(dict(FOUR, method="quarters", joins="anchor"))["bridge"])
         with self.assertRaises(ValueError):
             tt.plan(dict(FOUR, joins="crossfade"))
 

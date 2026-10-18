@@ -42,6 +42,20 @@ DEFAULT_FULL_STEPS = 20
 SHORT_EDGE = {"480p": 480, "768p": 768}
 RATIOS = {"16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1.0, "4:3": 4 / 3, "3:4": 3 / 4, "21:9": 21 / 9}
 
+# 360 orbit LoRA (pablodawson/MiniMax-H3-360-Orbit-LoRA, MiniMax H3 Community License): FL2VA learns a
+# frozen-scene camera orbit that lands back on its first frame. Trained on one fixed caption (ORBIT_PROMPT,
+# used verbatim). The turntable pins the car's real views into it with MiniMaxH3AddGuide (studio/turntable.py).
+ORBIT_LORA = "minimax_h3_360_orbit_flf2v_v1.safetensors"
+ORBIT_LORA_URL = ("https://huggingface.co/pablodawson/MiniMax-H3-360-Orbit-LoRA/resolve/"
+                  "5ddbc2dbbe95edbbdaf5017c3e934b1d01791697/minimax_h3_flf2v_lora_v1.safetensors")
+ORBIT_LORA_SHA256 = "14f13e3effaf3e729fdc0c97680344aa63f473be0c55963f963d718b3db2a4d4"
+ORBIT_PROMPT = (
+    "One frozen instant. Only the camera moves. In a continuous 360 orbit. Preserve every person and object in "
+    "exactly the same world position, orientation, shape and pose throughout the shot. Airborne objects remain "
+    "suspended at the captured height and angle: no wobbling, shaking, spinning, drifting, falling or continued "
+    "action. Keep faces, hands, clothing, liquids and the background motionless while retaining their natural "
+    "appearance. Camera parallax is the only source of apparent movement. No cuts, zoom, morphing or added objects.")
+
 MODES = ("t2v", "i2v", "r2v", "upscale", "turntable")   # turntable = studio/turntable.py flow, not a graph
 GEN_MODES = ("t2v", "i2v", "r2v")
 
@@ -177,6 +191,62 @@ def build(mode, p, inputs, filename_prefix):
 
     meta = {"family": fam, "width": width, "height": height, "length": length,
             "seconds": round(length / FPS, 2), "steps": steps, "turbo": turbo, "seed": seed}
+    return g, meta
+
+
+def build_orbit(p, front, pins, filename_prefix):
+    """One-generation 360 turntable (studio/turntable.py run_orbit). Returns (graph, meta).
+
+    p        resolution, ratio, length (17k+5 frames), seed, turbo (default true), steps
+    front    ComfyUI input name of the 0-degree view: first AND last frame, so the clip loops
+    pins     [(input name, frame index)] for the other views, each a core MiniMaxH3AddGuide keyframe
+
+    Video only: the LoRA was trained without audio and the turntable is cut out of its background."""
+    width, height = dims(p.get("resolution") or "768p", p.get("ratio") or "16:9")
+    length = int(p["length"])
+    if length < 5 or (length - 5) % 17:
+        raise ValueError(f"orbit length must be on H3's 17k+5 grid, got {length}")
+    turbo = p.get("turbo", True) is not False
+    steps = int(p.get("steps") or (DEFAULT_TURBO_STEPS["fl2va"] if turbo else DEFAULT_FULL_STEPS))
+    seed = int(p.get("seed") or 0)
+    g = {"unet": {"class_type": "UNETLoader", "inputs": {"unet_name": CHECKPOINTS["fl2va"], "weight_dtype": "default"}}}
+    model = ["unet", 0]
+    if turbo:
+        g["turbo"] = {"class_type": "LoraLoaderModelOnly",
+                      "inputs": {"model": model, "lora_name": TURBO_LORAS["fl2va"][8], "strength_model": 1.0}}
+        model = ["turbo", 0]
+    g["orbit"] = {"class_type": "LoraLoaderModelOnly",
+                  "inputs": {"model": model, "lora_name": ORBIT_LORA, "strength_model": float(p.get("orbit_strength", 1.0))}}
+    model = ["orbit", 0]
+    g["clip"] = {"class_type": "CLIPLoader", "inputs": {"clip_name": TEXT_ENCODER, "type": "minimax", "device": "default"}}
+    g["vae"] = {"class_type": "VAELoader", "inputs": {"vae_name": VIDEO_VAE}}
+    g["front"] = {"class_type": "LoadImage", "inputs": {"image": front}}
+    g["cond"] = {"class_type": "MiniMaxH3ImageToVideo",
+                 "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "prompt": ORBIT_PROMPT, "width": width,
+                            "height": height, "length": length, "first_frame": ["front", 0], "last_frame": ["front", 0]}}
+    positive, latent = ["cond", 0], ["cond", 1]
+    for i, (name, idx) in enumerate(pins):
+        if not 0 < int(idx) < length - 1:
+            raise ValueError(f"orbit pin frame {idx} is outside 1..{length - 2}")
+        g[f"pin{i}"] = {"class_type": "LoadImage", "inputs": {"image": name}}
+        g[f"guide{i}"] = {"class_type": "MiniMaxH3AddGuide",
+                          "inputs": {"positive": positive, "latent": latent, "vae": ["vae", 0],
+                                     "image": [f"pin{i}", 0], "frame_idx": int(idx)}}
+        positive = [f"guide{i}", 0]
+    g["guider"] = {"class_type": "BasicGuider", "inputs": {"model": model, "conditioning": positive}}
+    g["sampler"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "res_multistep"}}
+    g["sched"] = {"class_type": "BasicScheduler",
+                  "inputs": {"model": model, "scheduler": "simple", "steps": steps, "denoise": 1.0}}
+    g["noise"] = {"class_type": "RandomNoise", "inputs": {"noise_seed": seed}}
+    g["sample"] = {"class_type": "SamplerCustomAdvanced",
+                   "inputs": {"noise": ["noise", 0], "guider": ["guider", 0], "sampler": ["sampler", 0],
+                              "sigmas": ["sched", 0], "latent_image": latent}}
+    g["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": ["vae", 0]}}
+    g["video"] = {"class_type": "CreateVideo", "inputs": {"images": ["dec", 0], "fps": float(FPS)}}
+    g["save"] = {"class_type": "SaveVideo",
+                 "inputs": {"video": ["video", 0], "filename_prefix": filename_prefix, "format": "mp4"}}
+    meta = {"family": "fl2va", "width": width, "height": height, "length": length, "seconds": round(length / FPS, 2),
+            "steps": steps, "turbo": turbo, "seed": seed, "pins": [int(i) for _, i in pins]}
     return g, meta
 
 
