@@ -87,6 +87,9 @@ ARMS = {
     "r2_orig4_124": dict(SQ, car="noah", w=1344, n=124, pins="orig", guides=True),
     "r2_toy12_124": dict(SQ, car="noah", w=1344, n=124, pins="toy", guides=True),
     "r2_mix12_243": dict(SQ, car="noah", w=1344, n=243, steps=20, pins="mix", guides=True),
+    # round 3: one consistent pin source (Toyota only) at the slow speed that keeps lettering
+    "r3_toy12_243_turbo": dict(SQ, car="noah", w=1344, n=243, steps=8, turbo=True, pins="toy", guides=True),
+    "r3_toy12_243": dict(SQ, car="noah", w=1344, n=243, steps=20, pins="toy", guides=True),
 }
 VIEWS = ("front", "left", "rear", "right")
 
