@@ -4,9 +4,14 @@ has the modes and the pixel work).
 params (jsonb):
   clip_edit:
     org_id / job_id   uuids, scoping and logging only
-    mode              region | extend | prepend | bridge | audio | move
+    mode              region | extend | prepend | bridge | loop | audio | move
     source            {bucket, path}  the clip to edit
     source_b          {bucket, path}  bridge only: the clip that follows
+    b_from_s          bridge: land this far into source_b (its first frames are dropped). A
+                      generated clip eases in from near standstill over its first ~1-2 s, so
+                      landing past that keeps the motion going through the join
+    loop_from_s       loop: where the loop starts and the generated stretch lands back
+                      (default: auto, past the clip's own ease-in)
     prompt            region (crop): what should be inside the window around the boxes;
                       otherwise the whole shot as it should look, incl. sound
     regions           region: [{box: [x0, y0, x1, y1] in source px | box_norm: the same in
@@ -15,8 +20,9 @@ params (jsonb):
                       start_frame | start_s, end_frame | end_s} or {keys: [{at_s | frame,
                       box | box_norm}, ...] (2-12, linear in between), end_frame | end_s}], 1-4
     crop              region: auto | crop | full (default auto)
-    seconds           extend / prepend / bridge: how much to generate (snapped to H3's grid)
-    context_s         extend / prepend (2.0) / bridge (1.5): original footage H3 sees
+    seconds           extend / prepend / bridge / loop: how much to generate (snapped to H3's
+                      grid). loop: the stretch that carries the end of the clip back into it
+    context_s         extend / prepend (2.0) / bridge, loop (1.5): original footage H3 sees
     start_frame / end_frame (or start_s / end_s)   audio: range whose sound is regenerated
     move              send a car along a new path (worker/edit/clip_move.py; still or moving
                       camera, up to ~15 s): object (a noun SAM 3.1 tracks: "red car"),
@@ -60,7 +66,7 @@ _WORKER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EDIT_DIR = os.path.join(_WORKER_DIR, "edit")
 # Same requirements file as planar_patch / lettering_fix -> same cached venv.
 REQUIREMENTS = os.path.join(_WORKER_DIR, "patch", "requirements.txt")
-MODES = ("region", "extend", "prepend", "bridge", "audio", "move")
+MODES = ("region", "extend", "prepend", "bridge", "loop", "audio", "move")
 MAX_TAKES = 4
 MAX_FRAME = 362
 SEED_STEP = 1009
@@ -99,7 +105,7 @@ def validate(p):
                                    "frame, with x1>x0 and y1>y0 (or keys)")
         if p.get("crop", "auto") not in ("auto", "crop", "full"):
             raise RuntimeError("crop must be auto, crop or full")
-    if mode in ("extend", "prepend", "bridge"):
+    if mode in ("extend", "prepend", "bridge", "loop"):
         sec = float(p.get("seconds") or 0)
         if not 0.25 <= sec <= 12:
             raise RuntimeError("seconds must be 0.25-12")
@@ -372,7 +378,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         return out_local, "mp4", "video/mp4"
 
     spec = {k: p[k] for k in ("mode", "regions", "crop", "seconds", "context_s", "start_frame", "end_frame",
-                              "start_s", "end_s") if p.get(k) is not None}
+                              "start_s", "end_s", "b_from_s", "loop_from_s") if p.get(k) is not None}
     spec.update(clips, work_dir=work_dir)
     stream("prep", spec, 3, 10)
     plan = json.load(open(os.path.join(work_dir, "plan.json")))

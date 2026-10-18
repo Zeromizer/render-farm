@@ -86,6 +86,15 @@ def run_graph(graph, dest, timeout_s=1800):
 
 
 def fetch(url, dest):
+    if url.startswith("comfy:"):  # a clip already in ComfyUI/output (newest match of a glob)
+        import glob
+        hits = sorted(glob.glob(os.path.join(os.environ.get("COMFYUI_DIR", r"C:\ComfyUI"), "output", url[6:])),
+                      key=os.path.getmtime)
+        if not hits:
+            raise RuntimeError(f"no ComfyUI output matches {url}")
+        log(f"   input {url} -> {os.path.basename(hits[-1])}")
+        shutil.copyfile(hits[-1], dest)
+        return dest
     with httpx.stream("GET", url, timeout=T, follow_redirects=True) as r:
         r.raise_for_status()
         with open(dest, "wb") as f:

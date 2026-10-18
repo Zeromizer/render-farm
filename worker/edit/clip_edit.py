@@ -13,6 +13,11 @@ untouched pixels and sound back exactly. Modes:
   prepend  add N seconds before it
   bridge   generate the N seconds between clip A and clip B, so one shot flows into
            the next instead of a crossfade between two renderings of the car
+           (b_from_s lands past B's ease-in)
+  loop     a seamless loop: the clip from loop_from_s to its end, then N generated
+           seconds that carry the end back into the clip's own frames at loop_from_s
+           (the bridge from the clip to itself). Plays forever without a cut, a brake
+           or a click; the wrap is scored like any seam
   audio    keep every pixel, regenerate the sound over a range (foley retake)
 
 Same graph for all of them (videogen/graphs_inpaint.py, vlo-style latent noise mask);
@@ -41,7 +46,7 @@ import lettering as L  # noqa: E402  (io, grid, tracking: one implementation)
 
 FPS = L.FPS
 SR = 48000
-MODES = ("region", "extend", "prepend", "bridge", "audio")
+MODES = ("region", "extend", "prepend", "bridge", "loop", "audio")
 MAX_WINDOW = L.MAX_WINDOW
 # What a 16 GB card holds in one H3 pass, in canvas pixels x frames: the follow-crop
 # lettering pass (0.52 MP x 192 f) and video_gen's 768p quarters (1.03 MP x ~96 f) both
@@ -109,6 +114,39 @@ def window_around(n, s, e, ctx):
     lo = int(round((s + e) / 2 - (length - 1) / 2))
     lo = max(0, min(lo, n - length))
     return lo, length
+
+
+def ease_in_end(frames, max_s=3.0, scale=0.25):
+    """First frame after the clip's own ease-in: where the background (90th percentile of
+    the flow) first runs at 70% of its typical speed for 4 frames in a row. Generated
+    clips start from near standstill and speed up over ~1-2 s (measured 2026-10-17: 2-3
+    px/frame for the first frames, 13 at cruise), so a loop or bridge that lands on frame
+    0 has to brake into it. A static shot (no real motion) gets 0.75 s, past H3's settle."""
+    n = len(frames)
+    step = 2
+    idx = list(range(0, n - 1, step))
+    g = {}
+
+    def grey(i):
+        if i not in g:
+            g[i] = cv2.resize(cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY), None, fx=scale, fy=scale,
+                              interpolation=cv2.INTER_AREA)
+        return g[i]
+
+    sp = {}
+    for i in idx:
+        fl = cv2.calcOpticalFlowFarneback(grey(i), grey(i + 1), None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        sp[i] = float(np.percentile(np.abs(fl), 90))
+    typical = float(np.median(list(sp.values()))) if sp else 0.0
+    cap = min(int(max_s * FPS), n // 3)
+    if typical < 0.15:          # quarter-res px per frame: nothing really moves
+        return min(int(round(0.75 * FPS)), cap)
+    run = [i for i in idx if i <= cap]
+    for k, i in enumerate(run):
+        nxt = run[k:k + 2]
+        if len(nxt) == 2 and all(sp[j] >= 0.7 * typical for j in nxt):
+            return i
+    return cap
 
 
 # ---------------------------------------------------------------- prep
@@ -210,6 +248,7 @@ def prep(spec):
 
     # timeline: list of frames (None = to generate), audio, and where the original lives
     pad = 0
+    loop = None
     if mode in ("region", "audio"):
         # a clip off H3's 17k+5 grid (193 f) cannot be one window; pad with copies of the
         # last frame up to the grid and trim them off in compose
@@ -236,8 +275,12 @@ def prep(spec):
     elif mode == "bridge":
         fb, _ = L.read_clip(spec["clip_b"])
         fb = [_resize_to(f, fw, fh) for f in fb]
+        audio_b = read_audio(spec["clip_b"], len(fb) / FPS)
+        if spec.get("b_from_s"):
+            k = min(len(fb) - 12, max(0, int(round(float(spec["b_from_s"]) * FPS))))
+            fb, audio_b = fb[k:], audio_b[frames_to_samples(k):]
+            print(f"MEASURED bridge lands {k} frames into clip B", flush=True)
         nb = len(fb)
-        audio_b = read_audio(spec["clip_b"], nb / FPS)
         want = max(1, int(round(float(spec["seconds"]) * FPS)))
         c = max(12, int(round(float(spec.get("context_s", 1.5)) * FPS)))
         ca, cb = min(n, c), min(nb, c)
@@ -249,6 +292,34 @@ def prep(spec):
         tl_audio = np.concatenate([audio, np.zeros((frames_to_samples(gen), 2), np.float32), audio_b])
         src_ranges = [(0, n), (n + gen, n + gen + nb)]
         lo = n - ca
+    elif mode == "loop":
+        # timeline: the clip from L0, the generated stretch, then the clip's own frames
+        # from L0 again as the far context (H3 lands on them); compose cuts that copy off,
+        # so the last generated frame wraps to frame L0
+        if spec.get("loop_from_s") is not None:
+            L0 = max(0, int(round(float(spec["loop_from_s"]) * FPS)))
+        else:
+            L0 = ease_in_end(frames)
+        body = n - L0
+        if body < 24:
+            raise RuntimeError(f"the loop would keep only {body} frames of the clip; start it earlier "
+                               f"(loop_from_s) or use a longer clip")
+        want = max(1, int(round(float(spec["seconds"]) * FPS)))
+        c = max(12, int(round(float(spec.get("context_s", 1.5)) * FPS)))
+        ca = cb = min(body, c)
+        length = min(snap_up(ca + want + cb), MAX_WINDOW)
+        gen = length - ca - cb
+        if gen < want:
+            warnings.append(f"asked for {want} loop frames; one pass holds {gen} with the context")
+        a0 = frames_to_samples(L0)
+        tl = list(frames[L0:]) + [None] * gen + list(frames[L0:L0 + cb])
+        tl_audio = np.concatenate([audio[a0:], np.zeros((frames_to_samples(gen), 2), np.float32),
+                                   audio[a0:a0 + frames_to_samples(cb)]])
+        src_ranges = [(0, body), (body + gen, body + gen + cb)]
+        lo = body - ca
+        loop = {"loop_from": L0, "loop_body": body + gen}
+        print(f"MEASURED loop from frame {L0} ({L0 / FPS:.2f} s), {body} original + {gen} generated frames",
+              flush=True)
     N = len(tl)
 
     # window + masks (video: list of box lists or "full"; audio: per-frame 0/1)
@@ -409,6 +480,8 @@ def prep(spec):
             "vmask": {str(k): v for k, v in vmask.items()}, "amask": sorted(amask),
             "generated": [i for i in range(N) if tl[i] is None], "src_ranges": src_ranges, "pad_tail": pad,
             "warnings": warnings}
+    if loop:
+        plan.update(loop)
     json.dump(plan, open(os.path.join(work, "plan.json"), "w"), indent=1)
     emit("PROGRESS", "100")
 
@@ -536,6 +609,20 @@ def compose_take(work, plan, take, out_path):
     if plan.get("pad_tail"):
         out = out[:len(out) - plan["pad_tail"]]
         aud = aud[:frames_to_samples(len(out))]
+    if plan.get("loop_body"):
+        # the far context is the clip's own opening again: open the loop on its first
+        # HANDOFF frames (H3's reconstruction fading back to the original) and its sound,
+        # so the wrap from the last generated frame is H3 into H3, then drop the copy
+        body = plan["loop_body"]
+        k = min(HANDOFF, len(out) - body)
+        for j in range(k):
+            out[j] = out[body + j]
+        s0, x = frames_to_samples(body), frames_to_samples(k)
+        aud[:x] = aud[s0:s0 + x]
+        out = out[:body]
+        aud = aud[:frames_to_samples(body)]
+        metrics["loop_frames"] = body
+        metrics["loop_from"] = plan["loop_from"]
     wav = out_path[:-4] + ".wav"
     write_wav(wav, aud)
     L.write_clip(out_path, out, FPS, audio_from=wav)
@@ -561,6 +648,8 @@ def compose(spec):
     emit("PHASE", "proof sheet")
     proof_sheet(spec["proof"], plan, os.path.join(work, "timeline.mp4"), [r["path"] for r in results], results, best)
     report = {"mode": plan["mode"], "best_take": best["take"],
+              **({"loop_from_s": round(plan["loop_from"] / FPS, 3), "loop_seconds": round(plan["loop_body"] / FPS, 3)}
+                 if plan.get("loop_body") else {}),
               "takes": [{k: v for k, v in r.items() if k != "path"} for r in results],
               "window": plan["window"], "frames": plan["frames"], "generated_frames": len(plan["generated"]),
               "canvas": plan["canvas"], "crop": plan["crop"], "warnings": plan["warnings"]}
@@ -586,8 +675,10 @@ def proof_sheet(path, plan, timeline_path, take_paths, results, best):
         tiles = []
         for i in picks:
             rx, ry, rw, rh = plan["regs"][i - lo]
+            # a loop's take ends at loop_body: the far context past it is the loop's own opening
+            fi = i - plan["loop_body"] if plan.get("loop_body") and i >= len(frames) else i
             # one tile shape (the canvas's) for every frame: crops change size with the car
-            t = cv2.resize(frames[i][ry:ry + rh, rx:rx + rw], (tile_w, int(tile_w * plan['canvas'][1] / plan['canvas'][0])),
+            t = cv2.resize(frames[fi][ry:ry + rh, rx:rx + rw], (tile_w, int(tile_w * plan['canvas'][1] / plan['canvas'][0])),
                            interpolation=cv2.INTER_AREA)
             cv2.putText(t, f"{i}", (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3)
             cv2.putText(t, f"{i}", (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)

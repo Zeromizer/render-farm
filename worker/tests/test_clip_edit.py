@@ -61,6 +61,12 @@ class ValidateTest(unittest.TestCase):
             _runner.validate(_params(mode="bridge", seconds=1.5))
         _runner.validate(_params(mode="bridge", seconds=1.5, source_b={"bucket": "assets", "path": "b"}))
 
+    def test_loop_needs_seconds(self):
+        with self.assertRaises(RuntimeError):
+            _runner.validate(_params(mode="loop"))
+        _runner.validate(_params(mode="loop", seconds=2.0))
+        _runner.validate(_params(mode="loop", seconds=2.0, loop_from_s=1.5))
+
     def test_seconds_range(self):
         with self.assertRaises(RuntimeError):
             _runner.validate(_params(mode="extend", seconds=30))
@@ -162,6 +168,50 @@ class RoundTripTest(unittest.TestCase):
 
     def test_audio(self):
         self._run("audio", {"mode": "audio", "clip": self.a, "start_frame": 5, "end_frame": 30}, 41)
+
+    def test_bridge_lands_past_b_start(self):
+        w = os.path.join(self.d, "bridge_from")
+        os.makedirs(w, exist_ok=True)
+        CE.prep({"mode": "bridge", "clip": self.a, "clip_b": self.b, "seconds": 0.5, "b_from_s": 0.5, "work_dir": w})
+        plan = json.load(open(os.path.join(w, "plan.json")))
+        gen = len(plan["generated"])
+        self.assertEqual(plan["frames"], 41 + gen + (30 - 12))   # B's first 12 frames dropped
+
+    def test_loop(self):
+        w = os.path.join(self.d, "loop")
+        os.makedirs(w, exist_ok=True)
+        CE.prep({"mode": "loop", "clip": self.a, "seconds": 0.5, "loop_from_s": 0.25, "work_dir": w})
+        plan = json.load(open(os.path.join(w, "plan.json")))
+        self.assertEqual(plan["loop_from"], 6)
+        gen = len(plan["generated"])
+        self.assertEqual(plan["loop_body"], 41 - 6 + gen)
+        self.assertEqual(plan["frames"], plan["loop_body"] + min(41 - 6, 36))   # + the far context copy
+        out = os.path.join(w, "out.mp4")
+        CE.compose({"work_dir": w, "takes": [os.path.join(w, "gen_src.mp4")], "seeds": [1], "out": out,
+                    "proof": os.path.join(w, "proof.png"), "report": os.path.join(w, "report.json")})
+        frames, _ = CE.L.read_clip(out)
+        self.assertEqual(len(frames), plan["loop_body"])
+        rep = json.load(open(os.path.join(w, "report.json")))
+        self.assertAlmostEqual(rep["loop_from_s"], 0.25, places=2)
+        self.assertEqual(rep["takes"][0]["loop_frames"], plan["loop_body"])
+        # the audio is exactly as long as the picture, so the loop does not drift when repeated
+        self.assertAlmostEqual(len(CE.read_audio(out, len(frames) / 24)) / CE.SR, len(frames) / 24, places=2)
+
+    def test_ease_in_end(self):
+        rng = np.random.default_rng(5)
+        bg = cv2.GaussianBlur(rng.integers(0, 255, (180, 960, 3), dtype=np.uint8), (0, 0), 2)
+        def pan(speeds):
+            x, out = 0.0, []
+            for v in speeds:
+                x += v
+                out.append(np.ascontiguousarray(bg[:, int(x):int(x) + 320]))
+            return out
+        # eases in over 24 frames, then pans at 8 px/frame
+        ramp = [8 * min(1.0, i / 24) ** 2 for i in range(72)]
+        self.assertGreaterEqual(CE.ease_in_end(pan(ramp)), 14)
+        self.assertLessEqual(CE.ease_in_end(pan(ramp)), 26)
+        self.assertLessEqual(CE.ease_in_end(pan([8.0] * 72)), 2)   # already at speed
+        self.assertEqual(CE.ease_in_end([bg[:, :320].copy()] * 72), 18)   # static: 0.75 s
 
     def _run_len(self, name, spec):
         """Like _run, but the expected length is the timeline's (clip + generated)."""
