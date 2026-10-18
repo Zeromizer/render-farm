@@ -22,6 +22,7 @@ LOAD_S = 25.0
 SEEDVR2_S_PER_VIDEO_S = 55.0
 LANCZOS_S = 10.0
 TURNTABLE_POST_S = 90.0
+TURNTABLE_BRIDGE_S = 360.0   # one bridged join: prep, two Ref2VA takes, compose, checks (PC, 2026-10-18)
 
 
 def _dims(vg):
@@ -76,10 +77,11 @@ def job_seconds(params):
             from studio import turntable as flow
             pl = flow.plan(tt)
             n, secs = len(pl["generate"]), pl["seconds"]
+            joins = len(pl["sequence"]) if pl["bridge"] else 0
         except Exception:  # noqa: BLE001 - an invalid job fails fast in the runner; estimate something
-            n, secs = 2, tt.get("seconds_per_half", 10)
+            n, secs, joins = 2, tt.get("seconds_per_half", 10), 0
         seg = {"duration_s": secs, "resolution": tt.get("resolution", "768p"), "ratio": tt.get("ratio", "16:9")}
-        return n * generation_seconds(seg, "i2v") + TURNTABLE_POST_S
+        return n * generation_seconds(seg, "i2v") + joins * TURNTABLE_BRIDGE_S + TURNTABLE_POST_S
     if mode == "upscale":
         return upscale_seconds(vg.get("upscale") or {}, 10)
     secs = generation_seconds(vg, mode)
