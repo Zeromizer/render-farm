@@ -112,6 +112,17 @@ def find_cut(motion, min_ratio=4.0, min_abs=12.0):
     return None, plateau
 
 
+def yuv_profile(path):
+    """Mean Y, U and V (0-255) of every frame: [(Y, U, V)]. A one-frame colour flash shows
+    as one frame off its neighbours (turntable.flash_frames)."""
+    with tempfile.TemporaryDirectory() as td:
+        run([ffmpeg(), "-v", "error", "-i", os.path.abspath(path), "-vf",
+             "signalstats,metadata=print:file=s.txt", "-f", "null", "-"], cwd=td)
+        txt = open(os.path.join(td, "s.txt")).read()
+    ys, us, vs = (re.findall(rf"lavfi\.signalstats\.{k}=([\d.]+)", txt) for k in ("YAVG", "UAVG", "VAVG"))
+    return [(float(y), float(u), float(v)) for y, u, v in zip(ys, us, vs)]
+
+
 def corner_luma_profile(path):
     """Mean luma of the top-left and bottom-right 64x64 corners, per frame (0-255).
     On a plain-backdrop product shot this should stay at the backdrop's brightness;

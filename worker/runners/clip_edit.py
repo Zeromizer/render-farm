@@ -305,6 +305,55 @@ def _run_move(jid, p, clip, work_dir, stream, heartbeat, cancel_check, deadline,
     return takes, take_masks, seeds
 
 
+def edit_in_session(jid, spec, prompt, seeds, heartbeat, log, cancel_check, deadline, prange, ref_images=(),
+                    label="take"):
+    """prep -> one H3 inpaint take per seed -> compose, for a job that already holds ComfyUI
+    (server up, TTS paused, RAM checked): the turntable's bridged joins. spec is prep's (mode,
+    clip, clip_b, seconds, context_s, b_from_s, work_dir); ref_images are local stills passed to
+    Ref2VA as references. Returns the compose report; the composed takes are
+    work_dir/take<N>.mp4 and the best one work_dir/edit.mp4."""
+    work_dir = spec["work_dir"]
+    os.makedirs(work_dir, exist_ok=True)
+    timeout = max(60, int(deadline - time.monotonic()))
+    py = venv_python(REQUIREMENTS, log, {"on_line": lambda l: log(f"  {l}"), "cancel_check": cancel_check,
+                                         "timeout_seconds": timeout})
+
+    def stream(sub, s):
+        path = os.path.join(work_dir, f"edit-{sub}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(s, f, indent=1)
+        proc.run_streaming([py, "-u", os.path.join(EDIT_DIR, "clip_edit.py"), sub, path], cwd=EDIT_DIR,
+                           on_line=lambda line: None if line.startswith(("PHASE ", "PROGRESS ")) else log(f"  {line}"),
+                           cancel_check=cancel_check, timeout_seconds=timeout)
+
+    stream("prep", spec)
+    plan = json.load(open(os.path.join(work_dir, "plan.json")))
+    W, H = plan["canvas"]
+    missing = [n for n in graphs_inpaint.REQUIRED_NODES if n not in comfy_client.object_info()]
+    if missing:
+        raise RuntimeError(f"ComfyUI is missing nodes {missing}: install PxTicks/ComfyUI-vlo @ 8a7092a")
+    names = [comfy_client.upload_input(os.path.join(work_dir, f), subfolder="clip_edit")
+             for f in ("gen_src.mp4", "gen_mask.mp4", "gen_amask.mp4")]
+    refs = [comfy_client.upload_input(r) for r in ref_images]
+    lo, hi = prange
+    span = (hi - lo) / len(seeds)
+    takes = []
+    tag = os.path.basename(os.path.normpath(work_dir))
+    for i, seed in enumerate(seeds):
+        graph, meta = graphs_inpaint.build(*names, prompt, W, H, plan["length"], seed, f"clip_edit/{jid}_{tag}_t{i + 1}",
+                                           ref_images=refs)
+        log(f"{label} take {i + 1}/{len(seeds)}: {plan['mode']} {W}x{H} {plan['length']}f seed={seed} "
+            f"steps={meta['steps']} refs={len(refs)}")
+        dest = os.path.join(work_dir, f"raw{i + 1}.mp4")
+        _run_prompt(jid, graph, f"{label} take {i + 1}/{len(seeds)}", heartbeat, cancel_check, deadline, dest, log,
+                    prange=(int(lo + span * i), int(lo + span * (i + 1))))
+        takes.append(dest)
+    report_local = os.path.join(work_dir, "edit-report.json")
+    stream("compose", {"work_dir": work_dir, "takes": takes, "seeds": seeds, "out": os.path.join(work_dir, "edit.mp4"),
+                       "proof": os.path.join(work_dir, "edit-proof.png"), "report": report_local})
+    return json.load(open(report_local))
+
+
 def _upload_extras(jid, work_dir, proof_local, report_local, log):
     report = json.load(open(report_local))
     for f, remote, mime in ((proof_local, f"outputs/{jid}-proof.png", "image/png"),

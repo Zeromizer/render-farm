@@ -170,5 +170,80 @@ class Progress(unittest.TestCase):
         self.assertEqual(tt.progress_ranges(0), [])
 
 
+class BridgedJoins(unittest.TestCase):
+    def test_bridged_by_default_only_for_a_complete_rotation(self):
+        self.assertTrue(tt.plan(FOUR)["bridge"])
+        self.assertTrue(tt.plan(TWO)["bridge"])
+        self.assertFalse(tt.plan(dict(FOUR, segments=["front_to_left"]))["bridge"])
+        self.assertFalse(tt.plan(dict(FOUR, joins="anchor"))["bridge"])
+        with self.assertRaises(ValueError):
+            tt.plan(dict(FOUR, joins="crossfade"))
+
+    def test_all_ready_segments_still_bridge(self):
+        ready = {n: {"bucket": "renders", "path": f"outputs/j1-{n}.mp4"} for n in tt.SEQUENCES["four"]}
+        pl = tt.plan({"ready_segments": ready})
+        self.assertEqual(pl["generate"], [])
+        self.assertTrue(pl["bridge"])
+
+    def test_gen_frames_follow_the_cut_motion(self):
+        steady = [2.0] * 124
+        self.assertEqual(tt.bridge_gen_frames(steady, steady), 42)          # 30 + 12 frames at the same speed
+        eased = [2.0] * 94 + [1.0] * 30                                      # brakes into the photo
+        self.assertEqual(tt.bridge_gen_frames(eased, steady), 27)            # (30 * 1 + 12 * 2) / 2
+        self.assertEqual(tt.bridge_gen_frames([0.0] * 124, [0.0] * 124), tt.BRIDGE_GEN[0])
+        self.assertEqual(tt.bridge_gen_frames([2.0] * 94 + [10.0] * 30, steady), tt.BRIDGE_GEN[1])   # a cut that covered far more
+
+    def test_windows_are_on_the_grid_with_context_in_range(self):
+        self.assertEqual(tt.bridge_window(25), (107, 41, 25))
+        self.assertEqual(tt.bridge_window(43), (124, 40, 44))
+        self.assertEqual(tt.bridge_window(12), (90, 39, 12))
+        for gen in range(tt.BRIDGE_GEN[0], tt.BRIDGE_GEN[1] + 1):
+            length, c, g = tt.bridge_window(gen)
+            self.assertEqual((length - 5) % 17, 0)
+            self.assertTrue(tt.BRIDGE_CONTEXT[0] <= c <= tt.BRIDGE_CONTEXT[1], gen)
+            self.assertIn(g - gen, (0, 1))
+            self.assertEqual(length, 2 * c + g)
+
+    def test_second_window_changes_the_geometry(self):
+        self.assertEqual(tt.bridge_window_alt(107, 41), (107, 39, 29))
+        self.assertEqual(tt.bridge_window_alt(90, 31), (90, 33, 24))       # too little context: grow it
+        self.assertEqual(tt.bridge_window_alt(141, 40), (141, 42, 57))     # would generate too much: grow it
+
+    def test_layout_covers_every_kept_and_generated_frame_once(self):
+        keeps, gens = [82, 82, 83, 82], [31, 43, 25, 29]
+        pieces = tt.bridge_layout(keeps, gens)
+        self.assertEqual(len(pieces), 8)
+        self.assertEqual(sum(e - s for _, s, e in pieces), sum(keeps) + sum(gens))
+        # segment 1 opens on the last bridge's landing side, right after that bridge's new frames
+        self.assertEqual(pieces[0], (3, 82 + 29, 82 + 29 + 41))
+        self.assertEqual(pieces[1], (0, 41, 82 + 31))
+        # segment 3 (odd length) splits 41 / 42
+        self.assertEqual(pieces[4], (1, 82 + 43, 82 + 43 + 41))
+        self.assertEqual(pieces[5], (2, 41, 83 + 25))
+
+    def test_two_anchor_layout_alternates(self):
+        pieces = tt.bridge_layout([200, 200], [30, 34])
+        self.assertEqual([b for b, _, _ in pieces], [1, 0, 0, 1])
+
+    def test_flash_and_jump_detection(self):
+        ramp = [(100 + i * 0.5, 128.0, 128.0) for i in range(40)]
+        self.assertEqual(tt.flash_frames(ramp, 0, 40), [])
+        flash = list(ramp)
+        flash[20] = (flash[20][0], 131.0, 125.0)                             # one magenta-ish frame
+        self.assertEqual(tt.flash_frames(flash, 0, 40), [20])
+        self.assertEqual(tt.flash_frames(flash, 0, 20), [])                  # outside the checked window
+        judder = [1.0, 1.0, 1.0, 2.0] * 10                                   # H3's one-in-four double step
+        self.assertEqual(tt.jump_frames(judder, 0, 40), [])
+        snap = list(judder)
+        snap[21] = 4.5
+        self.assertEqual(tt.jump_frames(snap, 0, 40), [21])
+
+    def test_take_choice(self):
+        t = lambda n, seam, f=(), j=(): {"take": n, "seam_jump": seam, "flashes": list(f), "jumps": list(j)}  # noqa: E731
+        self.assertEqual(tt.pick_bridge_take([t(1, 2.4), t(2, 1.9)])["take"], 2)
+        self.assertEqual(tt.pick_bridge_take([t(1, 1.5, f=[90]), t(2, 2.2)])["take"], 2)
+        self.assertIsNone(tt.pick_bridge_take([t(1, 5.1), t(2, 1.8, j=[113])]))
+
+
 if __name__ == "__main__":
     unittest.main()

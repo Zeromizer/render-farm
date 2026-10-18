@@ -41,8 +41,23 @@ Proven 2026-09-06 (two-anchor) on the Proton e.MAS 7:
 6. Join on the shared frames, check every transition and the loop seam,
    time-remap to constant angular speed (the model eases at every anchor),
    RIFE to the output fps, lanczos to the output size (a resize, not detail).
+
+BRIDGED JOINS (joins="bridge", the default for a complete rotation, 2026-10-18).
+Every anchored segment eases into its end photo and out of its start photo, so a
+join on the shared frame stalls (the Noah four-anchor job: 0.2x speed for half a
+second before each side). Step 6's remap hides that by evening out PIXEL motion,
+which whips through the side views (they move fewer pixels per degree) and softens
+the frames. Instead each segment loses its eased ends (BRIDGE_CUT) and H3 draws the
+turn through the photo view in one move: a clip_edit bridge (Ref2VA inpaint, the
+shared photo as a reference image) sized to the angle the cut frames covered. The
+last bridge lands back on the first segment, so the rotation loops with no
+shared-frame join at the model's own steady speed; it is RIFE'd to the output fps
+without a remap. Every bridge take is checked for a seam jump, a motion jump and a
+one-frame colour flash; a join with no clean take after a second window falls the
+whole job back to the anchor joins of step 6 (a defect says so).
 """
 import os
+import shutil
 import time
 
 from videogen import estimate, graphs
@@ -84,9 +99,24 @@ REPAIR_MOTION = ("continuing the same clockwise turn as seen from above from the
                  "it reaches the {target} shown in the last frame; the same side of the car stays visible throughout "
                  "and it never turns the other way")
 DEFAULTS = {"resolution": "768p", "ratio": "16:9", "seconds_per_half": 10, "seconds_per_quarter": 5, "seed": 21,
-            "fps": 60, "shorter_size": 1080, "density": 10, "details": ""}
+            "fps": 60, "shorter_size": 1080, "density": 10, "details": "", "joins": "bridge"}
+JOINS = ("bridge", "anchor")
 SECONDS_LIMITS = {"two": (4, 10), "four": (3, 10)}
 TRANSITION_MAX_DIFF = 6.0      # mean luma diff (256 px grey) of the frame a seam shares: same anchor ~0-3, front vs rear view ~10
+
+# Bridged joins (module docstring). Measured on H3 FL2VA quarters (2026-10-18): the ease into the
+# end photo spans ~30 frames, the one out of the start photo ~12.
+BRIDGE_CUT = (12, 30)            # frames dropped at a segment's start / end
+BRIDGE_MIN_KEEP = 24             # a segment must keep this much of itself between two bridges
+BRIDGE_LENGTHS = (141, 124, 107, 90)   # H3 windows (17k+5), longest first: more context, steadier speed
+BRIDGE_CONTEXT = (30, 44)        # original frames H3 sees on each side
+BRIDGE_GEN = (12, 60)            # generated frames per bridge
+BRIDGE_SEAM_MAX = 4.0            # clip_edit seam_jump of a usable take (clean 1.6-2.6; an overshoot that
+                                 # snapped back 3 frames scored 4.8-5.1)
+BRIDGE_JUMP_MAX = 2.5            # a frame's motion vs its local median
+BRIDGE_FLASH_MAX = 1.5           # a frame's mean Y/U/V vs its neighbours' (H3 once flashed magenta for one frame)
+BRIDGE_MOTION = ("continuing the same clockwise turn as seen from above at the same constant speed, passing "
+                 "straight through the {view} without slowing, pausing or stopping")
 
 
 def anchors_of(name):
@@ -166,9 +196,90 @@ def plan(tt):
     if not (tt.get("car") or "").strip() and generate:
         raise ValueError("turntable.car (one line describing the car) is required to generate segments")
     complete = list(requested) == list(seq)
+    joins = tt.get("joins") or DEFAULTS["joins"]
+    if joins not in JOINS:
+        raise ValueError(f"turntable.joins must be one of {list(JOINS)} (got {joins!r})")
     return {"variant": variant, "sequence": list(seq), "segments": segments, "requested": list(requested),
             "generate": generate, "reuse": [s["name"] for s in segments if s["ready"]], "anchors": needed,
-            "complete": complete, "loops": complete, "seconds": seconds}
+            "complete": complete, "loops": complete, "seconds": seconds,
+            "bridge": joins == "bridge" and complete}
+
+
+def bridge_gen_frames(m_a, m_b, cut=BRIDGE_CUT):
+    """Frames a bridge generates: what the cut (eased) frames of the two segments covered,
+    at the speed the segments run at just outside the cut. m_a / m_b: post.motion_profile
+    of the segment before / after the join (value i = change from frame i-1 to i)."""
+    cs, ce = cut
+    n = len(m_a)
+    covered = sum(m_a[n - ce:]) + sum(m_b[1:cs + 1])
+    edge = list(m_a[max(0, n - ce - 8):n - ce]) + list(m_b[cs + 1:cs + 9])
+    speed = sum(edge) / len(edge) if edge else 0.0
+    lo, hi = BRIDGE_GEN
+    if speed <= 0:
+        return lo
+    return max(lo, min(hi, int(round(covered / speed))))
+
+
+def bridge_window(gen):
+    """(length, context, gen) on H3's 17k+5 grid: the longest window whose context on each side
+    stays within BRIDGE_CONTEXT. gen grows by a frame when that makes the two contexts equal."""
+    for length in BRIDGE_LENGTHS:
+        c = (length - gen) // 2
+        if BRIDGE_CONTEXT[0] <= c <= BRIDGE_CONTEXT[1]:
+            return length, c, length - 2 * c
+    raise ValueError(f"no H3 window fits a {gen}-frame bridge")
+
+
+def bridge_window_alt(length, c):
+    """The second-round window: same length, 2 frames less context per side (4 more generated
+    frames), or more context when that would generate too many. H3's glitches come with the
+    geometry (2026-10-18: one window flashed on both seeds, the next one did not)."""
+    c2 = c - 2 if c - 2 >= BRIDGE_CONTEXT[0] and length - 2 * (c - 2) <= BRIDGE_GEN[1] else c + 2
+    return length, c2, length - 2 * c2
+
+
+def bridge_layout(keeps, gens):
+    """Frame pieces of the bridged loop, as [(bridge index, start, end)]. Bridge k joins segment k
+    to segment k+1 (the last one to the first); its output is segment k's kept frames, gens[k] new
+    frames, then segment k+1 from its cut start. Segment k comes half from bridge k-1 (its landing
+    side) and half from bridge k (its leaving side), so both bridges' handoff blends are used."""
+    n = len(keeps)
+    out = []
+    for k in range(n):
+        h = keeps[k] // 2
+        prev = (k - 1) % n
+        b0 = keeps[prev] + gens[prev]
+        out.append((prev, b0, b0 + h))
+        out.append((k, h, keeps[k] + gens[k]))
+    return out
+
+
+def flash_frames(yuv, lo, hi, limit=BRIDGE_FLASH_MAX):
+    """Frames in [lo, hi) whose mean Y, U or V is off the average of its two neighbours by more
+    than limit: a one-frame colour flash. yuv: [(Y, U, V)] per frame (post.yuv_profile)."""
+    bad = []
+    for i in range(max(1, lo), min(len(yuv) - 1, hi)):
+        if any(abs(yuv[i][c] - (yuv[i - 1][c] + yuv[i + 1][c]) / 2) > limit for c in range(3)):
+            bad.append(i)
+    return bad
+
+
+def jump_frames(motion, lo, hi, limit=BRIDGE_JUMP_MAX, k=6):
+    """Frames in [lo, hi) that move more than limit x the median of the 13 around them: a snap
+    or skip (H3 FL2VA segments double one step in four, so the limit sits above 2)."""
+    bad = []
+    for i in range(max(1, lo), min(len(motion), hi)):
+        win = sorted(motion[max(0, i - k):i + k + 1])
+        med = win[len(win) // 2]
+        if med > 0.05 and motion[i] > limit * med:
+            bad.append(i)
+    return bad
+
+
+def pick_bridge_take(takes):
+    """takes: [{take, seam_jump, flashes, jumps, ...}] -> the cleanest usable take, or None."""
+    ok = [t for t in takes if not t["flashes"] and not t["jumps"] and t["seam_jump"] <= BRIDGE_SEAM_MAX]
+    return min(ok, key=lambda t: t["seam_jump"]) if ok else None
 
 
 def progress_ranges(n, lo=5, hi=85):
@@ -197,7 +308,8 @@ def run(opts, api, log):
              ready_local  {segment_name: local 24 fps mp4} for every ready_segments entry
        api:  work_dir; upload(local_path) -> anchor ref for submit(); submit(vg, label, prange, after_seconds,
              after_text) -> handle (runs an i2v generation, reporting progress inside prange); wait(handle, label)
-             -> local mp4; phase(text, progress); check_cancel()
+             -> local mp4; phase(text, progress); check_cancel(); bridge(spec) (bridged joins: one clip_edit
+             bridge, see bridge_joins) -> {"report": compose report, "takes": [composed take mp4s]}
        returns {video, joined, segments: {name: {...}}, order, complete, loops, seams, loop_seam, defects,
                 frames, fps, width, height, timing, plateau}"""
     pl = plan(opts)
@@ -360,6 +472,17 @@ def run(opts, api, log):
                                    "seeds or canvases; regenerate one of them")
             defects.append(f"seam {a} -> {b}: shared frame differs by {d:.0f}")
 
+    bridged = None
+    if pl["bridge"] and len(order) > 1:
+        try:
+            bridged = bridge_joins(order, seg_out, prompt, o, api, log)
+        except (RuntimeError, OSError, ValueError) as exc:
+            # a cancel is not one of these and still stops the job
+            log(f"bridged joins failed, joining on the photos instead: {exc}")
+            defects.append(f"bridged joins failed ({str(exc)[:160]}); joined on the photo frames and re-timed")
+    if bridged:
+        return finish_bridged(bridged, order, seg_out, seams, defects, pl, o, api, log, timing, (w, h))
+
     # ---- join on the shared frames
     api.phase("joining quarters" if pl["variant"] == "four" else "joining pieces", 88)
     pieces = []
@@ -400,4 +523,97 @@ def run(opts, api, log):
     return {"video": out, "joined": joined, "segments": seg_out, "order": order, "variant": pl["variant"],
             "complete": pl["complete"], "loops": pl["loops"], "seams": seams, "defects": defects,
             "frames": n_out, "fps": int(o["fps"]), "width": inf["width"], "height": inf["height"],
-            "canvas": [w, h], "plateau": plateau2, "profile_before": before, "timing": timing}
+            "canvas": [w, h], "plateau": plateau2, "profile_before": before, "timing": timing, "joins": "anchor"}
+
+
+def bridge_joins(order, seg_out, prompt, o, api, log):
+    """Bridge every join of a complete rotation (module docstring). Returns {pieces, outputs,
+    bridges} for finish_bridged, or raises RuntimeError when a join has no usable take."""
+    work = os.path.join(api.work_dir, "bridges")
+    os.makedirs(work, exist_ok=True)
+    cs, ce = BRIDGE_CUT
+    n_seg = len(order)
+    frames = [seg_out[name]["frames"] for name in order]
+    keeps = [f - cs - ce for f in frames]
+    if min(keeps) < BRIDGE_MIN_KEEP:
+        raise RuntimeError(f"segments too short to bridge ({min(frames)} frames; each needs {BRIDGE_MIN_KEEP + cs + ce})")
+    motion = {name: post.motion_profile(seg_out[name]["local"]) for name in order}
+    outputs, gens, info = [], [], []
+    span = (86 - 70) / n_seg
+    for k, name in enumerate(order):
+        nxt = order[(k + 1) % n_seg]
+        anchor = anchors_of(name)[1]
+        api.check_cancel()
+        a_trim = post.trim_copy(seg_out[name]["local"], os.path.join(work, f"keep_{name}.mp4"), cs, frames[k] - ce)
+        ref = post.extract_frame(seg_out[nxt]["local"], 0, os.path.join(work, f"ref_{anchor}.png"))
+        gen = bridge_gen_frames(motion[name], motion[nxt])
+        windows = [bridge_window(gen)]
+        windows.append(bridge_window_alt(*windows[0][:2]))
+        text = prompt(BRIDGE_MOTION.format(view=VIEW[anchor]))
+        label = f"bridge {k + 1}/{n_seg} ({anchor})"
+        chosen, tried = None, []
+        for r, (length, c, g) in enumerate(windows):
+            api.phase(f"{label}: {g} frames" + (" (second window)" if r else ""), int(70 + span * k))
+            seeds = [int(o["seed"]) + 500 + 10 * k + 100 * r + 1009 * i for i in range(2)]
+            got = api.bridge({"clip": a_trim, "clip_b": seg_out[nxt]["local"], "b_from_s": cs / float(graphs.FPS),
+                              "seconds": g / float(graphs.FPS), "context_s": c / float(graphs.FPS), "prompt": text, "ref": ref,
+                              "seeds": seeds, "label": label, "work_dir": os.path.join(work, f"{k + 1}_{r + 1}")})
+            rep = got["report"]
+            g_real = int(rep.get("generated_frames") or g)
+            lo, hi = keeps[k] - 8, keeps[k] + g_real + 14
+            takes = []
+            for t, path in zip(rep["takes"], got["takes"]):
+                yuv = post.yuv_profile(path)
+                mo = post.motion_profile(path)
+                takes.append({"take": t["take"], "seed": t["seed"], "seam_jump": t["seam_jump"], "path": path,
+                              "flashes": flash_frames(yuv, lo, hi), "jumps": jump_frames(mo, lo, hi), "gen": g_real})
+            log(f"{label} window {length}f context {c} gen {g_real}: " + "; ".join(
+                f"take {t['take']} seam {t['seam_jump']:.2f} flashes {t['flashes'] or '-'} jumps {t['jumps'] or '-'}"
+                for t in takes))
+            tried += takes
+            chosen = pick_bridge_take(takes)
+            if chosen:
+                break
+        if not chosen:
+            raise RuntimeError(f"{label}: no clean take in {len(tried)} (seam/flash/jump checks)")
+        outputs.append(chosen["path"])
+        gens.append(chosen["gen"])
+        info.append({"between": [name, nxt], "through": anchor, "generated_frames": chosen["gen"],
+                     "seam_jump": round(chosen["seam_jump"], 2), "take": chosen["take"], "seed": chosen["seed"],
+                     "takes_tried": len(tried)})
+    return {"pieces": [(outputs[b], s, e) for b, s, e in bridge_layout(keeps, gens)], "bridges": info,
+            "keeps": keeps, "gens": gens}
+
+def finish_bridged(bridged, order, seg_out, seams, defects, pl, o, api, log, timing, canvas):
+    """Assemble the bridged loop and RIFE it to the output fps (no remap: the speed is the model's own)."""
+    work = api.work_dir
+    api.phase("joining bridged rotation", 87)
+    joined = post.concat_trimmed(bridged["pieces"], os.path.join(work, "joined_24fps.mp4"))
+    m = post.motion_profile(joined)
+    plateau = post.plateau_of(m)
+    wrap = post.frame_diff(post.last_frame_png(joined, os.path.join(work, "edge_joined_last.png")),
+                           post.extract_frame(joined, 0, os.path.join(work, "edge_joined_first.png")))
+    log(f"bridged loop: {len(m)} frames, plateau {plateau:.2f}, wrap {wrap:.2f}; "
+        + ", ".join(f"{b['through']} {b['generated_frames']}f seam {b['seam_jump']}" for b in bridged["bridges"]))
+    if plateau and wrap > 2.5 * plateau:
+        defects.append(f"loop seam: motion {wrap:.1f} vs plateau {plateau:.1f} (visible pop when looping)")
+    api.phase("interpolating", 90)
+    frames_dir = os.path.join(work, "frames")
+    if os.path.isdir(frames_dir):
+        shutil.rmtree(frames_dir)
+    n_out = int(round(len(m) * int(o["fps"]) / float(graphs.FPS)))
+    tmp = os.path.join(work, "rife_in")
+    post.extract_frames(joined, tmp)
+    post.rife(tmp, frames_dir, n_out)
+    api.phase("encoding", 93)
+    out = os.path.join(work, f"turntable_{o['shorter_size']}p{o['fps']}.mp4")
+    audio_src = next((seg_out[n]["local"] for n in order if not seg_out[n]["reused"]), seg_out[order[0]]["local"])
+    post.encode_frames(frames_dir, out, int(o["fps"]), o["shorter_size"], audio_src=audio_src, loop_audio=True)
+    inf = post.info(out)
+    for s in seams:
+        s["bridged"] = True
+    return {"video": out, "joined": joined, "segments": seg_out, "order": order, "variant": pl["variant"],
+            "complete": pl["complete"], "loops": pl["loops"], "seams": seams, "defects": defects,
+            "frames": inf["frames"], "fps": int(o["fps"]), "width": inf["width"], "height": inf["height"],
+            "canvas": list(canvas), "plateau": plateau, "profile_before": m, "timing": timing, "joins": "bridge",
+            "bridges": bridged["bridges"]}

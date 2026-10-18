@@ -197,7 +197,8 @@ def turntable_manifest(jid, res):
                        "note": "RIFE-interpolated and lanczos-resized master; detail is that of the canvas"},
             "joined_native": {"bucket": config.BUCKET, "path": f"outputs/{jid}-joined24.mp4"},
             "segments": segs, "seams": res["seams"], "defects": res["defects"], "timing_s": res["timing"],
-            "plateau_motion": round(res["plateau"], 2)}
+            "plateau_motion": round(res["plateau"], 2), "joins": res.get("joins", "anchor"),
+            **({"bridges": res["bridges"]} if res.get("bridges") else {})}
 
 
 def _upload_turntable_sidecars(jid, res, log):
@@ -231,6 +232,7 @@ class _TurntableApi:
         self.work_dir = os.path.join(work_dir, "turntable")
         os.makedirs(self.work_dir, exist_ok=True)
         self._n, self._results = 0, {}
+        self._bridging = False
         self.halves_done = 0   # the flow tells us via phase() text; we count finished generations
 
     def phase(self, text, progress=None):
@@ -267,6 +269,21 @@ class _TurntableApi:
     def wait(self, key, label):
         return self._results[key]
 
+    def bridge(self, spec):
+        """One bridged turntable join: a clip_edit bridge (two Ref2VA inpaint takes, the shared
+        photo as a reference) inside this job's ComfyUI session. Returns {report, takes}."""
+        from runners import clip_edit as clip_edit_runner   # it imports this module: not at the top
+        if not self._bridging:
+            comfy_client.free()   # the segments' first/last-frame model out before Ref2VA comes in
+            self._bridging = True
+        s = {k: spec[k] for k in ("clip", "clip_b", "b_from_s", "seconds", "context_s")}
+        s.update(mode="bridge", work_dir=spec["work_dir"])
+        lo = max(70, int(self.heartbeat.progress))
+        report = clip_edit_runner.edit_in_session(
+            self.jid, s, spec["prompt"], spec["seeds"], self.heartbeat, self.log, self.cancel_check, self.deadline,
+            (lo, min(86, lo + 4)), ref_images=[spec["ref"]] if spec.get("ref") else [], label=spec.get("label", "bridge"))
+        return {"report": report, "takes": [os.path.join(spec["work_dir"], f"take{t['take']}.mp4") for t in report["takes"]]}
+
 
 def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     jid = job["id"]
@@ -298,7 +315,8 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         except ValueError as exc:
             raise RuntimeError(f"turntable: {exc}")
         log(f"turntable {tt_plan['variant']}-anchor: generate {tt_plan['generate']}, reuse {tt_plan['reuse']}, "
-            f"{'complete loop' if tt_plan['complete'] else 'partial: ' + ', '.join(tt_plan['requested'])}")
+            f"{'complete loop' if tt_plan['complete'] else 'partial: ' + ', '.join(tt_plan['requested'])}, "
+            f"joins {'bridged' if tt_plan['bridge'] else 'on the photos'}")
     if mode == "upscale":
         upscale = upscale or {}
         if not p.get("source"):
@@ -333,8 +351,9 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
                                   deadline, os.path.join(work_dir, "video_gen-upscaled.mp4"), log)
         heartbeat.progress = 95
         return out_local, "mp4", "video/mp4"
-    if mode == "turntable" and not tt_plan["generate"]:
+    if mode == "turntable" and not tt_plan["generate"] and not tt_plan["bridge"]:
         # Assembly of approved segments: join, remap, RIFE, encode. No ComfyUI, no TTS pause.
+        # (Bridged joins need H3, so they take the ComfyUI path below even with nothing to generate.)
         opts = dict(tt, anchor_local={}, ready_local=inputs["ready"])
         api = _TurntableApi(jid, work_dir, heartbeat, cancel_check, deadline, log)
         heartbeat.progress = 5
