@@ -259,15 +259,15 @@ class Dejudder(unittest.TestCase):
 
     @staticmethod
     def profile(true_steps):
-        """motion_profile-style luma steps: displacement ** (1 / gamma), m[0] copies m[1]."""
+        """motion_profile-style: one luma value per step, displacement ** (1 / gamma), m[0] copies m[1]."""
         luma = [x ** (1 / post.JUDDER_GAMMA) for x in true_steps]
-        return [luma[0]] + luma
+        return [luma[1]] + luma[1:]
 
     def test_long_step_is_evened_out(self):
         true = [1.0, 1.0, 1.0, 1.85] * 30
         m = self.profile(true)
-        n_out = int(round(len(m) * 60 / 24))
-        uniform = [k * (len(m) - 1) / (n_out - 1) for k in range(n_out)]
+        n_out = int(round((len(m) + 1) * 60 / 24))
+        uniform = [k * len(m) / (n_out - 1) for k in range(n_out)]
         before = self.displacement_per_output_step(true, uniform)[10:-10]
         after = self.displacement_per_output_step(true, post.dejudder_times(m, n_out))[10:-10]
         self.assertGreater(max(before) / min(before), 1.7)
@@ -277,12 +277,12 @@ class Dejudder(unittest.TestCase):
         ease = [2.0 - 1.5 * i / 119 for i in range(120)]     # slows to a quarter speed, no judder
         m = self.profile(ease)
         self.assertTrue(all(abs(w - 1) < 1e-9 for w in post.judder_weights(m[1:])))
-        n_out = int(round(len(m) * 60 / 24))
-        uniform = [k * (len(m) - 1) / (n_out - 1) for k in range(n_out)]
+        n_out = int(round((len(m) + 1) * 60 / 24))
+        uniform = [k * len(m) / (n_out - 1) for k in range(n_out)]
         times = post.dejudder_times(m, n_out)
         self.assertLess(max(abs(a - b) for a, b in zip(times, uniform)), 0.35)
         self.assertEqual(times[0], 0.0)
-        self.assertAlmostEqual(times[-1], len(m) - 1)
+        self.assertAlmostEqual(times[-1], len(m))
 
     def test_period4_mean_flattens_the_pattern(self):
         v = [1.0, 1.0, 1.0, 2.0] * 6

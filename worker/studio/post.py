@@ -75,9 +75,10 @@ def extract_frames(path, out_dir):
 
 
 def motion_profile(path):
-    """Mean absolute luma difference to the previous frame, one value per frame
-    (frame 0 copies frame 1). A rotating car sits around 5 on this scale at
-    832x480-1344x768; a hard cut is 20+."""
+    """Mean absolute luma difference between consecutive frames: one value per frame STEP
+    (tblend makes N-1 of them), m[i] = the change from frame i to frame i+1, with m[0] replaced
+    by m[1] (the first step of a generated clip is near zero). A rotating car sits around 5 on
+    this scale at 832x480-1344x768; a hard cut is 20+."""
     with tempfile.TemporaryDirectory() as td:
         # Relative output path: ffmpeg's filter parser chokes on the drive colon in C:/...
         run([ffmpeg(), "-v", "error", "-i", os.path.abspath(path), "-vf",
@@ -410,9 +411,9 @@ def period4_mean(v):
 
 def dejudder_times(m, n_out):
     """Source frame times (0..N-1) for n_out output frames that keep the clip's own pacing but space
-    H3's one-in-four long step evenly. m: motion_profile(src) (m[i] = change from frame i-1 to i)."""
-    steps = m[1:]
-    N = len(m)
+    H3's one-in-four long step evenly. m: motion_profile(src), one value per step (N-1 of them)."""
+    steps = list(m)
+    N = len(m) + 1
     if len(steps) < 8 or n_out < 2:
         return [k * (N - 1) / max(n_out - 1, 1) for k in range(n_out)]
     local = period4_mean(steps)
@@ -462,10 +463,10 @@ def remap_constant_speed(src, frames_out, fps=60, density=10, tmp_root=None, log
     floor = 0.15 * sorted(ms)[len(ms) // 2]
     ms = [max(x, floor) for x in ms]          # a static stretch must not stall the remap
     # equal steps of DISPLACEMENT, not of smoothed motion: H3's one-in-four long step evened out too
-    ms = ms[:1] + [x * w for x, w in zip(ms[1:], judder_weights(m[1:]))]
+    ms = [x * w for x, w in zip(ms, judder_weights(m))]
     plateau = plateau_of(m)
-    C = [0.0]
-    for x in ms[1:]:
+    C = [0.0]                                 # C[j]: position of frame j (m[i] is the step from i to i+1)
+    for x in ms:
         C.append(C[-1] + x)
     n_out = int(round(C[-1] / plateau * fps / inf["fps"]))
     tmp = tempfile.mkdtemp(prefix="remap_", dir=tmp_root)

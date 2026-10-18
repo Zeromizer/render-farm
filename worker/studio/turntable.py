@@ -592,13 +592,13 @@ def finish_bridged(bridged, order, seg_out, seams, defects, pl, o, api, log, tim
     plateau = post.plateau_of(m)
     wrap = post.frame_diff(post.last_frame_png(joined, os.path.join(work, "edge_joined_last.png")),
                            post.extract_frame(joined, 0, os.path.join(work, "edge_joined_first.png")))
-    log(f"bridged loop: {len(m)} frames, plateau {plateau:.2f}, wrap {wrap:.2f}; "
+    log(f"bridged loop: {len(m) + 1} frames, plateau {plateau:.2f}, wrap {wrap:.2f}; "
         + ", ".join(f"{b['through']} {b['generated_frames']}f seam {b['seam_jump']}" for b in bridged["bridges"]))
     if plateau and wrap > 2.5 * plateau:
         defects.append(f"loop seam: motion {wrap:.1f} vs plateau {plateau:.1f} (visible pop when looping)")
     api.phase("interpolating", 90)
     frames_dir = os.path.join(work, "frames")
-    n_out = int(round(len(m) * int(o["fps"]) / float(graphs.FPS)))
+    n_out = int(round((len(m) + 1) * int(o["fps"]) / float(graphs.FPS)))
     # the model's own pacing, with H3's one-in-four long step spaced evenly (post.judder_weights)
     post.retime_frames(joined, frames_dir, post.dejudder_times(m, n_out), density=int(o["density"]), tmp_root=work,
                        log=log)
