@@ -55,6 +55,7 @@ PIXEL_FRAMES = 1.1e8
 MAX_AREA = 1344 * 768     # H3's native canvas; never generate above it
 CROP_AREA = L.CANVAS_AREA
 HANDOFF = 6               # frames blended from original to generated at a seam
+LOOP_HANDOFF = 16         # loop seams: spread any brightness step over 2/3 s
 
 
 emit = L.emit
@@ -317,7 +318,9 @@ def prep(spec):
                                    audio[a0:a0 + frames_to_samples(cb)]])
         src_ranges = [(0, body), (body + gen, body + gen + cb)]
         lo = body - ca
-        loop = {"loop_from": L0, "loop_body": body + gen}
+        # a wider handoff: H3's redraw of the shared frames can sit a few levels off the
+        # original (5 darker on a real clip), and a loop shows that step on every repeat
+        loop = {"loop_from": L0, "loop_body": body + gen, "handoff": LOOP_HANDOFF}
         print(f"MEASURED loop from frame {L0} ({L0 / FPS:.2f} s), {body} original + {gen} generated frames",
               flush=True)
     N = len(tl)
@@ -551,16 +554,17 @@ def compose_take(work, plan, take, out_path):
     # reconstruction of the context over a few frames, so the cut into generated
     # frames is between two frames H3 made to follow each other
     gen_set = set(plan["generated"])
+    handoff = int(plan.get("handoff", HANDOFF))
     seams = []
     for i in range(lo, hi):
         if (i in gen_set) != (i + 1 in gen_set):
             seams.append(i + 0.5)
-            side = range(i - HANDOFF + 1, i + 1) if i + 1 in gen_set else range(i + 1, i + 1 + HANDOFF)
+            side = range(i - handoff + 1, i + 1) if i + 1 in gen_set else range(i + 1, i + 1 + handoff)
             ordered = list(side) if i + 1 in gen_set else list(side)[::-1]
             for j, f in enumerate(ordered):
                 if not lo <= f <= hi or f in gen_set:
                     continue
-                t = (j + 1) / (HANDOFF + 1)
+                t = (j + 1) / (handoff + 1)
                 g = cv2.resize(gen[f - lo], (fw, fh), interpolation=cv2.INTER_CUBIC).astype(np.float32)
                 out[f] = np.clip(out[f].astype(np.float32) * (1 - t) + g * t, 0, 255).astype(np.uint8)
 
@@ -586,7 +590,7 @@ def compose_take(work, plan, take, out_path):
     seam_jump, jump_at, med = 0.0, None, 0.0
     span = sorted(gen_set & set(range(lo, hi + 1)))
     if span:
-        r0, r1 = max(lo, span[0] - 1 - HANDOFF), min(hi, span[-1] + 1 + HANDOFF)
+        r0, r1 = max(lo, span[0] - 1 - handoff), min(hi, span[-1] + 1 + handoff)
         res = motion_residuals(out, lo, hi)
         orig = [d for k, d in enumerate(res) if not (r0 <= lo + k <= r1)]
         med = float(np.median(orig or res))
@@ -614,7 +618,7 @@ def compose_take(work, plan, take, out_path):
         # HANDOFF frames (H3's reconstruction fading back to the original) and its sound,
         # so the wrap from the last generated frame is H3 into H3, then drop the copy
         body = plan["loop_body"]
-        k = min(HANDOFF, len(out) - body)
+        k = min(handoff, len(out) - body)
         for j in range(k):
             out[j] = out[body + j]
         s0, x = frames_to_samples(body), frames_to_samples(k)
