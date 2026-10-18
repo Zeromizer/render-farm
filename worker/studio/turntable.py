@@ -122,6 +122,12 @@ ORBIT_SECONDS = (5, 10)          # one generation; 768p cannot exceed 10 s, and 
 ORBIT_MAX_VIEWS = 23             # extra views (15 degrees apart at most), on top of the four anchors
 ORBIT_PIN_MAX = 14.0             # frame_diff of a pinned frame vs its photo (clean pins measured 2-5)
 ORBIT_TRIES = 2
+# Settings per take, as measured on the Noah (E2E 2026-10-19). Turbo-8 at LoRA 1.0 with only the four photos
+# pinned turned the backdrop dark grey between pins (both seeds); at LoRA 0.8 it stayed clean. With 8+ views
+# LoRA 1.0 is clean. The second take runs 20 full steps (LoRA 1.0, clean with four photos, ~24 min on the PC).
+ORBIT_FEW_VIEWS = 8
+ORBIT_STRENGTH = {"few": 0.8, "many": 1.0}
+ORBIT_RETRY = {"turbo": False, "steps": 20, "orbit_strength": 1.0}
 SECONDS_LIMITS = {"two": (4, 10), "four": (3, 10)}
 TRANSITION_MAX_DIFF = 6.0      # mean luma diff (256 px grey) of the frame a seam shares: same anchor ~0-3, front vs rear view ~10
 
@@ -768,8 +774,14 @@ def run_orbit(pl, opts, api, log):
         api.check_cancel()
         label = "orbit 360" + (f" try {attempt + 1}" if attempt else "")
         seed = int(o["seed"]) + 300 * attempt
-        spec = {"resolution": o["resolution"], "ratio": o["ratio"], "length": length, "seed": seed,
-                "turbo": o.get("turbo", True), "steps": o.get("steps"), "orbit_strength": o.get("orbit_strength", 1.0),
+        if attempt == 0:
+            strength = ORBIT_STRENGTH["many" if len(refs) >= ORBIT_FEW_VIEWS else "few"]
+            settings = {"turbo": o.get("turbo", True), "steps": o.get("steps"),
+                        "orbit_strength": float(o.get("orbit_strength") or strength)}
+        else:
+            settings = dict(ORBIT_RETRY)
+            label += " (full steps)"
+        spec = {"resolution": o["resolution"], "ratio": o["ratio"], "length": length, "seed": seed, **settings,
                 "front": front, "pins": pins,
                 "label": label, "prange": (8, 80) if attempt == 0 else (80, 86),
                 "after_seconds": estimate.TURNTABLE_POST_S, "after_text": f" - then {int(o['fps'])} fps"}
@@ -778,10 +790,10 @@ def run_orbit(pl, opts, api, log):
         timing[label] = round(time.monotonic() - t0, 1)
         api.phase(f"{label}: checking views", 81)
         problems, diffs, jumps = check(path)
-        log(f"{label}: seed {seed}, view diffs {diffs}, jumps {jumps or '-'}"
+        log(f"{label}: seed {seed}, {settings}, view diffs {diffs}, jumps {jumps or '-'}"
             + (f" -> {'; '.join(problems)}" if problems else " -> clean"))
         takes.append({"path": path, "seed": seed, "problems": problems, "diffs": diffs, "jumps": jumps,
-                      "worst": max(diffs.values())})
+                      "worst": max(diffs.values()), "settings": settings})
         if not problems:
             break
     best = min(takes, key=lambda t: (len(t["problems"]), t["worst"]))
@@ -822,4 +834,5 @@ def run_orbit(pl, opts, api, log):
             "fps": int(o["fps"]), "width": inf["width"], "height": inf["height"], "canvas": [w, h],
             "plateau": plateau, "profile_before": m, "timing": timing, "joins": "orbit", "method": "orbit",
             "orbit": {"length": length, "rotation_s": rotation_s, "seed": best["seed"], "takes": len(takes),
+                      "settings": best["settings"],
                       "pins": {n: i for n, (i, _) in refs.items()}, "view_diffs": best["diffs"]}}
