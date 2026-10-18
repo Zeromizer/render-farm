@@ -769,7 +769,8 @@ def run_orbit(pl, opts, api, log):
         label = "orbit 360" + (f" try {attempt + 1}" if attempt else "")
         seed = int(o["seed"]) + 300 * attempt
         spec = {"resolution": o["resolution"], "ratio": o["ratio"], "length": length, "seed": seed,
-                "turbo": o.get("turbo", True), "steps": o.get("steps"), "front": front, "pins": pins,
+                "turbo": o.get("turbo", True), "steps": o.get("steps"), "orbit_strength": o.get("orbit_strength", 1.0),
+                "front": front, "pins": pins,
                 "label": label, "prange": (8, 80) if attempt == 0 else (80, 86),
                 "after_seconds": estimate.TURNTABLE_POST_S, "after_text": f" - then {int(o['fps'])} fps"}
         t0 = time.monotonic()
