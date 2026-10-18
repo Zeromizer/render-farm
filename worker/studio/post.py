@@ -362,6 +362,93 @@ def _interp(xs, xp, fp):
     return out
 
 
+# H3 JUDDER (measured 2026-10-18): in some generations every 4th frame step moves ~1.85x the
+# others (optical flow; "a frame missing" once per latent group), in others not at all; it varies per
+# generation, not per job. motion_profile's luma steps see it at ~1.45x, so a luma step maps to
+# displacement as luma ** JUDDER_GAMMA (fitted against optical flow on four juddering clips: 1.3-1.6).
+# The pattern is estimated per 24-frame window from the four phase means (6 steps each: noise
+# averages out) and only where it is clearly there (JUDDER_GATE on the strongest phase vs the others;
+# clean H3 clips sit at 1.03-1.08). Scored against optical flow, the worst 5% of output steps go from
+# ~1.9x their neighbours to ~1.15x; clean clips stay where they were.
+JUDDER_GAMMA = 1.4
+JUDDER_GATE = (1.10, 1.25)
+
+
+def judder_weights(steps, win=24):
+    """Per-step displacement weight (about 1 on average over any 4 steps) that undoes H3's
+    one-in-four long step: steps[i] is the luma change from frame i to i+1."""
+    n = len(steps)
+    if n < 8:
+        return [1.0] * n
+    win = min(win, n)
+    g0, g1 = JUDDER_GATE
+    out = []
+    for i in range(n):
+        lo = max(0, min(i - win // 2, n - win))
+        w = steps[lo:lo + win]
+        ph = []
+        for q in range(4):
+            vals = w[(q - lo) % 4::4]
+            ph.append(max(sum(vals) / len(vals), 1e-3) if vals else 1.0)
+        top = max(range(4), key=ph.__getitem__)
+        rest = sum(ph[j] for j in range(4) if j != top) / 3
+        k = min(1.0, max(0.0, (ph[top] / rest - g0) / (g1 - g0)))
+        pw = [p ** JUDDER_GAMMA for p in ph]
+        mean = sum(pw) / 4
+        out.append(1.0 + k * (pw[i % 4] / mean - 1.0))
+    return out
+
+
+def period4_mean(v):
+    """5-tap [.5 1 1 1 .5] / 4: the local mean over exactly one 4-step period, so H3's one-in-four
+    pattern averages out but real speed changes (an ease, a turn) stay."""
+    if len(v) < 3:
+        return list(v)
+    pad = [v[1], v[0]] + list(v) + [v[-1], v[-2]]
+    return [(0.5 * pad[i] + pad[i + 1] + pad[i + 2] + pad[i + 3] + 0.5 * pad[i + 4]) / 4 for i in range(len(v))]
+
+
+def dejudder_times(m, n_out):
+    """Source frame times (0..N-1) for n_out output frames that keep the clip's own pacing but space
+    H3's one-in-four long step evenly. m: motion_profile(src) (m[i] = change from frame i-1 to i)."""
+    steps = m[1:]
+    N = len(m)
+    if len(steps) < 8 or n_out < 2:
+        return [k * (N - 1) / max(n_out - 1, 1) for k in range(n_out)]
+    local = period4_mean(steps)
+    floor = 0.15 * sorted(local)[len(local) // 2]
+    local = [max(x, floor) for x in local]
+    d = [max(x * w, floor) for x, w in zip(local, judder_weights(steps))]
+    P, S = [0.0], [0.0]
+    for a, b in zip(d, local):
+        P.append(P[-1] + a)
+        S.append(S[-1] + b)
+    S = [x * P[-1] / S[-1] for x in S]
+    t = [k * (N - 1) / (n_out - 1) for k in range(n_out)]
+    goal = _interp(t, list(range(N)), S)
+    return _interp(goal, P, list(range(N)))
+
+
+def retime_frames(src, frames_out, times, density=10, tmp_root=None, log=print):
+    """RIFE src to density x frames and write the frame nearest each source time in `times` to
+    frames_out as a PNG sequence."""
+    N = info(src)["frames"]
+    tmp = tempfile.mkdtemp(prefix="retime_", dir=tmp_root)
+    try:
+        extract_frames(src, os.path.join(tmp, "in"))
+        got = rife(os.path.join(tmp, "in"), os.path.join(tmp, "out"), N * density)
+        log(f"retime: {N} frames -> {len(got)} dense -> {len(times)} out")
+        if os.path.isdir(frames_out):
+            shutil.rmtree(frames_out)
+        os.makedirs(frames_out)
+        for i, t in enumerate(times):
+            d = min(len(got) - 1, max(0, int(round(t * (len(got) - 1) / max(N - 1, 1)))))
+            shutil.copyfile(os.path.join(tmp, "out", got[d]), os.path.join(frames_out, f"{i:08d}.png"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return len(times)
+
+
 def remap_constant_speed(src, frames_out, fps=60, density=10, tmp_root=None, log=print):
     """Rewrite src's timing so the accumulated frame-to-frame motion grows
     linearly: RIFE the clip to `density`x frames, then pick output frames at
@@ -374,6 +461,8 @@ def remap_constant_speed(src, frames_out, fps=60, density=10, tmp_root=None, log
     ms = smooth(m, 5)
     floor = 0.15 * sorted(ms)[len(ms) // 2]
     ms = [max(x, floor) for x in ms]          # a static stretch must not stall the remap
+    # equal steps of DISPLACEMENT, not of smoothed motion: H3's one-in-four long step evened out too
+    ms = ms[:1] + [x * w for x, w in zip(ms[1:], judder_weights(m[1:]))]
     plateau = plateau_of(m)
     C = [0.0]
     for x in ms[1:]:

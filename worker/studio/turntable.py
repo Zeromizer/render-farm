@@ -57,7 +57,6 @@ one-frame colour flash; a join with no clean take after a second window falls th
 whole job back to the anchor joins of step 6 (a defect says so).
 """
 import os
-import shutil
 import time
 
 from videogen import estimate, graphs
@@ -599,12 +598,10 @@ def finish_bridged(bridged, order, seg_out, seams, defects, pl, o, api, log, tim
         defects.append(f"loop seam: motion {wrap:.1f} vs plateau {plateau:.1f} (visible pop when looping)")
     api.phase("interpolating", 90)
     frames_dir = os.path.join(work, "frames")
-    if os.path.isdir(frames_dir):
-        shutil.rmtree(frames_dir)
     n_out = int(round(len(m) * int(o["fps"]) / float(graphs.FPS)))
-    tmp = os.path.join(work, "rife_in")
-    post.extract_frames(joined, tmp)
-    post.rife(tmp, frames_dir, n_out)
+    # the model's own pacing, with H3's one-in-four long step spaced evenly (post.judder_weights)
+    post.retime_frames(joined, frames_dir, post.dejudder_times(m, n_out), density=int(o["density"]), tmp_root=work,
+                       log=log)
     api.phase("encoding", 93)
     out = os.path.join(work, f"turntable_{o['shorter_size']}p{o['fps']}.mp4")
     audio_src = next((seg_out[n]["local"] for n in order if not seg_out[n]["reused"]), seg_out[order[0]]["local"])

@@ -10,6 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from studio import post  # noqa: E402
 from studio import turntable as tt  # noqa: E402
 
 REF = lambda n: {"bucket": "assets", "path": f"sha256/{n * 8}"}  # noqa: E731
@@ -243,6 +244,50 @@ class BridgedJoins(unittest.TestCase):
         self.assertEqual(tt.pick_bridge_take([t(1, 2.4), t(2, 1.9)])["take"], 2)
         self.assertEqual(tt.pick_bridge_take([t(1, 1.5, f=[90]), t(2, 2.2)])["take"], 2)
         self.assertIsNone(tt.pick_bridge_take([t(1, 5.1), t(2, 1.8, j=[113])]))
+
+
+class Dejudder(unittest.TestCase):
+    """H3's one-in-four long step (post.judder_weights / dejudder_times), on synthetic motion."""
+
+    @staticmethod
+    def displacement_per_output_step(true_steps, times):
+        C = [0.0]
+        for x in true_steps:
+            C.append(C[-1] + x)
+        pos = post._interp(times, list(range(len(C))), C)
+        return [b - a for a, b in zip(pos, pos[1:])]
+
+    @staticmethod
+    def profile(true_steps):
+        """motion_profile-style luma steps: displacement ** (1 / gamma), m[0] copies m[1]."""
+        luma = [x ** (1 / post.JUDDER_GAMMA) for x in true_steps]
+        return [luma[0]] + luma
+
+    def test_long_step_is_evened_out(self):
+        true = [1.0, 1.0, 1.0, 1.85] * 30
+        m = self.profile(true)
+        n_out = int(round(len(m) * 60 / 24))
+        uniform = [k * (len(m) - 1) / (n_out - 1) for k in range(n_out)]
+        before = self.displacement_per_output_step(true, uniform)[10:-10]
+        after = self.displacement_per_output_step(true, post.dejudder_times(m, n_out))[10:-10]
+        self.assertGreater(max(before) / min(before), 1.7)
+        self.assertLess(max(after) / min(after), 1.15)
+
+    def test_clean_clip_and_its_pacing_are_left_alone(self):
+        ease = [2.0 - 1.5 * i / 119 for i in range(120)]     # slows to a quarter speed, no judder
+        m = self.profile(ease)
+        self.assertTrue(all(abs(w - 1) < 1e-9 for w in post.judder_weights(m[1:])))
+        n_out = int(round(len(m) * 60 / 24))
+        uniform = [k * (len(m) - 1) / (n_out - 1) for k in range(n_out)]
+        times = post.dejudder_times(m, n_out)
+        self.assertLess(max(abs(a - b) for a, b in zip(times, uniform)), 0.35)
+        self.assertEqual(times[0], 0.0)
+        self.assertAlmostEqual(times[-1], len(m) - 1)
+
+    def test_period4_mean_flattens_the_pattern(self):
+        v = [1.0, 1.0, 1.0, 2.0] * 6
+        mid = post.period4_mean(v)[4:-4]
+        self.assertTrue(all(abs(x - 1.25) < 1e-9 for x in mid))
 
 
 if __name__ == "__main__":
