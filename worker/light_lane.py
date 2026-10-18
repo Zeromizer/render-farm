@@ -27,15 +27,28 @@ in H3's first ~30 s it still looks free. So the lane also never starts a job
 while the render loop runs a PAUSE_DURING engine, and the loop waits for a
 running light job to finish before it starts one (wait_for_light()).
 
+Pause while ComfyUI works: PAUSE_DURING names engines, so a job of another
+engine that drives H3 through ComfyUI itself slipped past it. On 2026-10-18 a
+`python` spike (job 62e36c25, spikes/h3_orbit) ran H3 for 70 min while this lane
+claimed a dealer remotion render beside it (86d4f1dc). The box hit 30.8 GB
+with ComfyUI at 16.8 GB, and the render failed ("No frame found at position
+8192"); the same plate rendered fine 4 min later. So while the render loop has
+a job, the lane also waits whenever ComfyUI has a prompt running or queued,
+whoever queued it (_comfy_busy()). Only while the loop has a job: with the loop
+idle, ComfyUI's queue cannot be ours, and a prompt stuck there must not starve
+the lane. No answer from ComfyUI counts as not busy.
+
 Shared caches (repo checkouts, venvs, assets) are serialised in worker/locks.py.
 Restart: the render loop drains this lane (stop claiming, finish the current
 job) before it exits on worker/restart-requested.
 """
 import ctypes
+import json
 import os
 import subprocess
 import threading
 import time
+import urllib.request
 
 import psutil
 
@@ -50,6 +63,8 @@ POLL_SECONDS = 3
 # Render-loop engines that need the whole box; see "Pause during video_gen".
 PAUSE_DURING = {e.strip() for e in os.environ.get("LIGHT_LANE_PAUSE_DURING", "video_gen,lettering_fix,clip_edit").split(",")
                 if e.strip()}
+# Also wait while ComfyUI has work, whatever the engine (see "Pause while ComfyUI works").
+PAUSE_ON_COMFY = os.environ.get("LIGHT_LANE_PAUSE_ON_COMFY", "1") not in ("0", "false", "no")
 # The engine the render loop is running now (set by render_worker.process_job).
 main_engine = [None]
 
@@ -84,12 +99,25 @@ def _free_vram_mib():
         return None
 
 
+def _comfy_busy():
+    """True while ComfyUI has a prompt running or queued. False when it does not
+    answer (not started, restarting): then nothing of it is on the box."""
+    try:
+        with urllib.request.urlopen(config.COMFYUI_URL.rstrip("/") + "/queue", timeout=2) as r:
+            q = json.loads(r.read())
+        return bool(q.get("queue_running") or q.get("queue_pending"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def room():
     """(ok, reason): whether the box has room to start a light job now."""
     if main_engine[0] is None:
         return True, ""
     if main_engine[0] in PAUSE_DURING:
         return False, f"render loop is running {main_engine[0]}"
+    if PAUSE_ON_COMFY and _comfy_busy():
+        return False, f"ComfyUI busy (render loop is running {main_engine[0]})"
     avail = psutil.virtual_memory().available / (1 << 30)
     if avail < config.LIGHT_LANE_MIN_AVAIL_RAM_GB:
         return False, f"available RAM {avail:.1f} GB < {config.LIGHT_LANE_MIN_AVAIL_RAM_GB:g}"
