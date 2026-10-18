@@ -208,9 +208,9 @@ class RoundTripTest(unittest.TestCase):
             return out
         # eases in over 24 frames, then pans at 8 px/frame
         ramp = [8 * min(1.0, i / 24) ** 2 for i in range(72)]
-        self.assertGreaterEqual(CE.ease_in_end(pan(ramp)), 14)
-        self.assertLessEqual(CE.ease_in_end(pan(ramp)), 26)
-        self.assertLessEqual(CE.ease_in_end(pan([8.0] * 72)), 2)   # already at speed
+        self.assertGreaterEqual(CE.ease_in_end(pan(ramp)), 18)   # at the end of the ease-in, where it holds
+        self.assertLessEqual(CE.ease_in_end(pan(ramp)), 36)
+        self.assertEqual(CE.ease_in_end(pan([8.0] * 72)), 17)   # already steady: never inside the first block
         self.assertEqual(CE.ease_in_end([bg[:, :320].copy()] * 72), 18)   # static: 0.75 s
 
     def _run_len(self, name, spec):

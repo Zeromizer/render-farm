@@ -116,37 +116,37 @@ def window_around(n, s, e, ctx):
     return lo, length
 
 
-def ease_in_end(frames, max_s=3.0, scale=0.25):
-    """First frame after the clip's own ease-in: where the background (90th percentile of
-    the flow) first runs at 70% of its typical speed for 4 frames in a row. Generated
-    clips start from near standstill and speed up over ~1-2 s (measured 2026-10-17: 2-3
-    px/frame for the first frames, 13 at cruise), so a loop or bridge that lands on frame
-    0 has to brake into it. A static shot (no real motion) gets 0.75 s, past H3's settle."""
+def ease_in_end(frames, max_s=3.0):
+    """Where a loop should start (and land back): the steadiest stretch of motion in the
+    clip's first max_s seconds, never inside its first 17-frame block. Generated clips
+    start from near standstill and speed up over their first frames (S1 2026-10-17: 3
+    px/frame for 4 frames, then 8-13), and a loop that lands there has to brake into it
+    and surge out (Shawn saw it). Speed is the 90th percentile of the horizontal flow at
+    416 px wide, which also swings with what passes the camera (palms close by, open sea),
+    so the pick is where it holds steady for +-6 frames rather than the first fast frame.
+    A static shot (nothing really moves) gets 0.75 s."""
     n = len(frames)
-    step = 2
-    idx = list(range(0, n - 1, step))
-    g = {}
-
-    def grey(i):
-        if i not in g:
-            g[i] = cv2.resize(cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY), None, fx=scale, fy=scale,
-                              interpolation=cv2.INTER_AREA)
-        return g[i]
-
-    sp = {}
-    for i in idx:
-        fl = cv2.calcOpticalFlowFarneback(grey(i), grey(i + 1), None, 0.5, 3, 15, 3, 5, 1.2, 0)
-        sp[i] = float(np.percentile(np.abs(fl), 90))
-    typical = float(np.median(list(sp.values()))) if sp else 0.0
-    cap = min(int(max_s * FPS), n // 3)
-    if typical < 0.15:          # quarter-res px per frame: nothing really moves
+    cap = max(0, min(int(max_s * FPS), n // 3))
+    first = min(17, cap)
+    w = frames[0].shape[1]
+    fx = 416.0 / w
+    g = [cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), None, fx=fx, fy=fx, interpolation=cv2.INTER_AREA)
+         for f in frames[:min(n, cap + 8)]]
+    sp = []
+    for a, b in zip(g, g[1:]):
+        fl = cv2.calcOpticalFlowFarneback(a, b, None, 0.5, 4, 25, 3, 7, 1.5, 0)
+        sp.append(float(np.percentile(np.abs(fl[..., 0]), 90)))
+    sp = np.array(sp)
+    if len(sp) < 8 or float(np.median(sp)) < 0.4:
         return min(int(round(0.75 * FPS)), cap)
-    run = [i for i in idx if i <= cap]
-    for k, i in enumerate(run):
-        nxt = run[k:k + 2]
-        if len(nxt) == 2 and all(sp[j] >= 0.7 * typical for j in nxt):
-            return i
-    return cap
+    scores = {}
+    for i in range(first, min(cap, len(sp) - 1) + 1):
+        win = sp[max(0, i - 6):i + 7]
+        scores[i] = float(win.std() / (win.mean() + 0.3))
+    if not scores:
+        return first
+    best = min(scores.values())
+    return min(i for i, v in scores.items() if v <= best * 2 + 0.02)
 
 
 # ---------------------------------------------------------------- prep
