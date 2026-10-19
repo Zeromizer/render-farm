@@ -54,7 +54,7 @@ stamp() { echo "[boot +$(( $(date +%s) - T0 ))s] $*"; }
   # Runtime libraries for Blender (EGL/GL) and headless Chrome; not kept on the volume.
   apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     libegl1 libgl1 libglu1-mesa libxi6 libxkbcommon0 libxrender1 libsm6 libxxf86vm1 libxfixes3 \
-    libnss3 libatk-bridge2.0-0 libgbm1 libasound2t64 xvfb >/dev/null || echo "apt failed (continuing)"
+    libnss3 libatk-bridge2.0-0 libgbm1 libasound2t64 xvfb libvulkan1 >/dev/null || echo "apt failed (continuing)"
   stamp "apt done"
 
   set -a; . /workspace/render-farm/cloud/pod.env; set +a

@@ -124,4 +124,6 @@ for _d in (REPOS_DIR, WORK_DIR, ASSETS_DIR):
 STUDIO_DIR = os.environ.get("STUDIO_DIR") or os.path.join(os.path.expanduser("~"), "Videos", "H3-Studio")
 STUDIO_PORT = int(os.environ.get("STUDIO_PORT", "8790"))
 # Portable rife-ncnn-vulkan (frame interpolation) for the 60 fps option and the turntable flow.
-RIFE_DIR = os.environ.get("RIFE_DIR", r"C:\Coding\tools\rife-ncnn-vulkan")
+# On a cloud pod it is unpacked to local disk on first use (studio/post.py rife_exe): the network
+# volume cannot hold an executable bit.
+RIFE_DIR = os.environ.get("RIFE_DIR", r"C:\Coding\tools\rife-ncnn-vulkan" if WINDOWS else "/root/local/rife-ncnn-vulkan")

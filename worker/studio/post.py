@@ -305,10 +305,75 @@ def concat_trimmed(pieces, dest, fps=24):
     return dest
 
 
-def rife(in_dir, out_dir, n_frames, model="rife-v4.6"):
-    exe = os.path.join(config.RIFE_DIR, "rife-ncnn-vulkan.exe")
-    if not os.path.exists(exe):
+# Linux build for the cloud pods (the PC keeps its portable Windows copy). Only the binary and the one
+# model the farm uses are unpacked from the 431 MB release.
+RIFE_LINUX_URL = ("https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/"
+                  "rife-ncnn-vulkan-20221029-ubuntu.zip")
+RIFE_LINUX_SHA256 = "1e2c7ee7fa7daa326542d50622f0afedc80cf6f1858bda411d16385ffa5cdf68"
+RIFE_MODEL = "rife-v4.6"
+NVIDIA_ICD = {"file_format_version": "1.0.0", "ICD": {"library_path": "libGLX_nvidia.so.0", "api_version": "1.3"}}
+
+
+def _vulkan_ready(log):
+    """The Linux binary needs the Vulkan loader and NVIDIA's ICD. A pod image may lack the loader
+    (apt) or the ICD manifest that the container toolkit mounts only with the graphics capability."""
+    import ctypes.util
+    import json
+    if not ctypes.util.find_library("vulkan"):
+        log("rife: installing the Vulkan loader (libvulkan1)")
+        subprocess.run(["bash", "-c", "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+                        "libvulkan1 >/dev/null"], check=False, timeout=600)
+    icds = ["/usr/share/vulkan/icd.d/nvidia_icd.json", "/etc/vulkan/icd.d/nvidia_icd.json"]
+    if not any(os.path.exists(p) for p in icds) and ctypes.util.find_library("GLX_nvidia"):
+        os.makedirs("/etc/vulkan/icd.d", exist_ok=True)
+        with open(icds[1], "w") as f:
+            json.dump(NVIDIA_ICD, f)
+        log("rife: wrote the NVIDIA Vulkan ICD manifest")
+
+
+def rife_exe(log=print):
+    """Path of rife-ncnn-vulkan, unpacking the pinned Linux release into RIFE_DIR on a machine that
+    has none (a fresh cloud pod: the turntable's interpolation runs there since the cloud lane)."""
+    name = "rife-ncnn-vulkan.exe" if os.name == "nt" else "rife-ncnn-vulkan"
+    exe = os.path.join(config.RIFE_DIR, name)
+    if os.path.exists(exe) and os.path.isdir(os.path.join(config.RIFE_DIR, RIFE_MODEL)):
+        return exe
+    if os.name == "nt":
         raise RuntimeError(f"rife-ncnn-vulkan not found at {config.RIFE_DIR} (set RIFE_DIR in .env)")
+    import hashlib
+    import urllib.request
+    import zipfile
+    os.makedirs(config.RIFE_DIR, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix="rife_dl_")
+    try:
+        zpath = os.path.join(tmp, "rife.zip")
+        log(f"rife: downloading {RIFE_LINUX_URL}")
+        h = hashlib.sha256()
+        with urllib.request.urlopen(RIFE_LINUX_URL, timeout=60) as r, open(zpath, "wb") as f:
+            while chunk := r.read(1 << 22):
+                h.update(chunk)
+                f.write(chunk)
+        if h.hexdigest() != RIFE_LINUX_SHA256:
+            raise RuntimeError(f"rife release sha256 {h.hexdigest()} does not match the pinned one")
+        with zipfile.ZipFile(zpath) as z:
+            for member in z.namelist():
+                rel = member.split("/", 1)[1] if "/" in member else ""
+                if rel == name or (rel.startswith(RIFE_MODEL + "/") and not member.endswith("/")):
+                    dest = os.path.join(config.RIFE_DIR, rel)
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with z.open(member) as src, open(dest + ".part", "wb") as out:
+                        shutil.copyfileobj(src, out)
+                    os.replace(dest + ".part", dest)
+        os.chmod(exe, 0o755)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    _vulkan_ready(log)
+    log(f"rife: ready at {exe}")
+    return exe
+
+
+def rife(in_dir, out_dir, n_frames, model=RIFE_MODEL):
+    exe = rife_exe()
     os.makedirs(out_dir, exist_ok=True)
     run([exe, "-i", in_dir, "-o", out_dir, "-n", str(n_frames), "-m", os.path.join(config.RIFE_DIR, model),
          "-g", "0", "-j", "2:4:4", "-f", "%08d.png"])
