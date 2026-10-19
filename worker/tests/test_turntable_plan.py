@@ -222,6 +222,11 @@ class Orbit(unittest.TestCase):
                                                       ("rear_to_right", 121, 182), ("right_to_front", 182, 242)])
         self.assertEqual(tt.orbit_frame(30, 243), 20)
 
+    def test_rife_factor_is_whole_and_near_the_rotation_time(self):
+        self.assertEqual(tt.orbit_rife_factor(20, 60, 243), 5)      # 242 x 5 / 60 = 20.17 s
+        self.assertEqual(tt.orbit_rife_factor(12, 60, 243), 3)
+        self.assertEqual(tt.orbit_rife_factor(5, 24, 243), 1)       # never below one frame per step
+
 
 class BridgedJoins(unittest.TestCase):
     def test_bridged_by_default_only_for_a_complete_rotation(self):

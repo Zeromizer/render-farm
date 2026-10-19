@@ -122,11 +122,15 @@ ORBIT_SECONDS = (5, 10)          # one generation; 768p cannot exceed 10 s, and 
 ORBIT_MAX_VIEWS = 23             # extra views (15 degrees apart at most), on top of the four anchors
 ORBIT_PIN_MAX = 14.0             # frame_diff of a pinned frame vs its photo (clean pins measured 2-5)
 ORBIT_TRIES = 2
-# Settings per take, as measured on the Noah (E2E 2026-10-19). Turbo-8 at LoRA 1.0 with only the four photos
-# pinned turned the backdrop dark grey between pins (both seeds); at LoRA 0.8 it stayed clean. With 8+ views
-# LoRA 1.0 is clean. The second take runs 20 full steps (LoRA 1.0, clean with four photos, ~24 min on the PC).
+# Settings per take, as measured on the Noah (2026-10-19). With 8+ consistent views turbo-8 at LoRA 1.0 is
+# clean. With fewer (the usual four photos) the model draws everything between them: turbo at LoRA 1.0 turned
+# the backdrop dark grey between pins, turbo at 0.8 kept the backdrop but morphed the plate lettering and a
+# reflector between pins and had a one-frame lurch (Shawn saw all of it on the first cloud turntable); 20 full
+# steps at 1.0 kept the backdrop, the lettering to +-40 degrees of every photo and the steadiest speed (~11 min
+# of sampling on a 5090, ~24 on the PC).
 ORBIT_FEW_VIEWS = 8
-ORBIT_STRENGTH = {"few": 0.8, "many": 1.0}
+ORBIT_TAKE = {"few": {"turbo": False, "steps": 20, "orbit_strength": 1.0},
+              "many": {"turbo": True, "steps": None, "orbit_strength": 1.0}}
 ORBIT_RETRY = {"turbo": False, "steps": 20, "orbit_strength": 1.0}
 SECONDS_LIMITS = {"two": (4, 10), "four": (3, 10)}
 TRANSITION_MAX_DIFF = 6.0      # mean luma diff (256 px grey) of the frame a seam shares: same anchor ~0-3, front vs rear view ~10
@@ -277,6 +281,14 @@ def parse_views(views, anchors_given):
 def orbit_frame(angle, length):
     """Frame of a `length`-frame orbit (front at 0 and length-1) where the view at `angle` sits."""
     return int(round(angle / 360.0 * (length - 1)))
+
+
+def orbit_rife_factor(rotation_s, fps, length):
+    """Whole RIFE frames per source step for an orbit master of about rotation_s at fps. A whole factor
+    puts every output frame at an exact multiple of 1/k source frames (an evenly turning car); the old
+    nearest-dense-frame retime stepped unevenly (Shawn: 'juttering'). The master runs (length-1)*k/fps s,
+    e.g. 242 x 5 / 60 = 20.17 s for the default 20 s."""
+    return max(1, int(round(rotation_s * fps / float(length - 1))))
 
 
 def orbit_cuts(variant, length):
@@ -775,11 +787,11 @@ def run_orbit(pl, opts, api, log):
         label = "orbit 360" + (f" try {attempt + 1}" if attempt else "")
         seed = int(o["seed"]) + 300 * attempt
         if attempt == 0:
-            strength = ORBIT_STRENGTH["many" if len(refs) >= ORBIT_FEW_VIEWS else "few"]
-            settings = {"turbo": o.get("turbo", True), "steps": o.get("steps"),
-                        "orbit_strength": float(o.get("orbit_strength") or strength)}
+            settings = dict(ORBIT_TAKE["many" if len(refs) >= ORBIT_FEW_VIEWS else "few"])
+            settings.update({k: o[k] for k in ("turbo", "steps", "orbit_strength") if k in opts})
         else:
             settings = dict(ORBIT_RETRY)
+        if not settings.get("turbo", True):
             label += " (full steps)"
         spec = {"resolution": o["resolution"], "ratio": o["ratio"], "length": length, "seed": seed, **settings,
                 "front": front, "pins": pins,
@@ -816,15 +828,13 @@ def run_orbit(pl, opts, api, log):
              for a, b in list(zip(order, order[1:])) + [(order[-1], order[0])]]
     joined = post.trim_copy(raw, os.path.join(work, "joined_24fps.mp4"), 0, length - 1)   # last frame = first
 
-    # ---- RIFE to the rotation time the quarters method had, keeping the model's own pacing
+    # ---- RIFE to about the rotation time the quarters method had, on an EXACT even grid
     api.phase("interpolating", 90)
     m = post.motion_profile(raw)
     plateau = post.plateau_of(m)
-    n_out = int(round(rotation_s * int(o["fps"])))
     frames_dir = os.path.join(work, "frames")
-    # endpoint excluded: the loop wraps onto frame 0, one step after the last output frame
-    post.retime_frames(raw, frames_dir, post.dejudder_times(m, n_out + 1)[:-1], density=int(o["density"]),
-                       tmp_root=work, log=log)
+    k = orbit_rife_factor(rotation_s, int(o["fps"]), length)
+    post.rife_loop(raw, frames_dir, k, tmp_root=work, log=log)
     api.phase("encoding", 93)
     out = os.path.join(work, f"turntable_{o['shorter_size']}p{o['fps']}.mp4")
     post.encode_frames(frames_dir, out, int(o["fps"]), o["shorter_size"])

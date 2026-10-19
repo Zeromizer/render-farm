@@ -81,8 +81,9 @@ def job_seconds(params):
             n, secs = len(pl["generate"]), pl["seconds"]
             joins = len(pl["sequence"]) if pl["bridge"] else 0
             if pl["method"] == "orbit":
+                few = len(pl["anchors"]) + len(pl["views"]) < 8   # turntable.ORBIT_FEW_VIEWS: full steps
                 seg = {"duration_s": pl["orbit_seconds"], "resolution": tt.get("resolution", "768p"),
-                       "ratio": tt.get("ratio", "16:9")}
+                       "ratio": tt.get("ratio", "16:9"), "turbo": not few}
                 return generation_seconds(seg, "i2v") * ORBIT_GUIDE_FACTOR + ORBIT_POST_S
         except Exception:  # noqa: BLE001 - an invalid job fails fast in the runner; estimate something
             n, secs, joins = 2, tt.get("seconds_per_half", 10), 0

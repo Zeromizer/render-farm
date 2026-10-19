@@ -495,6 +495,31 @@ def dejudder_times(m, n_out):
     return _interp(goal, P, list(range(N)))
 
 
+def rife_loop(src, frames_out, k, tmp_root=None, log=print):
+    """A looping clip whose last frame equals its first -> (N-1)*k evenly spaced frames in frames_out,
+    the wrap included: rife-ncnn-vulkan -n puts output i at source time i * count / n (main.cpp), so
+    n = N*k gives times i/k exactly; the outputs at and past the duplicate end are dropped."""
+    N = info(src)["frames"]
+    tmp = tempfile.mkdtemp(prefix="rifeloop_", dir=tmp_root)
+    try:
+        extract_frames(src, os.path.join(tmp, "in"))
+        got = rife(os.path.join(tmp, "in"), os.path.join(tmp, "out"), N * k) if k > 1 else \
+            sorted(os.listdir(os.path.join(tmp, "in")))
+        src_dir = os.path.join(tmp, "out" if k > 1 else "in")
+        keep = (N - 1) * k
+        log(f"rife loop: {N} frames x {k} -> {len(got)}, keeping {keep}")
+        if len(got) < keep:
+            raise RuntimeError(f"rife returned {len(got)} frames, expected at least {keep}")
+        if os.path.isdir(frames_out):
+            shutil.rmtree(frames_out)
+        os.makedirs(frames_out)
+        for i, name in enumerate(got[:keep]):
+            shutil.copyfile(os.path.join(src_dir, name), os.path.join(frames_out, f"{i:08d}.png"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return keep
+
+
 def retime_frames(src, frames_out, times, density=10, tmp_root=None, log=print):
     """RIFE src to density x frames and write the frame nearest each source time in `times` to
     frames_out as a PNG sequence."""
