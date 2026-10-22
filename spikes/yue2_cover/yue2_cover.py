@@ -10,8 +10,10 @@ params.args = [<job json string>, <out dir>]. Job JSON:
              {"name": "control_s1","abc": "generate","style": "...", "seed": 1}]}
 abc: "melody" / "full" = SheetSage2 score of the reference in that mode (YuE2 mode matches);
 "generate" = the live audio_gen path (YuE2 writes its own score from the text), the control.
-Writes <out>/<name>.wav (48 kHz, trimmed to duration_s, 0.8 s fade), <out>/abc_<mode>.txt,
-<out>/reference.wav (the trimmed clip SheetSage2 heard) and <out>/results.json.
+A take may carry its own "reference", "duration_s" (output length; may exceed the reference, to
+see what YuE2 plays past the end of the score) and "tags". Writes <out>/<name>.wav (48 kHz,
+trimmed to duration_s, 0.8 s fade), <out>/abc_<reference>_<mode>.txt, <out>/reference_<name>.wav
+(the clip SheetSage2 heard) and <out>/results.json.
 
 Needs sheetsage2_bf16.safetensors in ComfyUI's models/audio_encoders; downloaded once if missing.
 """
@@ -210,39 +212,45 @@ def main():
     job = json.loads(sys.argv[1])
     out = os.path.abspath(sys.argv[2])
     clear_out(out)
-    dur = float(job.get("duration_s", 30))
-    start = float(job.get("start_s", 0))
     tags = job["tags"]
     takes = job["takes"]
-
-    y, sr = sf.read(job["reference"], always_2d=True)
-    y = y[int(start * sr): int((start + dur) * sr)]
-    ref_local = os.path.join(out, "reference.wav")
-    sf.write(ref_local, y, sr, subtype="PCM_16")
-    dur = min(dur, len(y) / sr)
-    log(f"reference {job['reference']}: {start:.1f}-{start + dur:.1f}s @ {sr} Hz")
-
     ensure_server()
     if any(t["abc"] != "generate" for t in takes):
         ensure_encoder()
-    ref_name = upload(ref_local)
-    max_duration = round((dur + 2.0) / 0.04) * 0.04
+
+    refs = {}   # reference path -> (ComfyUI input name, clip seconds, local stem)
+
+    def reference(path):
+        if path not in refs:
+            start = float(job.get("start_s", 0))
+            y, sr = sf.read(path, always_2d=True)
+            y = y[int(start * sr): int((start + float(job.get("ref_max_s", 600))) * sr)]
+            stem = "reference_" + os.path.splitext(os.path.basename(path))[0]
+            local = os.path.join(out, stem + ".wav")
+            sf.write(local, y, sr, subtype="PCM_16")
+            refs[path] = (upload(local), len(y) / sr, stem)
+            log(f"reference {path}: {len(y) / sr:.2f}s from {start:.1f}s @ {sr} Hz")
+        return refs[path]
 
     results = []
     try:
         for i, take in enumerate(takes):
+            ref_name, ref_s, stem = reference(take.get("reference", job["reference"]))
+            dur = float(take.get("duration_s") or job.get("duration_s") or ref_s)
+            max_duration = round(round((dur + 2.0) / 0.04) * 0.04, 2)
             raw = os.path.join(out, f"{take['name']}.raw.flac")
-            outputs, secs = run(graph(ref_name, take, tags, round(max_duration, 2), f"yue2_cover/{take['name']}"))
+            outputs, secs = run(graph(ref_name, take, take.get("tags", tags), max_duration, f"yue2_cover/{take['name']}"))
             fetch_audio(outputs, raw)
             length = trim_fade(raw, os.path.join(out, f"{take['name']}.wav"), dur)
             os.remove(raw)
             abc = preview_text(outputs)
             if abc and take["abc"] != "generate":
-                path = os.path.join(out, f"abc_{take['abc']}.txt")
+                path = os.path.join(out, f"abc_{stem}_{take['abc']}.txt")
                 if not os.path.exists(path):
                     with open(path, "w", encoding="utf-8") as f:
                         f.write(abc)
-            results.append({**take, "wall_s": round(secs, 1), "length_s": round(length, 3), "abc_chars": len(abc)})
+            results.append({**take, "ref_s": round(ref_s, 2), "wall_s": round(secs, 1),
+                            "length_s": round(length, 3), "abc_chars": len(abc)})
             log(f"{take['name']}: {secs:.0f}s wall, {length:.2f}s audio")
             log(f"PROGRESS {int((i + 1) * 100 / len(takes))}")
     finally:
