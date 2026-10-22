@@ -63,8 +63,8 @@ def ensure_server(wait_s=240):
 
 
 def encoder_names():
-    info = httpx.get(COMFY + "/object_info/AudioEncoderLoader", timeout=T).json()
-    return info["AudioEncoderLoader"]["input"]["required"]["audio_encoder_name"][0]
+    # /models/<folder>, not /object_info: V3 nodes publish combos as ["COMBO", {"options": [...]}].
+    return httpx.get(COMFY + "/models/audio_encoders", timeout=T).json()
 
 
 def models_dir():
