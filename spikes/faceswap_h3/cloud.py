@@ -3,7 +3,6 @@
 The pod is named "fsh3-*" so the farm's cloud lane (which only manages "rf-cloud*") ignores it.
 It removes itself when done (2 h hard cap in the pod script). Keys come from render-farm's .env.
 """
-import json
 import os
 import time
 from datetime import datetime, timezone
@@ -13,10 +12,11 @@ import httpx
 from botocore.config import Config
 from dotenv import dotenv_values
 
-ENV = dotenv_values(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+# render-farm's .env; FSH3_ENV points elsewhere (a git worktree has no .env of its own)
+ENV = dotenv_values(os.environ.get("FSH3_ENV") or os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 API = "https://rest.runpod.io/v1"
-GPU = "NVIDIA GeForce RTX 5090"          # Shawn's choice for this work (not the PRO 6000)
-IMAGE = "runpod/pytorch:1.4.0-cu1281-torch280-ubuntu2404"
+GPU = os.environ.get("FSH3_GPU", "NVIDIA GeForce RTX 5090")      # Shawn's choice for this work (not the PRO 6000)
+IMAGE = os.environ.get("FSH3_IMAGE", "runpod/pytorch:1.4.0-cu1281-torch280-ubuntu2404")
 PREFIX = "fsh3"
 
 

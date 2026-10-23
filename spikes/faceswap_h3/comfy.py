@@ -26,8 +26,8 @@ def put_input(path, name=None):
     return name
 
 
-def run(graph, poll=2.0):
-    """Queue an API graph and block until it finishes. Returns the list of output files (absolute paths)."""
+def run_outputs(graph, poll=2.0):
+    """Queue an API graph and block until it finishes. Returns the raw per-node outputs from /history."""
     pid = _http("/prompt", {"prompt": graph, "client_id": str(uuid.uuid4())})["prompt_id"]
     while True:
         time.sleep(poll)
@@ -38,10 +38,15 @@ def run(graph, poll=2.0):
         for msg in e.get("status", {}).get("messages", []):
             if msg[0] == "execution_error":
                 raise RuntimeError(f"ComfyUI error in {msg[1].get('node_type')}: {msg[1].get('exception_message')}")
-        files = []
-        for o in e.get("outputs", {}).values():
-            for kind in ("images", "videos", "gifs", "video"):
-                for f in o.get(kind, []) or []:
-                    if isinstance(f, dict) and "filename" in f and f.get("type", "output") == "output":
-                        files.append(os.path.join(OUTPUT, f.get("subfolder", ""), f["filename"]))
-        return files
+        return e.get("outputs", {})
+
+
+def run(graph, poll=2.0):
+    """Queue an API graph and block until it finishes. Returns the list of output files (absolute paths)."""
+    files = []
+    for o in run_outputs(graph, poll).values():
+        for kind in ("images", "videos", "gifs", "video"):
+            for f in o.get(kind, []) or []:
+                if isinstance(f, dict) and "filename" in f and f.get("type", "output") == "output":
+                    files.append(os.path.join(OUTPUT, f.get("subfolder", ""), f["filename"]))
+    return files
