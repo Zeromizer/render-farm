@@ -48,17 +48,21 @@ def config_for(spec):
     wears = "wear" if He == "They" else "wears"
     person = (spec.get("person") or "").strip().rstrip(".")
     scene = (spec.get("scene") or "").strip().rstrip(".")
+    # the accepted prompt named the gestures and framing ("the same hand gestures with his index finger and open
+    # hand toward the lens, the same close handheld selfie framing"); without them, a generic line
+    performance = (spec.get("performance") or "").strip().rstrip(".") or "the same hand gestures, the same framing"
     tries = int(spec.get("tries") or 2)
     seed = int(spec.get("seed") if spec.get("seed") is not None else 43)
     return {
         "subject": subject,
         "possessive": his,
         "face_desc": f"{his} face, {person}" if person else "",
-        "scene_desc": (f"the same hand gestures, the same framing and camera motion. {He} {wears} {scene}."
-                       if scene else ""),
+        "scene_desc": f"{performance} and camera motion. {He} {wears} {scene}." if scene else "",
+        # the picture tag straight after the noun, as in the accepted wording ("the ... headphones from <Picture 2>
+        # on his head, ..."): after a long description it read as if the ears came from Picture 2 (E2E 2026-10-24)
         "props": [{"noun": p["object"],
-                   **({"sentence": f"{He} {wears} the {p['description'].rstrip('.')} from {{pic}}, worn exactly as in "
-                                   f"<Video 1>."} if p.get("description") else {})}
+                   **({"sentence": f"{He} {wears} the {p['object']} from {{pic}}: {p['description'].rstrip('.')}, "
+                                   f"worn exactly as in <Video 1>."} if p.get("description") else {})}
                   for p in spec.get("props") or []],
         "chin_clean": spec.get("chin_clean", True) is not False,
         "destubble": bool(spec.get("destubble")),

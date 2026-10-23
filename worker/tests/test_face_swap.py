@@ -75,16 +75,18 @@ class ConfigTest(unittest.TestCase):
         c = {**fsh3.DEFAULT_CONFIG, **engine.config_for({
             "subject": "man", "person": "a wide round face with full cheeks, short thick black hair with a fringe.",
             "scene": "the same light blue t-shirt with a yellow print, in the same dim room",
-            "props": [{"object": "headphones", "description": "light grey over-ear headphones"}],
+            "performance": "the same hand gestures with his index finger toward the lens, the same close selfie framing",
+            "props": [{"object": "headphones", "description": "light grey over-ear ones on his head"}],
             "tries": 3, "seed": 43, "destubble": True})}
         self.assertEqual(c["seeds"], [43, 44, 45])
         self.assertTrue(c["destubble"] and c["chin_clean"])
         s = fsh3.prompt(c)
         self.assertTrue(s.startswith("The man from <Picture 1> performs the exact performance of the person in "
                                      "<Video 1>. Keep his identity from <Picture 1>: his face, a wide round face"))
-        self.assertIn("He wears the light grey over-ear headphones from <Picture 2>, worn exactly as in <Video 1>.", s)
-        self.assertIn("speech timing, the same hand gestures, the same framing and camera motion. He wears the same "
-                      "light blue t-shirt", s)
+        self.assertIn("He wears the headphones from <Picture 2>: light grey over-ear ones on his head, worn exactly "
+                      "as in <Video 1>.", s)
+        self.assertIn("speech timing, the same hand gestures with his index finger toward the lens, the same close "
+                      "selfie framing and camera motion. He wears the same light blue t-shirt", s)
         self.assertEqual(fsh3.ref_images(c), ["face.jpg", "headphones.png"])
 
     def test_empty_texts_are_left_for_describe(self):
@@ -93,7 +95,40 @@ class ConfigTest(unittest.TestCase):
                          ("the person", "their", "", ""))
         self.assertNotIn("sentence", c["props"][0])
         q = engine.config_for({"subject": "person", "scene": "the same grey hoodie"})
-        self.assertIn("They wear the same grey hoodie.", q["scene_desc"])
+        self.assertEqual(q["scene_desc"], "the same hand gestures, the same framing and camera motion. They wear the "
+                                          "same grey hoodie.")
+
+    def test_short_clip_is_one_padded_piece(self):
+        # E2E 2026-10-24: a 10 s clip (240 frames < 243) planned a piece at -3
+        self.assertEqual(fsh3.piece_starts(240), [0])
+        self.assertEqual(fsh3.piece_len(240), 243)
+        self.assertEqual(fsh3.piece_len(100), 107)
+        self.assertEqual(fsh3.piece_len(813), 243)
+        self.assertEqual(fsh3.piece_starts(813), [0, 195, 390, 570])
+        for n in (244, 500, 1440):
+            st = fsh3.piece_starts(n)
+            self.assertEqual(st[-1] + 243, n)
+            self.assertTrue(all(0 <= a < b for a, b in zip(st, st[1:])))
+
+    def test_short_clip_pieces_on_disk(self):
+        import numpy as np
+        d = tempfile.mkdtemp(prefix="fs_pieces_")
+        try:
+            job = fsh3.Job("j", root=d)
+            job.save_cfg({**engine.config_for({"subject": "man", "person": "a round face and short black hair",
+                                                "scene": "the same blue t-shirt"}), "ratio": "9:16"})
+            engine.setup_env({"comfy_url": "http://127.0.0.1:1", "work_dir": d})
+            w = fsh3.Writer(job.p("ref.mp4"), 448, 768)
+            for i in range(100):
+                w.write(np.full((768, 448, 3), i, np.uint8))
+            w.close()
+            fsh3.pieces(job)
+            self.assertEqual(fsh3.count(job.p("pieces", "ref_000.mp4")), 107)
+            g = json.load(open(job.p("graphs", "p000_s43.json")))
+            self.assertEqual(g["cond"]["inputs"]["length"], 107)
+            self.assertEqual([s for _, s in fsh3.pending(job)], [0])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 class _Fake(http.server.BaseHTTPRequestHandler):

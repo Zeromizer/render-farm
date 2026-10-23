@@ -271,8 +271,16 @@ def window_corrs(a, b, win=72, step=24):
 
 
 def piece_starts(n):
+    if n <= PIECE:              # one piece (a 10 s clip is 240 frames < 243: n - PIECE went negative, E2E 2026-10-24)
+        return [0]
     s = list(range(0, n - PIECE, STRIDE))
     return s + ([n - PIECE] if n - PIECE not in s else [])
+
+
+def piece_len(n):
+    """Frames per piece for an n-frame clip: PIECE, or for a clip shorter than that the next 17k+5 (H3's grid),
+    its reference padded with the last frame; finish() trims the result back to the clip."""
+    return PIECE if n > PIECE else min(PIECE, 5 + 17 * max(0, -(-(n - 5) // 17)))
 
 
 # ---------------------------------------------------------------- steps
@@ -499,7 +507,7 @@ def _graph(job, c, s, seed):
     ratio = c["ratio"] if c["ratio"] in SIZES else min(SIZES, key=lambda r: abs(SIZES[r][0] / SIZES[r][1] - W / H))
     g, _ = graphs.build("r2v", {"prompt": prompt(c), "duration_s": 10, "resolution": "480p", "ratio": ratio, "seed": seed},
                         {"ref_images": ref_images(c), "ref_videos": [f"ref_{s:03d}.mp4"]}, f"fsh3/p{s:03d}_s{seed}")
-    g["cond"]["inputs"].update(width=W, height=H, length=PIECE)
+    g["cond"]["inputs"].update(width=W, height=H, length=piece_len(count(job.p("ref.mp4"))))
     json.dump(g, open(job.p("graphs", f"p{s:03d}_s{seed}.json"), "w"), indent=1)
 
 
@@ -507,14 +515,16 @@ def pieces(job, seeds=None, only=None):
     """Reference pieces + graphs. Default: the first configured seed for every piece (re-rolls come from `render`)."""
     c = job.cfg
     seeds = seeds or c["seeds"][:1]
-    starts = only or piece_starts(count(job.p("ref.mp4")))
+    n = count(job.p("ref.mp4"))
+    starts, L = only or piece_starts(n), piece_len(n)
     for d in ("pieces", "graphs"):
         os.makedirs(job.p(d), exist_ok=True)
     for f in glob.glob(job.p("graphs", "*.json")):
         os.remove(f)
     for s in starts:
-        ff("-i", job.p("ref.mp4"), "-vf", f"select='between(n\\,{s}\\,{s + PIECE - 1})',setpts=N/24/TB",
-           "-af", f"atrim=start={s / FPS}:duration={PIECE / FPS},asetpts=N/SR/TB", "-c:v", "libx264", "-crf", "12",
+        ff("-i", job.p("ref.mp4"), "-vf", f"select='between(n\\,{s}\\,{s + L - 1})',setpts=N/24/TB,"
+           f"tpad=stop_mode=clone:stop={L}", "-frames:v", str(L),
+           "-af", f"atrim=start={s / FPS}:duration={L / FPS},asetpts=N/SR/TB", "-c:v", "libx264", "-crf", "12",
            "-c:a", "aac", job.p("pieces", f"ref_{s:03d}.mp4"))
         for seed in seeds:
             _graph(job, c, s, seed)
@@ -654,8 +664,8 @@ def lab(f):
 class Stitch:
     """Streams the timeline from the cleaned pieces: LAB chain colour match on the overlaps + crossfade capped at
     the overlap length. Holds one frame per piece, not the clip. Also streams the face mask (later pieces win)."""
-    def __init__(self, job, starts, blend=24):
-        self.job, self.starts, self.blend = job, starts, blend
+    def __init__(self, job, starts, blend=24, total=None):
+        self.job, self.starts, self.blend, self.total = job, starts, blend, total
         self.lens = {s: count(self.clean(s)) for s in starts}
         self.xf = {starts[0]: None}
         for a0, b0 in zip(starts, starts[1:]):
@@ -679,7 +689,8 @@ class Stitch:
         rd = {s: Seq(self.clean(s)) for s in self.starts}
         mk = {s: Seq(self.job.p("clean", f"face_p{s:03d}.mp4"), gray=True) for s in self.starts}
         size = self.job.size
-        for f in range(self.starts[-1] + self.lens[self.starts[-1]]):
+        end = self.starts[-1] + self.lens[self.starts[-1]]
+        for f in range(min(end, self.total) if self.total else end):
             cov = [s for s in self.starts if s <= f < s + self.lens[s]]
             last = cov[-1]
             m = cv2.resize(mk[last].get(f - last), size) > 127
@@ -781,8 +792,9 @@ def finish(job):
         w.close()
         write_mask(job.p("clean", f"face_p{s:03d}.mp4"), fm, size)
         print("piece", s, "cleaned" if c["chin_clean"] else "masked")
-    st = Stitch(job, starts)
-    n = starts[-1] + st.lens[starts[-1]]
+    n_src = count(job.src)                # a short clip's one piece is padded to H3's grid: trim it back
+    st = Stitch(job, starts, total=n_src)
+    n = min(starts[-1] + st.lens[starts[-1]], n_src)
     out = destubble(lambda: iter(st), n) if c["destubble"] else (fr for fr, _ in st)
     W, H = size
     w = Writer(job.p("final.mp4"), W, H, audio=job.p("target.mp4"), crf=14)

@@ -20,9 +20,14 @@ params (jsonb):
                       grey ceiling"); positive words only. Empty: described from a frame
     props             up to 3 things the person in the video wears that must stay: each
                       {object: a short noun SAM tracks ("headphones"), description: how it
-                      looks and sits} or just the noun (then it is described). Each is cut out
+                      looks and sits ("light grey over-ear ones on his head, the headband
+                      arching over his hair"; follows "He wears the headphones from <Picture
+                      2>:")} or just the noun (then it is described). Each is cut out
                       of the video and passed as its own reference picture; without that the
                       model drops it (the headphones vanished, 2026-10-23)
+    performance       the gestures and framing to copy, positive words ("the same hand gestures
+                      with his index finger and open hand toward the lens, the same close
+                      handheld selfie framing"); default a generic line
     hair              from_photo (default: the video's hair is painted out) | from_video
     start_s / end_s   the range of the target to use (default all of it, at most 60 s)
     tries             seeds per piece at most (default 2, max 4); a piece is re-rendered only
@@ -76,7 +81,7 @@ def validate(p):
         raise RuntimeError("face_swap refuses without consent.confirmed: the person in the photo must have agreed")
     if p.get("subject", "person") not in SUBJECTS:
         raise RuntimeError(f"subject must be one of {list(SUBJECTS)}")
-    for k in ("person", "scene"):
+    for k in ("person", "scene", "performance"):
         if p.get(k) is not None and not _text(p[k], 0, 600):
             raise RuntimeError(f"{k} must be text, up to 600 chars")
     props = [x if isinstance(x, dict) else {"object": x} for x in (p.get("props") or [])]
@@ -127,7 +132,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     sbs_local = os.path.join(work_dir, "swap-sbs.mp4")
     proof_local = os.path.join(work_dir, "swap-proof.png")
     report_local = os.path.join(work_dir, "swap-report.json")
-    spec = {k: p[k] for k in ("subject", "person", "scene", "props", "hair", "start_s", "end_s", "tries", "seed",
+    spec = {k: p[k] for k in ("subject", "person", "scene", "performance", "props", "hair", "start_s", "end_s", "tries", "seed",
                               "chin_clean", "destubble") if p.get(k) is not None}
     spec.update(work_dir=work_dir, face=face, target=target, cloud=bool(config.WORKER_ENGINES),
                 comfy_url=config.COMFYUI_URL, consent=consent_text(p["consent"], jid), out=out_local,
