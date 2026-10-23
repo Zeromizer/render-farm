@@ -1,0 +1,5 @@
+opencv-python-headless
+numpy
+boto3
+httpx
+python-dotenv
