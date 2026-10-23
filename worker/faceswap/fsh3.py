@@ -36,7 +36,10 @@ import cv2
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "worker"))
+# The stages live in worker/faceswap so the face_swap engine (runners/face_swap.py via engine.py) runs the same
+# code; the one-shot pod launcher and the CLI's job folders stay in the spike (spikes/faceswap_h3).
+SPIKE = os.path.join(HERE, "..", "..", "spikes", "faceswap_h3")
+sys.path.insert(0, os.path.join(HERE, ".."))
 from videogen import graphs, graphs_sam3  # noqa: E402  (pure graph builders from the farm)
 
 import comfy  # noqa: E402
@@ -79,7 +82,7 @@ LEGACY_HP = ("He wears the light grey over-ear headphones from {pic} on his head
 class Job:
     def __init__(self, name, root=None):
         self.name = name
-        self.dir = os.path.join(root or os.path.join(HERE, "out"), name)
+        self.dir = os.path.join(root or os.path.join(SPIKE, "out"), name)
         os.makedirs(self.dir, exist_ok=True)
 
     def p(self, *parts):
@@ -532,15 +535,17 @@ def pending(job):
 
 
 def cloud_run(job):
-    """Render the pending graphs on one one-shot 5090 pod and download the results."""
+    """Render the pending graphs on one one-shot 5090 pod and download the results (the spike's CLI path; the
+    engine passes its own run= that renders on the worker's ComfyUI)."""
+    sys.path.insert(0, SPIKE)
     import cloud
     todo = pending(job)
     if not todo:
         print("nothing pending")
         return
     jid = job.name
-    cloud.put(os.path.join(HERE, "pod", "pod.sh"), "fsh3/pod.sh")
-    cloud.put(os.path.join(HERE, "pod", "run_graphs.py"), "fsh3/run_graphs.py")
+    cloud.put(os.path.join(SPIKE, "pod", "pod.sh"), "fsh3/pod.sh")
+    cloud.put(os.path.join(SPIKE, "pod", "run_graphs.py"), "fsh3/run_graphs.py")
     for sub in ("in", "graphs", "out"):
         cloud.rm_prefix(f"fsh3/jobs/{jid}/{sub}/")
     for img in ref_images(job.cfg):

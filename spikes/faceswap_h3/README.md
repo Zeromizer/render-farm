@@ -1,5 +1,10 @@
 # faceswap_h3: face swap by H3 motion transfer
 
+> **Moved 2026-10-24:** the stages now live in `worker/faceswap/fsh3.py` (with `comfy.py`, HTTP-only), so the farm
+> engine `face_swap` (`worker/runners/face_swap.py` -> `worker/faceswap/engine.py`) runs the same code. Run the CLI as
+> `python worker/faceswap/fsh3.py <step> --name JOB`; job folders and the one-shot pod launcher (`cloud.py`, `pod/`)
+> stay here.
+
 Puts the person from a photo into a target video's performance (head moves, expression, lips, hands), keeping
 the person's own face shape and hair, and optionally props the target wears (headphones, a cap, glasses). Built
 2026-10-23 for an internal, consented test. Re-running `finish` on the original renders reproduces the accepted
