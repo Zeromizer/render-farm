@@ -61,7 +61,7 @@ LIGHT_ENGINES = {"hyperframes", "remotion", "reference_extract", "planar_patch",
                  "frame_extract", "video_split", "asset_check"}
 POLL_SECONDS = 3
 # Render-loop engines that need the whole box; see "Pause during video_gen".
-PAUSE_DURING = {e.strip() for e in os.environ.get("LIGHT_LANE_PAUSE_DURING", "video_gen,lettering_fix,clip_edit").split(",")
+PAUSE_DURING = {e.strip() for e in os.environ.get("LIGHT_LANE_PAUSE_DURING", "video_gen,lettering_fix,clip_edit,face_swap").split(",")
                 if e.strip()}
 # Also wait while ComfyUI has work, whatever the engine (see "Pause while ComfyUI works").
 PAUSE_ON_COMFY = os.environ.get("LIGHT_LANE_PAUSE_ON_COMFY", "1") not in ("0", "false", "no")

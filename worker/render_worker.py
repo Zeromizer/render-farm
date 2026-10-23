@@ -63,14 +63,14 @@ import venvs
 from heartbeat import Heartbeat
 from job_stats import JobStats
 import queue_status
-from runners import (asset_check, audio_gen, blender, clip_edit, footage, frame_extract, hyperframes,
+from runners import (asset_check, audio_gen, blender, clip_edit, face_swap, footage, frame_extract, hyperframes,
                      lettering_fix, matte, planar_patch, python_script, ramp_shot, reference_extract, remotion,
                      video_gen, video_split, voiceover)
 from videogen import comfy_client, ram_gate
 
 # Engines whose runners drive the headless ComfyUI; after one of these the
 # worker checks ComfyUI's host RAM (comfy_client.recycle_if_bloated).
-COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit"}
+COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap"}
 # Plus python: spike scripts drive ComfyUI over HTTP and leave it bloated too
 # (2026-10-10: 16.3 GB after an H3 spike). Under the threshold it is a no-op.
 RECYCLE_AFTER = COMFY_ENGINES | {"python"}
@@ -105,6 +105,10 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # extend/prepend seconds, bridge two shots, retake the sound. Same masked
            # inpaint graph as lettering_fix; untouched pixels are put back exactly.
            "clip_edit": clip_edit.run,
+           # A person from a photo put into a video's performance (H3 r2v motion
+           # transfer: the photo gives the identity, the video with its hair painted
+           # out gives the motion). Background and hands are regenerated too.
+           "face_swap": face_swap.run,
            # An instrumental music bed from a description (YuE2 + instrumental
            # LoRA) in the same headless ComfyUI video_gen uses. Feeds the
            # platform's music library; a minute or two per bed.
@@ -127,7 +131,7 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
 # repo_url is a "-" placeholder (the column is NOT NULL).
 NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split",
             "matte", "video_gen", "planar_patch", "audio_gen", "footage", "voiceover", "lettering_fix",
-            "clip_edit"}
+            "clip_edit", "face_swap"}
 
 
 def log(msg):
