@@ -98,6 +98,12 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(q["scene_desc"], "the same hand gestures, the same framing and camera motion. They wear the "
                                           "same grey hoodie.")
 
+    def test_vlm_prop_colour_is_dropped(self):
+        self.assertEqual(engine.uncoloured("The man wears the black over-ear headphones from {pic}, worn exactly as in "
+                                           "<Video 1>."),
+                         "The man wears the over-ear headphones from {pic}, worn exactly as in <Video 1>.")
+        self.assertEqual(engine.uncoloured("the light grey and white baseball cap"), "the baseball cap")
+
     def test_short_clip_is_one_padded_piece(self):
         # E2E 2026-10-24: a 10 s clip (240 frames < 243) planned a piece at -3
         self.assertEqual(fsh3.piece_starts(240), [0])

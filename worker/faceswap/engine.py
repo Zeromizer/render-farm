@@ -25,6 +25,11 @@ from common import find_ffmpeg_tool  # noqa: E402
 SUBJECTS = {"man": ("the man", "his", "He"), "woman": ("the woman", "her", "She"),
             "person": ("the person", "their", "They")}
 SEED_STEP = 1
+# Colour words dropped from prop phrases the VLM writes: its colour is not reliable and the text wins over the
+# cut-out picture (E2E 2026-10-24: "black over-ear headphones" for light grey ones rendered black ones), so the
+# picture carries the colour.
+COLOURS = ("black", "white", "grey", "gray", "silver", "light", "dark", "red", "blue", "green", "yellow", "pink",
+           "purple", "orange", "brown", "beige", "gold", "golden", "cream", "navy", "tan")
 
 
 def emit(kind, text):
@@ -68,6 +73,13 @@ def config_for(spec):
         "destubble": bool(spec.get("destubble")),
         "seeds": [seed + SEED_STEP * k for k in range(tries)],
     }
+
+
+def uncoloured(sentence):
+    """A VLM prop sentence with its colour words taken out ("the black over-ear headphones" -> "the over-ear
+    headphones")."""
+    out = re.sub(r"\b(?:" + "|".join(COLOURS) + r")\b(?:-| and | or |, )?\s*", "", sentence, flags=re.I)
+    return re.sub(r"\s{2,}", " ", out)
 
 
 def trimmed(spec, dest):
@@ -145,9 +157,18 @@ def run(spec):
         emit("PHASE", "cutting out the props")
         fsh3.cutout(job)
     c = job.cfg
-    if not c["face_desc"] or not c["scene_desc"] or any(not p.get("sentence") for p in c["props"]):
+    described = ([k for k in ("face_desc", "scene_desc") if not c[k]] +
+                 [f"prop {p['noun']}" for p in c["props"] if not p.get("sentence")])
+    if described:
         emit("PHASE", "describing the photo and the video")
+        blank = {p["noun"] for p in c["props"] if not p.get("sentence")}
         fsh3.describe(job)
+        c = job.cfg
+        for p in c["props"]:
+            if p["noun"] in blank:
+                p["sentence"] = uncoloured(p["sentence"])
+        job.save_cfg(c)
+        print("described by the VLM:", json.dumps({k: c[k] for k in ("face_desc", "scene_desc", "props")}), flush=True)
     emit("PROGRESS", 20)
     if spec.get("hair", "from_photo") == "from_video":
         fsh3.ff("-i", job.src, "-c", "copy", job.p("ref.mp4"))
@@ -181,6 +202,9 @@ def run(spec):
     warnings = [f"the piece from {p['start'] / fsh3.FPS:.1f} s follows the video loosely (sync {p['mean']}/{p['min']} "
                 f"after {p['tries']} tries)" for p in pieces
                 if p["mean"] < c["sync_min_mean"] or p["min"] < c["sync_min_window"]]
+    if described:
+        warnings.append(f"the local VLM wrote {', '.join(described)} (nobody gave them); it gets details wrong and the "
+                        f"render follows the text, so check the result against the photo and the video")
     bad = [round((1 + i * 24) / fsh3.FPS, 1) for i, v in enumerate(cs) if v < 0.3]
     if bad:
         warnings.append(f"the motion drifts from the video around {bad} s; check those moments")
@@ -188,7 +212,7 @@ def run(spec):
               "sync_mean": round(sum(cs) / len(cs), 3) if cs else None, "sync_min": round(min(cs), 3) if cs else None,
               "sync_windows": cs, "prompt": final.get("prompt"), "provenance": {k: final.get(k) for k in (
                   "face_sha256", "target_sha256", "consent", "recorded_utc")},
-              "final_sha256": final.get("final_sha256"), "warnings": warnings}
+              "final_sha256": final.get("final_sha256"), "described_by_vlm": described, "warnings": warnings}
     with open(spec["report"], "w") as f:
         json.dump(report, f, indent=1)
     proof_sheet(fsh3, job, spec["proof"])
