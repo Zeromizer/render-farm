@@ -22,6 +22,7 @@ TRACK_ONLY = "--track-only" in sys.argv
 def _arg(name, default):
     return float(sys.argv[sys.argv.index(name) + 1]) if name in sys.argv else default
 CUT_S, TAIL_S, PUSH = _arg("--cut", 0.0), _arg("--tail", 1.6), _arg("--push", 1.0)
+ONLY_RIGHT = "--only-right" in sys.argv
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL = os.path.join(HERE, "..", "mpmodel", "hand_landmarker.task")
 
@@ -49,24 +50,25 @@ from mediapipe.tasks.python import BaseOptions, vision  # noqa: E402
 lm = vision.HandLandmarker.create_from_options(vision.HandLandmarkerOptions(
     base_options=BaseOptions(model_asset_path=MODEL), running_mode=vision.RunningMode.VIDEO,
     num_hands=2, min_hand_detection_confidence=0.3, min_tracking_confidence=0.3))
-track = []  # per frame: list of (thumb_xy, index_xy, wrist_xy)
+track = []  # per frame: list of 21x2 landmark arrays (px)
 for i, fr in enumerate(frames):
     img = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(fr, cv2.COLOR_BGR2RGB))
     res = lm.detect_for_video(img, int(i * 1000 / fps))
     hands = []
     for hl in res.hand_landmarks or []:
-        pt = lambda k: np.array([hl[k].x * OW, hl[k].y * OH])  # noqa: E731
-        hands.append((pt(4), pt(8), pt(0)))
+        hands.append(np.array([[p.x * OW, p.y * OH] for p in hl]))
     track.append(hands)
 
 # per-frame spread channels: each hand's thumb-index distance, and index-to-index for two hands
 def spreads(hands):
     d = {}
     for h in hands:
-        key = "L" if h[2][0] < OW / 2 else "R"  # identify hands by side of the wrist
-        d[key] = float(np.linalg.norm(h[0] - h[1]))
-    if len(hands) == 2:
-        d["2H"] = float(np.linalg.norm(hands[0][1] - hands[1][1]))
+        key = "L" if h[0][0] < OW / 2 else "R"  # identify hands by side of the wrist
+        d[key] = float(np.linalg.norm(h[4] - h[8]))
+    if len(hands) == 2 and not ONLY_RIGHT:
+        d["2H"] = float(np.linalg.norm(hands[0][8] - hands[1][8]))
+    if ONLY_RIGHT:
+        d = {k: v for k, v in d.items() if k == "R"}
     return d
 
 raw = [spreads(h) for h in track]
@@ -124,7 +126,7 @@ def pos_from_L(L):
 
 pos = [pos_from_L(L_hand[i] * gain) for i in range(NF)]
 json.dump({"fps": fps, "pos": pos, "inc": inc.tolist(), "keys": keys,
-           "tips": [[[h[0].tolist(), h[1].tolist()] for h in t] for t in track]},
+           "tips": [[[h[4].tolist(), h[8].tolist()] for h in t] for t in track]},
           open(OUT.replace(".mp4", "_track.json"), "w"))
 if TRACK_ONLY:
     sys.exit(0)
@@ -172,6 +174,50 @@ def silhouette(fr):
     return f * 0.32
 
 
+def hand_region(h, finger_px=38):
+    """Hand hull + a forearm strip running from the wrist away from the fingers, as 0..1 float."""
+    m = np.zeros((OH, OW), np.uint8)
+    wr, mid = h[0], h[9]
+    d = (wr - mid) / max(np.linalg.norm(wr - mid), 1)
+    perp = np.array([-d[1], d[0]])
+    w = 0.75 * max(np.linalg.norm(h[5] - h[17]), 60)
+    far = wr + d * 2500
+    arm = np.array([wr + perp * w, wr - perp * w, far - perp * w * 1.3, far + perp * w * 1.3])
+    cv2.fillConvexPoly(m, cv2.convexHull(np.round(np.vstack([h, arm[:2]])).astype(np.int32)), 255)
+    cv2.fillConvexPoly(m, np.round(arm).astype(np.int32), 255)
+    m = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * finger_px + 1,) * 2))
+    return m.astype(np.float32) / 255
+
+
+LM = None
+if ONLY_RIGHT:
+    LM, RM = [], []
+    lastL = lastR = None
+    for t in track[:NCUT]:
+        L = [h for h in t if h[0][0] < OW / 2]
+        R = [h for h in t if h[0][0] >= OW / 2]
+        lastL = hand_region(L[0], 48) if L else (cv2.dilate(lastL, np.ones((15, 15), np.uint8)) if lastL is not None else np.zeros((OH, OW), np.float32))
+        lastR = hand_region(R[0], 10) if R else (lastR if lastR is not None else np.zeros((OH, OW), np.float32))
+        LM.append(lastL)
+        RM.append(lastR)
+    # clean plate: per-pixel median over frames where neither hand covers the pixel
+    idx = list(range(0, NCUT, 3))
+    plate = np.zeros((OH, OW, 3), np.float32)
+    hole = np.zeros((OH, OW), np.uint8)
+    for y0 in range(0, OH, 96):
+        y1 = min(OH, y0 + 96)
+        st = np.stack([frames[i][y0:y1].astype(np.float32) for i in idx])
+        bad = np.stack([(LM[i][y0:y1] > 0.02) | (RM[i][y0:y1] > 0.02) for i in idx])[..., None]
+        st[np.broadcast_to(bad, st.shape)] = np.nan
+        with np.errstate(all="ignore"):
+            med = np.nanmedian(st, axis=0)
+        hole[y0:y1] = np.isnan(med[..., 0]).astype(np.uint8)
+        plate[y0:y1] = np.nan_to_num(med)
+    plate = cv2.inpaint(np.clip(plate, 0, 255).astype(np.uint8), hole * 255, 15, cv2.INPAINT_TELEA)
+    print(f"clean plate: {int(hole.sum())} px never uncovered (inpainted)", flush=True)
+    cv2.imwrite(OUT.replace(".mp4", "_plate.png"), plate)
+    LM = [np.clip(cv2.GaussianBlur(lm, (0, 0), 6) * (1 - (rm > 0.5)), 0, 1)[..., None] for lm, rm in zip(LM, RM)]
+
 nfo = NCUT + int(round(TAIL_S * fps))
 ff = subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo",
                        "-pix_fmt", "bgr24", "-s", f"{OW}x{OH}", "-r", f"{fps}", "-i", "-",
@@ -192,8 +238,11 @@ for i in range(nfo):
         z = wz.frame_at(p)
     zw = cv2.warpPerspective(z, Mz, (OW, OH), flags=cv2.INTER_CUBIC).astype(np.float32)
     base = silhouette(fr)  # dark room: hands crossing the screen edge stay one tone
+    lm = LM[min(i, NCUT - 1)] if LM is not None else 0.0
+    if LM is not None:
+        base = base * (1 - lm) + silhouette(plate) * lm
     out = base * (1 - scr) + zw * scr
-    a = hand_alpha(fr) * scr * fade  # hands over the screen
+    a = hand_alpha(fr) * scr * fade * (1 - lm)  # hands over the screen (minus a removed hand)
     out = out * (1 - a) + silhouette(fr) * a
     if PUSH > 1:  # frame the tablet tighter, centred on the screen
         cx, cy = SQ[:, 0].mean(), SQ[:, 1].mean()
