@@ -1,0 +1,6 @@
+[
+ {"src": "spikes/dlss5_test/in/c4_patched.mp4", "label": "c4_dlss_15x_i080", "upscale": "1.5x (Quality)", "intensity": 0.8},
+ {"src": "spikes/dlss5_test/in/c3_patched.mp4", "label": "c3_dlss_15x_i080", "upscale": "1.5x (Quality)", "intensity": 0.8},
+ {"src": "spikes/dlss5_test/in/dmad_s2_d010.mp4", "label": "h3d010_dlss_1x_i080", "upscale": "1x (DLAA / native)", "intensity": 0.8},
+ {"src": "spikes/dlss5_test/in/final_v3.mp4", "label": "final_dlss_1x_i080", "upscale": "1x (DLAA / native)", "intensity": 0.8}
+]
