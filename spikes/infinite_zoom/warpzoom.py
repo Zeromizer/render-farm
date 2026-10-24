@@ -71,7 +71,7 @@ def find_quad(im):
         d = b - a
         L = np.linalg.norm(d)
         t = ((pts - a) @ d) / (L * L)
-        dist = np.abs(np.cross(d, pts - a)) / L
+        dist = np.abs(d[0] * (pts[:, 1] - a[1]) - d[1] * (pts[:, 0] - a[0])) / L
         sel = pts[(t > 0.15) & (t < 0.85) & (dist < 0.04 * L + 4)]
         if len(sel) < 10:
             lines.append((a, d / L))
@@ -208,35 +208,40 @@ def creep(t, img):
     return cv2.warpAffine(img, M, (W, H), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
 
 
-total = cfg.get("hold_start", 0.8) + (N - 1) * cfg.get("sec_per_level", 2.2) + cfg.get("hold_end", 2.2)
-nf = int(round(total * fps))
-only = cfg.get("only_frames")
-ff = None
-if not only:
-    ff = subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo",
-                           "-pix_fmt", "bgr24", "-s", f"{W}x{H}", "-r", str(fps), "-i", "-",
-                           "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-pix_fmt", "yuv420p",
-                           "-movflags", "+faststart", OUT], stdin=subprocess.PIPE)
-for f in range(nf):
-    if only and f not in only:
-        continue
-    t = f / fps
-    pos = pos_at(t)
-    ns, shutter = int(cfg.get("blur_samples", 1)), float(cfg.get("shutter", 0.5))
-    acc = None
-    for k in range(ns):
-        tk = t + (k / max(ns - 1, 1) - 0.5) * shutter / fps if ns > 1 else t
-        pk = pos_at(tk)
-        im = creep(tk, levels[N - 1].copy()) if pk >= N - 1 else frame_at(pk)
-        acc = im.astype(np.float32) if acc is None else acc + im
-    img = np.clip(acc / ns + 0.5, 0, 255).astype(np.uint8)
-    if only:
-        cv2.imwrite(OUT.replace(".mp4", f"_f{f:04d}.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 90])
-    else:
-        ff.stdin.write(img.tobytes())
-    if f % 60 == 0:
-        print(f"frame {f}/{nf} pos {pos:.2f}", flush=True)
-if ff:
-    ff.stdin.close()
-    ff.wait()
-print("done", OUT, f"{total:.1f}s {nf} frames")
+def main():
+    total = cfg.get("hold_start", 0.8) + (N - 1) * cfg.get("sec_per_level", 2.2) + cfg.get("hold_end", 2.2)
+    nf = int(round(total * fps))
+    only = cfg.get("only_frames")
+    ff = None
+    if not only:
+        ff = subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo",
+                               "-pix_fmt", "bgr24", "-s", f"{W}x{H}", "-r", str(fps), "-i", "-",
+                               "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-pix_fmt", "yuv420p",
+                               "-movflags", "+faststart", OUT], stdin=subprocess.PIPE)
+    for f in range(nf):
+        if only and f not in only:
+            continue
+        t = f / fps
+        pos = pos_at(t)
+        ns, shutter = int(cfg.get("blur_samples", 1)), float(cfg.get("shutter", 0.5))
+        acc = None
+        for k in range(ns):
+            tk = t + (k / max(ns - 1, 1) - 0.5) * shutter / fps if ns > 1 else t
+            pk = pos_at(tk)
+            im = creep(tk, levels[N - 1].copy()) if pk >= N - 1 else frame_at(pk)
+            acc = im.astype(np.float32) if acc is None else acc + im
+        img = np.clip(acc / ns + 0.5, 0, 255).astype(np.uint8)
+        if only:
+            cv2.imwrite(OUT.replace(".mp4", f"_f{f:04d}.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        else:
+            ff.stdin.write(img.tobytes())
+        if f % 60 == 0:
+            print(f"frame {f}/{nf} pos {pos:.2f}", flush=True)
+    if ff:
+        ff.stdin.close()
+        ff.wait()
+    print("done", OUT, f"{total:.1f}s {nf} frames")
+
+
+if __name__ == "__main__":
+    main()
