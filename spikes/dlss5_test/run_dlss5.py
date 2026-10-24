@@ -23,7 +23,7 @@ for i, s in enumerate(spec):
             "dlss_model_preset": "M", "motion": "auto", "scene_change_threshold": 0.24,
             "warmup_frames": int(s.get("warmup", 4)), "runtime_dir": ""}},
         "vid": {"class_type": "DLSS5EnhanceVideoFile", "inputs": {
-            "video_path": src, "settings": ["set", 0], "codec": "H.264", "container": "MP4", "quality": "Max",
+            "video_path": src, "settings": ["set", 0], "codec": s.get("codec", "H.264"), "container": "MP4", "quality": s.get("quality", "Max"),
             "filename_prefix": s["label"], "output_directory": out, "max_frames": int(s.get("max_frames", 0)),
             "copy_audio": True, "verify_neural_rendering": True}},
     }

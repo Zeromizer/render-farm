@@ -1,0 +1,3 @@
+[
+ {"src": "spikes/dlss5_test/in/keymotor_v13.mp4", "label": "keymotor_v13_dlss_3x_i080", "upscale": "3x (Ultra Performance)", "intensity": 0.8, "codec": "HEVC", "quality": "Good"}
+]
