@@ -1,0 +1,18 @@
+[
+ {
+  "label": "orig_vsr_ultra_4k",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/x_vsr_ultra_4k.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/orig_vsr_ultra_4k.mp4"
+  ]
+ }
+]
