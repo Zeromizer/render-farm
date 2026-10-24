@@ -1,0 +1,32 @@
+{
+ "format": "dlss5-visual-enhancer-settings-preset",
+ "schema_version": 41,
+ "name": "x_fg60",
+ "settings": {
+  "video_stage_order": [
+   "neural_model",
+   "scale_method",
+   "dlss_super_resolution",
+   "dlss_ray_reconstruction",
+   "super_resolution",
+   "rtx_video_hdr",
+   "frame_generation",
+   "fsr_frame_generation",
+   "reshade",
+   "coloring",
+   "cas_sharpening",
+   "grain",
+   "vfx_vsr",
+   "vfx_upscale",
+   "vfx_frame_generation"
+  ],
+  "video_enabled_stages": [
+   "vfx_frame_generation"
+  ],
+  "vfx_frame_generation_enabled": true,
+  "vfx_frame_generation_model": 2,
+  "vfx_frame_rate_mode": "Target FPS",
+  "vfx_target_fps": "60",
+  "vfx_automatic_shot_detection": true
+ }
+}

@@ -1,0 +1,98 @@
+[
+ {
+  "label": "x_vsr_ultra_4k",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13_CLEAN_v18_nat2.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/x_vsr_ultra_4k.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/x_vsr_ultra_4k.mp4"
+  ]
+ },
+ {
+  "label": "x_vsr_hibit_4k",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13_CLEAN_v18_nat2.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/x_vsr_hibit_4k.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/x_vsr_hibit_4k.mp4"
+  ]
+ },
+ {
+  "label": "x_dlss_sr_4k",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13_CLEAN_v18_nat2.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/x_dlss_sr_4k.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/x_dlss_sr_4k.mp4"
+  ]
+ },
+ {
+  "label": "x_vsr_deblur",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13_CLEAN_v18_nat2.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/x_vsr_deblur.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/x_vsr_deblur.mp4"
+  ]
+ },
+ {
+  "label": "x_rr",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13_CLEAN_v18_nat2.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/x_rr.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/x_rr.mp4"
+  ]
+ },
+ {
+  "label": "x_fg60",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13_CLEAN_v18_nat2.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/x_fg60.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/x_fg60.mp4"
+  ]
+ }
+]
