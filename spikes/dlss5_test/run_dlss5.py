@@ -12,8 +12,9 @@ COMFY = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
 out = os.path.abspath(sys.argv[1]); os.makedirs(out, exist_ok=True)
 spec = json.load(open(sys.argv[2]))
 report = []
+last_out = None
 for i, s in enumerate(spec):
-    src = os.path.abspath(s["src"])
+    src = last_out if s.get("chain") else os.path.abspath(s["src"])
     g = {
         "set": {"class_type": "DLSS5Settings", "inputs": {
             "upscaling_mode": s.get("upscale", "1x (DLAA / native)"), "nr_preset": "Default",
@@ -44,6 +45,10 @@ for i, s in enumerate(spec):
         rep["messages"] = st.get("messages")
     else:
         rep["outputs"] = e.get("outputs")
+        try:
+            last_out = e["outputs"]["vid"]["text"][0].rsplit(" (", 1)[0]
+        except Exception:
+            last_out = None
     report.append(rep); print(json.dumps(rep)[:1500], flush=True)
 json.dump(report, open(os.path.join(out, "report.json"), "w"), indent=1)
 try:   # keep the runtime's own log for the verify step

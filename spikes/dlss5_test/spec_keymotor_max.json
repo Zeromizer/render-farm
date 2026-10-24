@@ -1,0 +1,5 @@
+[
+ {"src": "spikes/dlss5_test/in/keymotor_v13.mp4", "label": "km_max_p1", "upscale": "1x (DLAA / native)", "intensity": 1.0, "style": "Cinematic", "structure": 2.0, "tone": 1.0, "codec": "HEVC", "quality": "Good"},
+ {"chain": true, "label": "km_max_p2", "upscale": "1x (DLAA / native)", "intensity": 1.0, "style": "Cinematic", "structure": 2.0, "tone": 1.0, "codec": "HEVC", "quality": "Good"},
+ {"src": "spikes/dlss5_test/in/keymotor_v13.mp4", "label": "km_natural_max", "upscale": "1x (DLAA / native)", "intensity": 1.0, "style": "Natural", "structure": 2.0, "tone": 1.0, "codec": "HEVC", "quality": "Good"}
+]
