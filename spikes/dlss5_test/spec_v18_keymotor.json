@@ -1,0 +1,98 @@
+[
+ {
+  "label": "nat_i1",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/nat_i1.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/km_v18_nat_i1.mp4"
+  ]
+ },
+ {
+  "label": "nat_i2",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/nat_i2.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/km_v18_nat_i2.mp4"
+  ]
+ },
+ {
+  "label": "cin_i1",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/cin_i1.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/km_v18_cin_i1.mp4"
+  ]
+ },
+ {
+  "label": "nat_i1_p2",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/nat_i1_p2.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/km_v18_nat_i1_p2.mp4"
+  ]
+ },
+ {
+  "label": "sr3x_then_nr",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/sr3x_then_nr.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/km_v18_sr3x_then_nr.mp4"
+  ]
+ },
+ {
+  "label": "nr_then_sr3x",
+  "args": [
+   "render",
+   "{IN:spikes/dlss5_test/in/keymotor_v13.mp4}",
+   "--preset",
+   "{IN:spikes/dlss5_test/v18/nr_then_sr3x.json}",
+   "--codec",
+   "hevc",
+   "--quality",
+   "best",
+   "--json",
+   "-o",
+   "{OUT}/km_v18_nr_then_sr3x.mp4"
+  ]
+ }
+]

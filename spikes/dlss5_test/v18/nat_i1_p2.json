@@ -1,0 +1,18 @@
+{
+ "format": "dlss5-visual-enhancer-settings-preset",
+ "schema_version": 41,
+ "name": "km nat_i1_p2",
+ "settings": {
+  "nr_style": "Style 1",
+  "nr_intensity": 1.0,
+  "nr_passes": 2,
+  "local_tone_strength": 1.0,
+  "local_structure_strength": 1.0,
+  "skin_structure_strength": 1.0,
+  "automatic_mask": true,
+  "nr_optical_flow_quality": "High",
+  "video_enabled_stages": [
+   "neural_model"
+  ]
+ }
+}

@@ -1,0 +1,20 @@
+{
+ "format": "dlss5-visual-enhancer-settings-preset",
+ "schema_version": 41,
+ "name": "km nr_then_sr3x",
+ "settings": {
+  "nr_style": "Style 1",
+  "nr_intensity": 1.0,
+  "nr_passes": 1,
+  "local_tone_strength": 1.0,
+  "local_structure_strength": 1.0,
+  "skin_structure_strength": 1.0,
+  "automatic_mask": true,
+  "nr_optical_flow_quality": "High",
+  "video_enabled_stages": [
+   "neural_model",
+   "dlss_super_resolution"
+  ],
+  "upscale_dlss_mode": "Ultra Performance"
+ }
+}
