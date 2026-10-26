@@ -1,0 +1,27 @@
+**Generation Mode:** T2VA
+
+**Video duration:** 5 seconds, 9:16 vertical, high-quality family-friendly stylized 3D CG cooking comedy.
+
+**Character consistency:** A tiny emerald-green baby dragon with a cream belly, large amber eyes, tiny rounded horns, small wings, and an oversized white chef hat. A giant golden pancake in a miniature home kitchen.
+
+**integrated_multimodal_description:**
+
+[Shot 1] 0.00–1.40s
+
+In a bright miniature kitchen, the baby dragon stands on a wooden stool beside a frying pan. It grips a spatula with both claws and struggles to lift an enormous golden pancake nearly twice its size. Butter sizzles while the dragon narrows its eyes with exaggerated determination.
+
+[Shot 2] 1.40–3.30s
+
+Hard cut to a dramatic low-angle close-up. The dragon launches the pancake into the air with an overconfident flip. The pancake rises far too high, slowly rotates above the dragon, and begins descending. The dragon looks straight up, mouth open, tiny arms frozen in panic.
+
+[Shot 3] 3.30–5.00s
+
+The pancake lands perfectly on the dragon's head, covering its chef hat like a giant golden helmet. A single blueberry drops from above and lands precisely in the center. The dragon blinks through a small gap, then proudly poses like a professional chef as a puff of steam rises.
+
+**Visual style:** Polished stylized 3D animation, delicious golden food textures, soft global illumination, cinematic macro photography, expressive facial animation, smooth camera movement, strong visual comedy, consistent character proportions.
+
+**overall_soundscape:** Butter sizzling, spatula scraping, a quick whoosh, a soft pancake plop, a tiny blueberry bounce, and a comedic final sparkle.
+
+**non_diegetic_music:** N/A. No background music.
+
+**Restrictions:** No dialogue, no lip-sync, no subtitles, no readable text, no UI, no watermarks, no logos, and no corner badges. Environmental sounds and sound effects only.

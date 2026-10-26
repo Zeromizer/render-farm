@@ -1,0 +1,27 @@
+**Generation Mode:** T2VA
+
+**Video duration:** 5 seconds, 9:16 vertical, premium photorealistic automotive lifestyle commercial, shot on a cinema camera.
+
+**Character and product consistency:** A pearl-white Toyota Prius fifth-generation hatchback with slim C-shaped LED headlights and black multi-spoke alloy wheels. A Singaporean Chinese family: a father in a light-blue linen shirt, a mother in a white blouse, a seven-year-old girl and a five-year-old boy. Same faces, clothes and car throughout.
+
+**integrated_multimodal_description:**
+
+[Shot 1] 0.00–1.60s
+
+Golden-hour coastal car park beside the sea, palm trees silhouetted against a low sun. Slow low-angle dolly-in on the white Prius parked on interlocking pavers; warm sunlight rakes across the glossy bodywork and the sea glitters behind it.
+
+[Shot 2] 1.60–3.40s
+
+Medium shot from inside the open boot looking out: the family walks up smiling, the kids run ahead, the father lifts a picnic basket into the boot. Natural skin texture, soft rim light from the sunset, gentle handheld motion.
+
+[Shot 3] 3.40–5.00s
+
+Wide hero shot: the family stands beside the car laughing as the sun touches the horizon, warm lens flare, the camera slowly arcs around the front of the car.
+
+**Visual style:** Photorealistic, natural colour, real skin pores and fabric texture, accurate car reflections and paint, shallow depth of field, cinematic golden-hour light, smooth camera movement.
+
+**overall_soundscape:** Gentle waves, distant birds, kids laughing, a car door closing, the boot hatch thud.
+
+**non_diegetic_music:** N/A. No background music.
+
+**Restrictions:** No dialogue, no lip-sync, no subtitles, no readable text, no UI, no watermarks, no logos, and no corner badges.

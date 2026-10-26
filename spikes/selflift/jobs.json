@@ -1,0 +1,882 @@
+[
+ {
+  "label": "pancake_selflift_dlss",
+  "graph": {
+   "unet": {
+    "class_type": "UNETLoader",
+    "inputs": {
+     "unet_name": "minimax_h3_fused_refdelta_r1024_turbo8_mystic07_int8_convrot.safetensors",
+     "weight_dtype": "default"
+    }
+   },
+   "shift": {
+    "class_type": "MiniMaxH3SigmaShift",
+    "inputs": {
+     "model": [
+      "unet",
+      0
+     ],
+     "shift_video": 12.0,
+     "shift_audio": 3.0
+    }
+   },
+   "lora": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+     "model": [
+      "shift",
+      0
+     ],
+     "lora_name": "h3_antiburn_universal_v1.safetensors",
+     "strength_model": 0.5
+    }
+   },
+   "clip": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+     "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+     "type": "minimax",
+     "device": "default"
+    }
+   },
+   "vae": {
+    "class_type": "VAELoader",
+    "inputs": {
+     "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    }
+   },
+   "avae": {
+    "class_type": "VAELoader",
+    "inputs": {
+     "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    }
+   },
+   "cond": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "inputs": {
+     "clip": [
+      "clip",
+      0
+     ],
+     "vae": [
+      "vae",
+      0
+     ],
+     "prompt": "**Generation Mode:** T2VA\n\n**Video duration:** 5 seconds, 9:16 vertical, high-quality family-friendly stylized 3D CG cooking comedy.\n\n**Character consistency:** A tiny emerald-green baby dragon with a cream belly, large amber eyes, tiny rounded horns, small wings, and an oversized white chef hat. A giant golden pancake in a miniature home kitchen.\n\n**integrated_multimodal_description:**\n\n[Shot 1] 0.00–1.40s\n\nIn a bright miniature kitchen, the baby dragon stands on a wooden stool beside a frying pan. It grips a spatula with both claws and struggles to lift an enormous golden pancake nearly twice its size. Butter sizzles while the dragon narrows its eyes with exaggerated determination.\n\n[Shot 2] 1.40–3.30s\n\nHard cut to a dramatic low-angle close-up. The dragon launches the pancake into the air with an overconfident flip. The pancake rises far too high, slowly rotates above the dragon, and begins descending. The dragon looks straight up, mouth open, tiny arms frozen in panic.\n\n[Shot 3] 3.30–5.00s\n\nThe pancake lands perfectly on the dragon's head, covering its chef hat like a giant golden helmet. A single blueberry drops from above and lands precisely in the center. The dragon blinks through a small gap, then proudly poses like a professional chef as a puff of steam rises.\n\n**Visual style:** Polished stylized 3D animation, delicious golden food textures, soft global illumination, cinematic macro photography, expressive facial animation, smooth camera movement, strong visual comedy, consistent character proportions.\n\n**overall_soundscape:** Butter sizzling, spatula scraping, a quick whoosh, a soft pancake plop, a tiny blueberry bounce, and a comedic final sparkle.\n\n**non_diegetic_music:** N/A. No background music.\n\n**Restrictions:** No dialogue, no lip-sync, no subtitles, no readable text, no UI, no watermarks, no logos, and no corner badges. Environmental sounds and sound effects only.",
+     "width": 1024,
+     "height": 576,
+     "length": 124
+    }
+   },
+   "neg": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+     "conditioning": [
+      "cond",
+      0
+     ]
+    }
+   },
+   "sampler": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+     "sampler_name": "euler"
+    }
+   },
+   "sched": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+     "model": [
+      "lora",
+      0
+     ],
+     "scheduler": "beta",
+     "steps": 8,
+     "denoise": 1.0
+    }
+   },
+   "sample": {
+    "class_type": "SelfLiftH3Sampler",
+    "inputs": {
+     "model": [
+      "lora",
+      0
+     ],
+     "positive": [
+      "cond",
+      0
+     ],
+     "negative": [
+      "neg",
+      0
+     ],
+     "vae": [
+      "vae",
+      0
+     ],
+     "latent_image": [
+      "cond",
+      1
+     ],
+     "sampler": [
+      "sampler",
+      0
+     ],
+     "sigmas": [
+      "sched",
+      0
+     ],
+     "seed": 999,
+     "cfg": 1.0,
+     "transition_step": 6,
+     "lowres_scale": 0.5,
+     "rho": 0.0,
+     "w_min": 0.5,
+     "w_max": 1.0,
+     "upscaler_model": "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
+     "highres_tiling": false,
+     "upscaler_unload": true
+    }
+   },
+   "dec": {
+    "class_type": "VAEDecode",
+    "inputs": {
+     "samples": [
+      "sample",
+      0
+     ],
+     "vae": [
+      "vae",
+      0
+     ]
+    }
+   },
+   "adec": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": {
+     "samples": [
+      "sample",
+      0
+     ],
+     "vae": [
+      "avae",
+      0
+     ]
+    }
+   },
+   "video": {
+    "class_type": "CreateVideo",
+    "inputs": {
+     "images": [
+      "dec",
+      0
+     ],
+     "fps": 24.0,
+     "audio": [
+      "adec",
+      0
+     ]
+    }
+   },
+   "save": {
+    "class_type": "SaveVideo",
+    "inputs": {
+     "video": [
+      "video",
+      0
+     ],
+     "filename_prefix": "sl_pancake_selflift_dlss_raw",
+     "format": "mp4"
+    }
+   },
+   "dlss": {
+    "class_type": "RH_DLSS5Enhance",
+    "inputs": {
+     "image": [
+      "dec",
+      0
+     ],
+     "upscaling_mode": "2K",
+     "style": "cinematic",
+     "preset": 0,
+     "intensity": 1.0,
+     "tone": 1.0,
+     "structure": 1.5,
+     "skin": 1.0,
+     "auto_mask": "off",
+     "motion": "auto",
+     "scene_change_threshold": 0.24,
+     "batch_mode": "temporal sequence",
+     "warmup_frames": 1,
+     "keep_audio": "on",
+     "backend": "auto",
+     "channel_order": "auto",
+     "hdr": "off",
+     "global_tone": -1.0,
+     "detail": 1.0,
+     "color": 1.0,
+     "runtime_dir": "",
+     "wine_prefix": ""
+    }
+   },
+   "video2": {
+    "class_type": "CreateVideo",
+    "inputs": {
+     "images": [
+      "dlss",
+      0
+     ],
+     "fps": 24.0,
+     "audio": [
+      "adec",
+      0
+     ]
+    }
+   },
+   "save2": {
+    "class_type": "SaveVideo",
+    "inputs": {
+     "video": [
+      "video2",
+      0
+     ],
+     "filename_prefix": "sl_pancake_selflift_dlss_dlss2k",
+     "format": "mp4"
+    }
+   }
+  }
+ },
+ {
+  "label": "pancake_baseline",
+  "graph": {
+   "unet": {
+    "class_type": "UNETLoader",
+    "inputs": {
+     "unet_name": "minimax_h3_fused_refdelta_r1024_turbo8_mystic07_int8_convrot.safetensors",
+     "weight_dtype": "default"
+    }
+   },
+   "shift": {
+    "class_type": "MiniMaxH3SigmaShift",
+    "inputs": {
+     "model": [
+      "unet",
+      0
+     ],
+     "shift_video": 12.0,
+     "shift_audio": 3.0
+    }
+   },
+   "lora": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+     "model": [
+      "shift",
+      0
+     ],
+     "lora_name": "h3_antiburn_universal_v1.safetensors",
+     "strength_model": 0.5
+    }
+   },
+   "clip": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+     "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+     "type": "minimax",
+     "device": "default"
+    }
+   },
+   "vae": {
+    "class_type": "VAELoader",
+    "inputs": {
+     "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    }
+   },
+   "avae": {
+    "class_type": "VAELoader",
+    "inputs": {
+     "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    }
+   },
+   "cond": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "inputs": {
+     "clip": [
+      "clip",
+      0
+     ],
+     "vae": [
+      "vae",
+      0
+     ],
+     "prompt": "**Generation Mode:** T2VA\n\n**Video duration:** 5 seconds, 9:16 vertical, high-quality family-friendly stylized 3D CG cooking comedy.\n\n**Character consistency:** A tiny emerald-green baby dragon with a cream belly, large amber eyes, tiny rounded horns, small wings, and an oversized white chef hat. A giant golden pancake in a miniature home kitchen.\n\n**integrated_multimodal_description:**\n\n[Shot 1] 0.00–1.40s\n\nIn a bright miniature kitchen, the baby dragon stands on a wooden stool beside a frying pan. It grips a spatula with both claws and struggles to lift an enormous golden pancake nearly twice its size. Butter sizzles while the dragon narrows its eyes with exaggerated determination.\n\n[Shot 2] 1.40–3.30s\n\nHard cut to a dramatic low-angle close-up. The dragon launches the pancake into the air with an overconfident flip. The pancake rises far too high, slowly rotates above the dragon, and begins descending. The dragon looks straight up, mouth open, tiny arms frozen in panic.\n\n[Shot 3] 3.30–5.00s\n\nThe pancake lands perfectly on the dragon's head, covering its chef hat like a giant golden helmet. A single blueberry drops from above and lands precisely in the center. The dragon blinks through a small gap, then proudly poses like a professional chef as a puff of steam rises.\n\n**Visual style:** Polished stylized 3D animation, delicious golden food textures, soft global illumination, cinematic macro photography, expressive facial animation, smooth camera movement, strong visual comedy, consistent character proportions.\n\n**overall_soundscape:** Butter sizzling, spatula scraping, a quick whoosh, a soft pancake plop, a tiny blueberry bounce, and a comedic final sparkle.\n\n**non_diegetic_music:** N/A. No background music.\n\n**Restrictions:** No dialogue, no lip-sync, no subtitles, no readable text, no UI, no watermarks, no logos, and no corner badges. Environmental sounds and sound effects only.",
+     "width": 1024,
+     "height": 576,
+     "length": 124
+    }
+   },
+   "neg": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+     "conditioning": [
+      "cond",
+      0
+     ]
+    }
+   },
+   "sampler": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+     "sampler_name": "euler"
+    }
+   },
+   "sched": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+     "model": [
+      "lora",
+      0
+     ],
+     "scheduler": "beta",
+     "steps": 8,
+     "denoise": 1.0
+    }
+   },
+   "guider": {
+    "class_type": "BasicGuider",
+    "inputs": {
+     "model": [
+      "lora",
+      0
+     ],
+     "conditioning": [
+      "cond",
+      0
+     ]
+    }
+   },
+   "noise": {
+    "class_type": "RandomNoise",
+    "inputs": {
+     "noise_seed": 999
+    }
+   },
+   "sample": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+     "noise": [
+      "noise",
+      0
+     ],
+     "guider": [
+      "guider",
+      0
+     ],
+     "sampler": [
+      "sampler",
+      0
+     ],
+     "sigmas": [
+      "sched",
+      0
+     ],
+     "latent_image": [
+      "cond",
+      1
+     ]
+    }
+   },
+   "dec": {
+    "class_type": "VAEDecode",
+    "inputs": {
+     "samples": [
+      "sample",
+      0
+     ],
+     "vae": [
+      "vae",
+      0
+     ]
+    }
+   },
+   "adec": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": {
+     "samples": [
+      "sample",
+      0
+     ],
+     "vae": [
+      "avae",
+      0
+     ]
+    }
+   },
+   "video": {
+    "class_type": "CreateVideo",
+    "inputs": {
+     "images": [
+      "dec",
+      0
+     ],
+     "fps": 24.0,
+     "audio": [
+      "adec",
+      0
+     ]
+    }
+   },
+   "save": {
+    "class_type": "SaveVideo",
+    "inputs": {
+     "video": [
+      "video",
+      0
+     ],
+     "filename_prefix": "sl_pancake_baseline_raw",
+     "format": "mp4"
+    }
+   }
+  }
+ },
+ {
+  "label": "car_selflift_dlss",
+  "graph": {
+   "unet": {
+    "class_type": "UNETLoader",
+    "inputs": {
+     "unet_name": "minimax_h3_fused_refdelta_r1024_turbo8_mystic07_int8_convrot.safetensors",
+     "weight_dtype": "default"
+    }
+   },
+   "shift": {
+    "class_type": "MiniMaxH3SigmaShift",
+    "inputs": {
+     "model": [
+      "unet",
+      0
+     ],
+     "shift_video": 12.0,
+     "shift_audio": 3.0
+    }
+   },
+   "lora": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+     "model": [
+      "shift",
+      0
+     ],
+     "lora_name": "h3_antiburn_universal_v1.safetensors",
+     "strength_model": 0.5
+    }
+   },
+   "clip": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+     "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+     "type": "minimax",
+     "device": "default"
+    }
+   },
+   "vae": {
+    "class_type": "VAELoader",
+    "inputs": {
+     "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    }
+   },
+   "avae": {
+    "class_type": "VAELoader",
+    "inputs": {
+     "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    }
+   },
+   "cond": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "inputs": {
+     "clip": [
+      "clip",
+      0
+     ],
+     "vae": [
+      "vae",
+      0
+     ],
+     "prompt": "**Generation Mode:** T2VA\n\n**Video duration:** 5 seconds, 9:16 vertical, premium photorealistic automotive lifestyle commercial, shot on a cinema camera.\n\n**Character and product consistency:** A pearl-white Toyota Prius fifth-generation hatchback with slim C-shaped LED headlights and black multi-spoke alloy wheels. A Singaporean Chinese family: a father in a light-blue linen shirt, a mother in a white blouse, a seven-year-old girl and a five-year-old boy. Same faces, clothes and car throughout.\n\n**integrated_multimodal_description:**\n\n[Shot 1] 0.00–1.60s\n\nGolden-hour coastal car park beside the sea, palm trees silhouetted against a low sun. Slow low-angle dolly-in on the white Prius parked on interlocking pavers; warm sunlight rakes across the glossy bodywork and the sea glitters behind it.\n\n[Shot 2] 1.60–3.40s\n\nMedium shot from inside the open boot looking out: the family walks up smiling, the kids run ahead, the father lifts a picnic basket into the boot. Natural skin texture, soft rim light from the sunset, gentle handheld motion.\n\n[Shot 3] 3.40–5.00s\n\nWide hero shot: the family stands beside the car laughing as the sun touches the horizon, warm lens flare, the camera slowly arcs around the front of the car.\n\n**Visual style:** Photorealistic, natural colour, real skin pores and fabric texture, accurate car reflections and paint, shallow depth of field, cinematic golden-hour light, smooth camera movement.\n\n**overall_soundscape:** Gentle waves, distant birds, kids laughing, a car door closing, the boot hatch thud.\n\n**non_diegetic_music:** N/A. No background music.\n\n**Restrictions:** No dialogue, no lip-sync, no subtitles, no readable text, no UI, no watermarks, no logos, and no corner badges.\n",
+     "width": 576,
+     "height": 1024,
+     "length": 124
+    }
+   },
+   "neg": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+     "conditioning": [
+      "cond",
+      0
+     ]
+    }
+   },
+   "sampler": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+     "sampler_name": "euler"
+    }
+   },
+   "sched": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+     "model": [
+      "lora",
+      0
+     ],
+     "scheduler": "beta",
+     "steps": 8,
+     "denoise": 1.0
+    }
+   },
+   "sample": {
+    "class_type": "SelfLiftH3Sampler",
+    "inputs": {
+     "model": [
+      "lora",
+      0
+     ],
+     "positive": [
+      "cond",
+      0
+     ],
+     "negative": [
+      "neg",
+      0
+     ],
+     "vae": [
+      "vae",
+      0
+     ],
+     "latent_image": [
+      "cond",
+      1
+     ],
+     "sampler": [
+      "sampler",
+      0
+     ],
+     "sigmas": [
+      "sched",
+      0
+     ],
+     "seed": 999,
+     "cfg": 1.0,
+     "transition_step": 6,
+     "lowres_scale": 0.5,
+     "rho": 0.0,
+     "w_min": 0.5,
+     "w_max": 1.0,
+     "upscaler_model": "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
+     "highres_tiling": false,
+     "upscaler_unload": true
+    }
+   },
+   "dec": {
+    "class_type": "VAEDecode",
+    "inputs": {
+     "samples": [
+      "sample",
+      0
+     ],
+     "vae": [
+      "vae",
+      0
+     ]
+    }
+   },
+   "adec": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": {
+     "samples": [
+      "sample",
+      0
+     ],
+     "vae": [
+      "avae",
+      0
+     ]
+    }
+   },
+   "video": {
+    "class_type": "CreateVideo",
+    "inputs": {
+     "images": [
+      "dec",
+      0
+     ],
+     "fps": 24.0,
+     "audio": [
+      "adec",
+      0
+     ]
+    }
+   },
+   "save": {
+    "class_type": "SaveVideo",
+    "inputs": {
+     "video": [
+      "video",
+      0
+     ],
+     "filename_prefix": "sl_car_selflift_dlss_raw",
+     "format": "mp4"
+    }
+   },
+   "dlss": {
+    "class_type": "RH_DLSS5Enhance",
+    "inputs": {
+     "image": [
+      "dec",
+      0
+     ],
+     "upscaling_mode": "2K",
+     "style": "cinematic",
+     "preset": 0,
+     "intensity": 1.0,
+     "tone": 1.0,
+     "structure": 1.5,
+     "skin": 1.0,
+     "auto_mask": "off",
+     "motion": "auto",
+     "scene_change_threshold": 0.24,
+     "batch_mode": "temporal sequence",
+     "warmup_frames": 1,
+     "keep_audio": "on",
+     "backend": "auto",
+     "channel_order": "auto",
+     "hdr": "off",
+     "global_tone": -1.0,
+     "detail": 1.0,
+     "color": 1.0,
+     "runtime_dir": "",
+     "wine_prefix": ""
+    }
+   },
+   "video2": {
+    "class_type": "CreateVideo",
+    "inputs": {
+     "images": [
+      "dlss",
+      0
+     ],
+     "fps": 24.0,
+     "audio": [
+      "adec",
+      0
+     ]
+    }
+   },
+   "save2": {
+    "class_type": "SaveVideo",
+    "inputs": {
+     "video": [
+      "video2",
+      0
+     ],
+     "filename_prefix": "sl_car_selflift_dlss_dlss2k",
+     "format": "mp4"
+    }
+   }
+  }
+ },
+ {
+  "label": "car_baseline",
+  "graph": {
+   "unet": {
+    "class_type": "UNETLoader",
+    "inputs": {
+     "unet_name": "minimax_h3_fused_refdelta_r1024_turbo8_mystic07_int8_convrot.safetensors",
+     "weight_dtype": "default"
+    }
+   },
+   "shift": {
+    "class_type": "MiniMaxH3SigmaShift",
+    "inputs": {
+     "model": [
+      "unet",
+      0
+     ],
+     "shift_video": 12.0,
+     "shift_audio": 3.0
+    }
+   },
+   "lora": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+     "model": [
+      "shift",
+      0
+     ],
+     "lora_name": "h3_antiburn_universal_v1.safetensors",
+     "strength_model": 0.5
+    }
+   },
+   "clip": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+     "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+     "type": "minimax",
+     "device": "default"
+    }
+   },
+   "vae": {
+    "class_type": "VAELoader",
+    "inputs": {
+     "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    }
+   },
+   "avae": {
+    "class_type": "VAELoader",
+    "inputs": {
+     "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    }
+   },
+   "cond": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "inputs": {
+     "clip": [
+      "clip",
+      0
+     ],
+     "vae": [
+      "vae",
+      0
+     ],
+     "prompt": "**Generation Mode:** T2VA\n\n**Video duration:** 5 seconds, 9:16 vertical, premium photorealistic automotive lifestyle commercial, shot on a cinema camera.\n\n**Character and product consistency:** A pearl-white Toyota Prius fifth-generation hatchback with slim C-shaped LED headlights and black multi-spoke alloy wheels. A Singaporean Chinese family: a father in a light-blue linen shirt, a mother in a white blouse, a seven-year-old girl and a five-year-old boy. Same faces, clothes and car throughout.\n\n**integrated_multimodal_description:**\n\n[Shot 1] 0.00–1.60s\n\nGolden-hour coastal car park beside the sea, palm trees silhouetted against a low sun. Slow low-angle dolly-in on the white Prius parked on interlocking pavers; warm sunlight rakes across the glossy bodywork and the sea glitters behind it.\n\n[Shot 2] 1.60–3.40s\n\nMedium shot from inside the open boot looking out: the family walks up smiling, the kids run ahead, the father lifts a picnic basket into the boot. Natural skin texture, soft rim light from the sunset, gentle handheld motion.\n\n[Shot 3] 3.40–5.00s\n\nWide hero shot: the family stands beside the car laughing as the sun touches the horizon, warm lens flare, the camera slowly arcs around the front of the car.\n\n**Visual style:** Photorealistic, natural colour, real skin pores and fabric texture, accurate car reflections and paint, shallow depth of field, cinematic golden-hour light, smooth camera movement.\n\n**overall_soundscape:** Gentle waves, distant birds, kids laughing, a car door closing, the boot hatch thud.\n\n**non_diegetic_music:** N/A. No background music.\n\n**Restrictions:** No dialogue, no lip-sync, no subtitles, no readable text, no UI, no watermarks, no logos, and no corner badges.\n",
+     "width": 576,
+     "height": 1024,
+     "length": 124
+    }
+   },
+   "neg": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+     "conditioning": [
+      "cond",
+      0
+     ]
+    }
+   },
+   "sampler": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+     "sampler_name": "euler"
+    }
+   },
+   "sched": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+     "model": [
+      "lora",
+      0
+     ],
+     "scheduler": "beta",
+     "steps": 8,
+     "denoise": 1.0
+    }
+   },
+   "guider": {
+    "class_type": "BasicGuider",
+    "inputs": {
+     "model": [
+      "lora",
+      0
+     ],
+     "conditioning": [
+      "cond",
+      0
+     ]
+    }
+   },
+   "noise": {
+    "class_type": "RandomNoise",
+    "inputs": {
+     "noise_seed": 999
+    }
+   },
+   "sample": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+     "noise": [
+      "noise",
+      0
+     ],
+     "guider": [
+      "guider",
+      0
+     ],
+     "sampler": [
+      "sampler",
+      0
+     ],
+     "sigmas": [
+      "sched",
+      0
+     ],
+     "latent_image": [
+      "cond",
+      1
+     ]
+    }
+   },
+   "dec": {
+    "class_type": "VAEDecode",
+    "inputs": {
+     "samples": [
+      "sample",
+      0
+     ],
+     "vae": [
+      "vae",
+      0
+     ]
+    }
+   },
+   "adec": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": {
+     "samples": [
+      "sample",
+      0
+     ],
+     "vae": [
+      "avae",
+      0
+     ]
+    }
+   },
+   "video": {
+    "class_type": "CreateVideo",
+    "inputs": {
+     "images": [
+      "dec",
+      0
+     ],
+     "fps": 24.0,
+     "audio": [
+      "adec",
+      0
+     ]
+    }
+   },
+   "save": {
+    "class_type": "SaveVideo",
+    "inputs": {
+     "video": [
+      "video",
+      0
+     ],
+     "filename_prefix": "sl_car_baseline_raw",
+     "format": "mp4"
+    }
+   }
+  }
+ }
+]
