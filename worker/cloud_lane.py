@@ -35,6 +35,10 @@ POD_PREFIX = "rf-cloud"
 TICK_SECONDS = 30
 CREATE_BACKOFF_SECONDS = 300
 BROKEN_BACKOFF_SECONDS = 2 * 3600
+# Dud pods (never claimed) in a row, with no pod seen working in between,
+# before the image counts as broken. One dud beside a working twin is a bad
+# host, not a bad image (2gkxb8097ojt1m on 2026-10-28 paused the lane 2 h).
+BROKEN_AFTER_DUDS = 2
 # A pod's first boot installs packages and loads ComfyUI before it claims anything.
 BOOT_GRACE_MINUTES = 20
 STATE_PATH = os.path.join(config.CACHE_DIR, "cloud_lane.json")
@@ -152,9 +156,11 @@ def _tick(state, log):
 
     spare = 0  # pods that will take a waiting job soon: booting, or up and idle
     alive = 0
+    any_worked = False
     for p in pods:
         born = started.setdefault(p["id"], now)
         busy, worked = _pod_work(p["id"])
+        any_worked = any_worked or worked is not None
         why = None
         if over_budget:
             why = "daily budget used"
@@ -166,10 +172,10 @@ def _tick(state, log):
             # no 2 h backoff, the fallback types are still untried.
             why = f"claimed nothing in {config.CLOUD_GPU_FALLBACK_MINUTES:g} min; retrying with the fallback GPU"
         elif worked is None and now - born > BOOT_GRACE_MINUTES * 60:
-            # Booted but never claimed: broken image/boot. Don't keep paying for
-            # it or re-create it every few minutes; the PC fallback takes the jobs.
+            # Booted but never claimed: a bad host, or a broken image/boot. Stop
+            # paying for it; whether to pause creates is decided after the loop.
             why = f"claimed nothing in {BOOT_GRACE_MINUTES} min"
-            state["retry_at"] = now + BROKEN_BACKOFF_SECONDS
+            state["duds"] = state.get("duds", 0) + 1
         elif worked is not None and not busy and now - worked > (config.IDLE_EXIT_MINUTES + 10) * 60:
             why = f"idle {(now - worked) / 60:.0f} min and did not end itself"
         if why:
@@ -181,6 +187,16 @@ def _tick(state, log):
         alive += 1
         if not busy:
             spare += 1
+
+    if any_worked:
+        state["duds"] = 0  # a pod claimed on this image: it boots fine
+    elif state.get("duds", 0) >= BROKEN_AFTER_DUDS:
+        # Broken image/boot: don't keep re-creating it; the PC fallback takes the jobs.
+        state["duds"] = 0
+        state["retry_at"] = now + BROKEN_BACKOFF_SECONDS
+        until = datetime.fromtimestamp(state["retry_at"], timezone.utc)
+        log(f"creates paused until {until:%H:%M}Z (broken-boot backoff: "
+            f"{BROKEN_AFTER_DUDS} pods in a row claimed nothing)")
 
     # Parallel lane: one more pod whenever more jobs wait than pods can take
     # them, up to CLOUD_MAX_PODS. One create per tick, so a burst of jobs does
