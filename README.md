@@ -154,7 +154,7 @@ Eligible `hyperframes` jobs can be drawn by our fork of Kinetograph, about 2.5x 
 with HyperFrames as the fallback on any failure. A job stays engine `hyperframes`; see
 `worker/runners/kinetograph.py` for who is eligible and why. Off by default.
 
-    KINETOGRAPH_CLI=C:\path	o	ool
+    KINETOGRAPH_CLI=C:\path\to\tool\node_modules\kinetograph\dist\cli.js
 ode_modules\kinetograph\dist\cli.js
     KINETOGRAPH_ROUTE=test     # off | test (only params.renderer="kinetograph") | on
 
