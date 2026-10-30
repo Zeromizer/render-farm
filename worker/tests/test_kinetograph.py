@@ -105,6 +105,20 @@ class Content(unittest.TestCase):
                           (".a{mix-blend-mode:screen;transform-style:preserve-3d}", "blend mode with 3D")):
             self.assertIn(why, kt.content_reasons(text, ""), text)
 
+    def test_emoji_stays_however_it_is_written(self):
+        # 13c65c26 lost a pointing hand with no warning; it was written as an entity
+        for text in ("Pick \U0001F447", "&#x1F447;", "&#x1f447;", "&#128071;", "&#129300;", r"'\u{1F447}'", r"'\uD83D\uDC47'",
+                     "\u2605 5.0", "&#x2605;", "\u2B50"):
+            self.assertIn("emoji", kt.content_reasons(text, ""), text)
+
+    def test_cjk_stays(self):
+        for text in ("新车到店", "カタカナ", "한국어"):
+            self.assertIn("CJK text", kt.content_reasons(text, ""), text)
+
+    def test_latin_arrows_and_entities_pass(self):
+        # In 3 of the 30 replayed compositions; the renderer has these glyphs
+        self.assertEqual(kt.content_reasons("Tap → now &#x203A; S$77,800 — ≥ 90% &amp; café", ""), [])
+
     def test_blend_alone_or_3d_alone_passes(self):
         self.assertEqual(kt.content_reasons(".a{mix-blend-mode:screen}", ""), [])
         self.assertEqual(kt.content_reasons(".a{transform-style:preserve-3d}", ""), [])

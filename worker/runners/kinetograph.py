@@ -2,7 +2,7 @@
 
 Kinetograph is a Chrome-free Rust/GPU renderer (PolyForm Small Business licence).
 We run our own fork, https://github.com/0xS4N4TG/kinetograph plus fx-library
-spikes/kinetograph/fork/0001-0021, packed on the PC and installed with
+spikes/kinetograph/fork/0001-0022, packed on the PC and installed with
   npm install <dist>\\*.tgz react@19.3.1 react-dom@19.3.1 --ignore-scripts
 
 This is not an engine of its own: a job stays engine `hyperframes`, and
@@ -22,7 +22,9 @@ WebGL, WebGPU, three.js and iframes (not what this renderer was proved on); FX
 modules that draw with those or with putImageData; data-fx-chain audio effects
 (flaky on Windows, crash the worker's renders under repeats); full-frame
 putImageData (correct but 2.4x slower); mix-blend-mode on a 3D layer (a known
-silent failure in the fork's compositor). `--strict` then refuses whatever the
+silent failure in the fork's compositor); emoji (its only emoji font is monochrome,
+and 13c65c26's 👇 did not draw at all, with no warning) and CJK text (none was
+replayed, and it needs a loaded font). `--strict` then refuses whatever the
 renderer knows it cannot draw. It cannot catch what it does not know about, which
 is why the routing comes first and _check_output() comes after.
 
@@ -65,6 +67,11 @@ _THREE_RE = re.compile(r"\bTHREE\.|three(?:\.module|\.min)?\.js|from\s+['\"]thre
 _WEBGPU_RE = re.compile(r"shaders\.iife")
 _BLEND_RE = re.compile(r"mix-blend-mode|mixBlendMode")
 _3D_RE = re.compile(r"preserve-3d|perspective\s*:|perspective\(|transformPerspective")
+# Written out, or as the entity or escape a builder often uses (13c65c26 had &#x1F447;).
+_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]"
+                       r"|&#x0*(?:1F[0-9A-F]{3}|2[67B][0-9A-F]{2}|FE0F);|&#1[23]\d{4};"
+                       r"|\\u\{?(?:1F[0-9A-F]{3}|D83[C-E])", re.I)
+_CJK_RE = re.compile(r"[\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]")
 
 
 def _at_least(ver, want):
@@ -157,6 +164,10 @@ def content_reasons(text, bundle):
         why.append("putImageData")
     if _BLEND_RE.search(text) and _3D_RE.search(text):
         why.append("blend mode with 3D")
+    if _EMOJI_RE.search(text):
+        why.append("emoji")
+    if _CJK_RE.search(text):
+        why.append("CJK text")
     # By mention, not by call syntax: the replay's call regex missed a TRAN-09 that
     # the delivery record shows. A false match here only costs the speed.
     used = sorted(hf_modules(bundle) & set(re.findall(r"\b[A-Z]{2,4}-\d{2}\b", text)))
