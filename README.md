@@ -148,6 +148,20 @@ for a genuinely fast preview.
 **Deploy on the render PC** (one-time): `git pull`, confirm `node -v` is 22+,
 restart the worker. First hyperframes job downloads the CLI and Chrome (~1-2 min).
 
+## Kinetograph path for hyperframes jobs (added 2026-10-31)
+
+Eligible `hyperframes` jobs can be drawn by our fork of Kinetograph, about 2.5x faster,
+with HyperFrames as the fallback on any failure. A job stays engine `hyperframes`; see
+`worker/runners/kinetograph.py` for who is eligible and why. Off by default.
+
+    KINETOGRAPH_CLI=C:\path	o	ool
+ode_modules\kinetograph\dist\cli.js
+    KINETOGRAPH_ROUTE=test     # off | test (only params.renderer="kinetograph") | on
+
+`phase` on a finished job says who drew it: `done: kinetograph 12.3 s`, or
+`done: hyperframes (kinetograph: <reason>)` after a fallback. Plain `done` means
+routing left it on HyperFrames. To turn it off, set `KINETOGRAPH_ROUTE=off` and restart.
+
 ## reference_extract engine (added 2026-09-02)
 
 `engine: "reference_extract"` measures a video into a `motion_spec` JSON for

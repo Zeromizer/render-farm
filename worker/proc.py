@@ -7,6 +7,7 @@ the parent.
 import os
 import signal
 import subprocess
+import threading
 import time
 
 WINDOWS = os.name == "nt"
@@ -49,10 +50,14 @@ def _kill_tree(proc):
     kill_pid_tree(proc.pid)
 
 
-def run_streaming(cmd, cwd, on_line, cancel_check, timeout_seconds, env=None):
+def run_streaming(cmd, cwd, on_line, cancel_check, timeout_seconds, env=None, watchdog=False):
     """Run cmd, calling on_line(line) per stdout line and cancel_check() every ~5s.
 
     Raises Canceled / TimedOut / RuntimeError(nonzero exit with output tail).
+
+    The timeout is checked as lines arrive, so a child that hangs silently outlives
+    it. watchdog=True kills the tree on time regardless, for a caller with a
+    fallback to run instead.
     """
     proc = subprocess.Popen(
         cmd,
@@ -68,6 +73,12 @@ def run_streaming(cmd, cwd, on_line, cancel_check, timeout_seconds, env=None):
     tail = []
     started = time.monotonic()
     last_cancel_check = started
+    expired = threading.Event()
+    timer = None
+    if watchdog:
+        timer = threading.Timer(timeout_seconds, lambda: (expired.set(), _kill_tree(proc)))
+        timer.daemon = True
+        timer.start()
     try:
         for line in proc.stdout:
             line = line.rstrip("\r\n")
@@ -86,7 +97,11 @@ def run_streaming(cmd, cwd, on_line, cancel_check, timeout_seconds, env=None):
                     raise Canceled()
         rc = proc.wait(timeout=60)
     finally:
+        if timer:
+            timer.cancel()
         if proc.poll() is None:
             _kill_tree(proc)
+    if expired.is_set():
+        raise TimedOut(f"exceeded {timeout_seconds}s")
     if rc != 0:
         raise RuntimeError(f"exit code {rc}: ...{chr(10).join(tail[-15:])}")

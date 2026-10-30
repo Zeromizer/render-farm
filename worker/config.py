@@ -76,6 +76,17 @@ LIGHT_LANE_MIN_AVAIL_RAM_GB = float(os.environ.get("LIGHT_LANE_MIN_AVAIL_RAM_GB"
 LIGHT_LANE_MIN_COMMIT_GB = float(os.environ.get("LIGHT_LANE_MIN_COMMIT_GB", "8"))
 LIGHT_LANE_MIN_FREE_VRAM_MIB = int(os.environ.get("LIGHT_LANE_MIN_FREE_VRAM_MIB", "2048"))
 
+# --- Kinetograph (worker/runners/kinetograph.py): faster HyperFrames renders ---
+# The fork's dist/cli.js; unset leaves every job on HyperFrames.
+KINETOGRAPH_CLI = os.environ.get("KINETOGRAPH_CLI", "")
+KINETOGRAPH_ROUTE = os.environ.get("KINETOGRAPH_ROUTE", "off")  # off | test | on
+KINETOGRAPH_CONCURRENCY = int(os.environ.get("KINETOGRAPH_CONCURRENCY", "4"))
+# Longest replayed render: 133.8 s. A hang past this costs the job a HyperFrames
+# render on top, so it stays well under a job's own timeout.
+KINETOGRAPH_TIMEOUT_SECONDS = int(os.environ.get("KINETOGRAPH_TIMEOUT_SECONDS", "600"))
+KINETOGRAPH_MIN_FREE_VRAM_MIB = int(os.environ.get("KINETOGRAPH_MIN_FREE_VRAM_MIB", "4096"))
+KINETOGRAPH_MIN_COMMIT_GB = float(os.environ.get("KINETOGRAPH_MIN_COMMIT_GB", "8"))
+
 # --- cloud GPU lane (RunPod; docs/cloud-gpu-brief.md) ---
 # On the cloud pod: the engines this worker claims (comma list). Set = cloud mode:
 # claim only these, no fetch lane, no patch library, exit (and terminate the pod)

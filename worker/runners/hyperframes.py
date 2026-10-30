@@ -29,6 +29,8 @@ params (jsonb):
                 same reason: params is one shared jsonb and `output` belongs to the
                 python engine.
   at            seconds into the composition for a still (default 0)
+  renderer      "hyperframes" keeps the job off Kinetograph, "kinetograph" asks for it while
+                KINETOGRAPH_ROUTE=test (runners/kinetograph.py, which also lists who is eligible)
   assets        manifest — handled by render_worker before this runner
 
 The CLI is not a project dependency: `hyperframes init` writes package.json scripts
@@ -53,6 +55,7 @@ _EXE = ".exe" if os.name == "nt" else ""
 
 import proc
 from git_cache import rmtree_robust
+from runners import kinetograph
 
 DEFAULT_VERSION = "0.8.26"
 FORMAT_OUT = {
@@ -268,6 +271,11 @@ def _run(job, repo, work_dir, tmp_dir, heartbeat, log, cancel_check, timeout_sec
         out_local = os.path.join(work_dir, f"out.{FORMAT_OUT[fmt][0]}")
     else:
         raise RuntimeError(f"unsupported format {fmt!r}; expected mp4|webm|mov|gif|png-sequence")
+
+    # After the BT.601 tagging above: a tagged source reads the same in both renderers.
+    if fmt == "mp4" and kinetograph.render(job, project_dir, entry, ver, quality, out_local, tmp_dir,
+                                           _ffmpeg_dir(), heartbeat, log, run_kw):
+        return (out_local, *FORMAT_OUT[fmt])
 
     cmd = cli + ["render", "--composition", entry, "--format", fmt, "--quality", quality,
                  "--output", out_local, "--json"]
