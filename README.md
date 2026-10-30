@@ -155,7 +155,6 @@ with HyperFrames as the fallback on any failure. A job stays engine `hyperframes
 `worker/runners/kinetograph.py` for who is eligible and why. Off by default.
 
     KINETOGRAPH_CLI=C:\path\to\tool\node_modules\kinetograph\dist\cli.js
-ode_modules\kinetograph\dist\cli.js
     KINETOGRAPH_ROUTE=test     # off | test (only params.renderer="kinetograph") | on
 
 `phase` on a finished job says who drew it: `done: kinetograph 12.3 s`, or
