@@ -6,6 +6,7 @@ import threading
 
 _guard = threading.Lock()
 _locks = {}
+_limits = {}
 
 
 def named(key):
@@ -15,3 +16,12 @@ def named(key):
         if lock is None:
             lock = _locks[key] = threading.RLock()
         return lock
+
+
+def limited(key, count):
+    """A semaphore for this key: at most count holders at once."""
+    with _guard:
+        slot = _limits.get(key)
+        if slot is None:
+            slot = _limits[key] = threading.BoundedSemaphore(max(1, count))
+        return slot

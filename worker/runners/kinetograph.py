@@ -45,6 +45,7 @@ import subprocess
 import time
 
 import config
+import locks
 import proc
 
 MIN_VERSION = (0, 8, 155)  # the HyperFrames behaviour the replay compared against
@@ -249,11 +250,16 @@ def render(job, project_dir, entry, version, quality, out_path, tmp_dir, ffmpeg_
     if why:
         log(f"kinetograph: hyperframes keeps this job ({'; '.join(why)})")
         return None
-    ok, reason = room()
-    if not ok:
-        log(f"kinetograph: hyperframes keeps this job ({reason})")
-        return None
+    with locks.limited("kinetograph", config.KINETOGRAPH_PARALLEL):
+        # In here, so a render that was waiting reads the box as it is now.
+        ok, reason = room()
+        if not ok:
+            log(f"kinetograph: hyperframes keeps this job ({reason})")
+            return None
+        return _draw(job, params, project_dir, entry, quality, out_path, tmp_dir, ffmpeg_dir, heartbeat, log, run_kw)
 
+
+def _draw(job, params, project_dir, entry, quality, out_path, tmp_dir, ffmpeg_dir, heartbeat, log, run_kw):
     entry_path = os.path.join(project_dir, entry)
     cli = config.KINETOGRAPH_CLI
     tool = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(cli))))  # <tool>\node_modules\kinetograph\dist\cli.js

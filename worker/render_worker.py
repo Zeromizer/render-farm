@@ -57,6 +57,7 @@ from still import make_still
 import fetch_lane
 import git_cache
 import light_lane
+import music_lane
 import locks
 import proc
 import venvs
@@ -68,12 +69,10 @@ from runners import (asset_check, audio_gen, blender, clip_edit, face_swap, foot
                      video_gen, video_split, voiceover)
 from videogen import comfy_client, ram_gate
 
-# Engines whose runners drive the headless ComfyUI; after one of these the
-# worker checks ComfyUI's host RAM (comfy_client.recycle_if_bloated).
-COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap"}
+# After a ComfyUI engine the worker checks ComfyUI's host RAM (comfy_client.recycle_if_bloated).
 # Plus python: spike scripts drive ComfyUI over HTTP and leave it bloated too
 # (2026-10-10: 16.3 GB after an H3 spike). Under the threshold it is a no-op.
-RECYCLE_AFTER = COMFY_ENGINES | {"python"}
+RECYCLE_AFTER = config.COMFY_ENGINES | {"python"}
 
 RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            "python": python_script.run,
@@ -156,6 +155,8 @@ def run_job(job, log=log):
     # (worker/light_lane.py): hold it from checkout until the render is done.
     repo_lock = (contextlib.nullcontext() if engine in NO_CLONE
                  else locks.named(f"repo:{git_cache.repo_dir(job['repo_url'])}"))
+    # One ComfyUI engine at a time, whichever lane it came from (worker/music_lane.py).
+    comfy_lock = locks.named("comfyui") if engine in config.COMFY_ENGINES else contextlib.nullcontext()
     with Heartbeat(jid) as hb:
         with repo_lock:
             if engine in NO_CLONE:
@@ -170,10 +171,11 @@ def run_job(job, log=log):
                     db.set_phase(jid, "syncing_assets", 2)
                     assets.ensure(manifest, repo, log)
 
-            db.set_phase(jid, "rendering", 2)
-            out_local, ext, content_type = runner(
-                job, repo, work_dir, hb, log, cancel_check, timeout_seconds
-            )
+            with comfy_lock:
+                db.set_phase(jid, "rendering", 2)
+                out_local, ext, content_type = runner(
+                    job, repo, work_dir, hb, log, cancel_check, timeout_seconds
+                )
 
         db.set_phase(jid, "uploading", 99)
         remote = db.upload_output(jid, out_local, ext, content_type)
@@ -256,15 +258,26 @@ def main():
     cloud_gated = set()
 
     light = None
+    music = None
+    lane_engines = set()
     heavy_exclude = set()
     if config.LIGHT_LANE:
         try:
-            heavy_exclude = light_lane.LIGHT_ENGINES | db.gated_engines()
+            lane_engines = set(light_lane.LIGHT_ENGINES)
+            heavy_exclude = lane_engines | db.gated_engines()
             light = light_lane.start(process_job, RESTART_FLAG,
                                      lambda m: log(f"[light] {m}"))
         except Exception as e:  # noqa: BLE001 - without the lane the loop takes every engine
+            lane_engines = set()
             heavy_exclude = set()
             log(f"light lane not started (continuing single-lane): {str(e)[:160]}")
+    if light is not None and config.MUSIC_LANE:
+        try:
+            music = music_lane.start(process_job, RESTART_FLAG, lambda m: log(f"[music] {m}"))
+            lane_engines |= music_lane.ENGINES
+            heavy_exclude |= music_lane.ENGINES
+        except Exception as e:  # noqa: BLE001 - without it the loop takes music as before
+            log(f"music lane not started (continuing): {str(e)[:160]}")
 
     claim_err_logged = False
     polls = 0
@@ -282,7 +295,7 @@ def main():
             try:
                 cloud_gated = db.gated_engines(config.CLOUD_CAPABILITY)
                 if light is not None:
-                    heavy_exclude = light_lane.LIGHT_ENGINES | db.gated_engines()
+                    heavy_exclude = lane_engines | db.gated_engines()
             except Exception:
                 pass
         if polls % 10 == 1:
@@ -294,6 +307,8 @@ def main():
             # Clean deploy: exit between jobs, the supervisor respawns us on the new code.
             if light is not None:
                 light_lane.drain(log)
+            if music is not None:
+                music_lane.drain(log)
             os.remove(RESTART_FLAG)
             log("restart requested: exiting between jobs")
             sys.exit(0)
@@ -318,7 +333,7 @@ def main():
         if not job:
             # Between jobs only, and with the light lane idle too, so nothing is
             # mid-render (the fetch lane only writes new assets, never reads old ones).
-            if time.time() - last_sweep > config.CLEANUP_EVERY_SECONDS and light_lane.is_idle():
+            if time.time() - last_sweep > config.CLEANUP_EVERY_SECONDS and light_lane.is_idle() and music_lane.is_idle():
                 sweep_caches()
                 last_sweep = time.time()
             time.sleep(config.POLL_SECONDS)
@@ -373,7 +388,8 @@ def process_job(job, log):
     """Run one claimed job to its final status. Called by this loop and by the
     light lane's thread (worker/light_lane.py), each with its own log."""
     jid = job["id"]
-    lane = "light" if threading.current_thread().name == "light-lane" else "main"
+    thread = threading.current_thread().name
+    lane = "light" if thread.startswith("light-lane") else "music" if thread == "music-lane" else "main"
     log(f"claimed {jid} engine={job['engine']} repo={job['repo_url']}@{job.get('git_ref')}")
     if lane == "main":
         # Tells the light lane what is running here; it stays off the box
@@ -395,14 +411,16 @@ def process_job(job, log):
         db.update_job(jid, {"status": "failed", "error": str(e)[:2000],
                             "phase": "failed", "completed_at": db.now_iso()})
         log(f"failed {jid}: {str(e)[:300]}")
-    # Here, between jobs, nothing of ours is using ComfyUI, so restarting it
+    # Holding the ComfyUI lock, nothing of ours is using it, so restarting it
     # cannot fail a job (2026-09-27: a restart from outside the worker did).
-    # These engines are never light-lane engines, so this is still the loop.
-    if job["engine"] in RECYCLE_AFTER:
+    # A job of another lane holding it means not now; the next one checks again.
+    if job["engine"] in RECYCLE_AFTER and locks.named("comfyui").acquire(blocking=False):
         try:
             comfy_client.recycle_if_bloated(log)
         except Exception as e:  # noqa: BLE001 - housekeeping must not stop the loop
             log(f"comfyui recycle error (ignored): {str(e)[:200]}")
+        finally:
+            locks.named("comfyui").release()
     if lane == "main":
         light_lane.main_engine[0] = None
 

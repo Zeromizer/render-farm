@@ -40,6 +40,7 @@ import re
 import shutil
 
 import config
+import locks
 import proc
 
 CODEC_EXT = {"h264": "mp4", "h265": "mp4", "vp8": "webm", "vp9": "webm",
@@ -129,8 +130,9 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         log(f"  {line}")
 
     log(f"rendering: {' '.join(cmd)}")
-    proc.run_streaming(cmd, cwd=project_dir, on_line=on_line,
-                       cancel_check=cancel_check, timeout_seconds=timeout_seconds)
+    with locks.named("chrome-render"):  # one Chrome render at a time, see hyperframes.py
+        proc.run_streaming(cmd, cwd=project_dir, on_line=on_line,
+                           cancel_check=cancel_check, timeout_seconds=timeout_seconds)
     if not os.path.exists(out_local):
         raise RuntimeError("remotion reported success but output file missing")
     return out_local, ext, content_type

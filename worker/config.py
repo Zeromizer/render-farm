@@ -75,12 +75,25 @@ LIGHT_LANE = os.environ.get("LIGHT_LANE", "0") in ("1", "true", "yes")
 LIGHT_LANE_MIN_AVAIL_RAM_GB = float(os.environ.get("LIGHT_LANE_MIN_AVAIL_RAM_GB", "16"))
 LIGHT_LANE_MIN_COMMIT_GB = float(os.environ.get("LIGHT_LANE_MIN_COMMIT_GB", "8"))
 LIGHT_LANE_MIN_FREE_VRAM_MIB = int(os.environ.get("LIGHT_LANE_MIN_FREE_VRAM_MIB", "2048"))
+# Light jobs at once (1 = the old single lane). Each engine still has its own limit,
+# light_lane.engine_limit, so a run of extracts cannot fill the slots.
+LIGHT_LANE_SLOTS = int(os.environ.get("LIGHT_LANE_SLOTS", "1"))
+
+# --- music lane (worker/music_lane.py): audio_gen beside the other lanes ---
+MUSIC_LANE = os.environ.get("MUSIC_LANE", "0") in ("1", "true", "yes")
+MUSIC_LANE_MIN_AVAIL_RAM_GB = float(os.environ.get("MUSIC_LANE_MIN_AVAIL_RAM_GB", "12"))
+MUSIC_LANE_MIN_FREE_VRAM_MIB = int(os.environ.get("MUSIC_LANE_MIN_FREE_VRAM_MIB", "4096"))
+# Engines whose runners drive the headless ComfyUI, one at a time (render_worker.run_job).
+COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap"}
 
 # --- Kinetograph (worker/runners/kinetograph.py): faster HyperFrames renders ---
 # The fork's dist/cli.js; unset leaves every job on HyperFrames.
 KINETOGRAPH_CLI = os.environ.get("KINETOGRAPH_CLI", "")
 KINETOGRAPH_ROUTE = os.environ.get("KINETOGRAPH_ROUTE", "off")  # off | test | on
 KINETOGRAPH_CONCURRENCY = int(os.environ.get("KINETOGRAPH_CONCURRENCY", "4"))
+# Renders at once. 2 from the PC's load test: 48/48 clean, byte-identical to solo, CPU
+# past that is the limit (each render slows 1.25x at 2, 1.5x at 4).
+KINETOGRAPH_PARALLEL = int(os.environ.get("KINETOGRAPH_PARALLEL", "2"))
 # Longest replayed render: 133.8 s. A hang past this costs the job a HyperFrames
 # render on top, so it stays well under a job's own timeout.
 KINETOGRAPH_TIMEOUT_SECONDS = int(os.environ.get("KINETOGRAPH_TIMEOUT_SECONDS", "600"))

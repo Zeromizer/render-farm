@@ -24,6 +24,7 @@ import config
 import db
 from fetch_lane import LANE_ENGINES
 from light_lane import LIGHT_ENGINES
+from music_lane import ENGINES as MUSIC_ENGINES
 from videogen import estimate
 
 OTHER_ENGINE_SECONDS = 180.0
@@ -85,8 +86,10 @@ def annotate(log):
     # The fetch lane's jobs never wait in this queue (worker/fetch_lane.py).
     rows = [r for r in rows if r["engine"] not in LANE_ENGINES]
     if config.LIGHT_LANE:
+        apart = MUSIC_ENGINES if config.MUSIC_LANE else set()
         queues = [[r for r in rows if r["engine"] in LIGHT_ENGINES],
-                  [r for r in rows if r["engine"] not in LIGHT_ENGINES]]
+                  [r for r in rows if r["engine"] in apart],
+                  [r for r in rows if r["engine"] not in LIGHT_ENGINES and r["engine"] not in apart]]
     else:
         queues = [rows]
     n = sum(_annotate_queue(q, log) for q in queues)

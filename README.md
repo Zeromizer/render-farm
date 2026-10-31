@@ -161,6 +161,23 @@ with HyperFrames as the fallback on any failure. A job stays engine `hyperframes
 `done: hyperframes (kinetograph: <reason>)` after a fallback. Plain `done` means
 routing left it on HyperFrames. To turn it off, set `KINETOGRAPH_ROUTE=off` and restart.
 
+## Parallel lanes (added 2026-10-31, the PC went to 64 GB)
+
+Both are off by default. In `.env`, with `LIGHT_LANE=1`:
+
+    LIGHT_LANE_SLOTS=4         # light jobs at once (1 = the old single lane)
+    MUSIC_LANE=1               # audio_gen on its own thread
+
+Each engine has its own limit inside the slots, `light_lane.engine_limit`: one of
+each, except hyperframes, which gets `KINETOGRAPH_PARALLEL` (2) with
+`KINETOGRAPH_ROUTE=on`. Only Kinetograph actually runs in parallel: HyperFrames and
+Remotion share one lock, because HyperFrames' frames changed under a parallel run.
+Past the first job on an idle box, every start has to clear the `LIGHT_LANE_MIN_*` bars.
+
+The music lane runs one bed at a time, since ComfyUI's queue is serial. Every ComfyUI
+engine in any lane holds `locks.named("comfyui")`, so a bed and a PC H3 job never
+overlap. To turn either off, set it back and restart.
+
 ## reference_extract engine (added 2026-09-02)
 
 `engine: "reference_extract"` measures a video into a `motion_spec` JSON for

@@ -3,7 +3,7 @@ so a 30 s hyperframes job no longer waits behind a 20 min H3 video_gen.
 
 Off unless LIGHT_LANE=1 in the .env. When it is on, the two lanes split the
 engines between them with no overlap:
-  light lane   LIGHT_ENGINES, one job at a time
+  light lane   LIGHT_ENGINES, up to LIGHT_LANE_SLOTS jobs, engine_limit() of each
   render loop  everything else (GPU / ComfyUI / TTS engines, python, blender,
                and any engine added later until it is listed here)
 Both claim with a conditional update (pending -> processing), atomic per row,
@@ -38,6 +38,12 @@ whoever queued it (_comfy_busy()). Only while the loop has a job: with the loop
 idle, ComfyUI's queue cannot be ours, and a prompt stuck there must not starve
 the lane. No answer from ComfyUI counts as not busy.
 
+Slots (2026-10-31, the PC went to 64 GB): each slot is a thread claiming as the
+single lane did. With another job already on the box the bars apply even when the
+render loop is idle; the first job on an idle box still always starts. HyperFrames
+and Remotion stay one at a time inside their runners, because HyperFrames' frames
+changed under a parallel run (Kinetograph's did not), so a slot may wait there.
+
 Shared caches (repo checkouts, venvs, assets) are serialised in worker/locks.py.
 Restart: the render loop drains this lane (stop claiming, finish the current
 job) before it exits on worker/restart-requested.
@@ -67,10 +73,14 @@ PAUSE_DURING = {e.strip() for e in os.environ.get("LIGHT_LANE_PAUSE_DURING", "vi
 PAUSE_ON_COMFY = os.environ.get("LIGHT_LANE_PAUSE_ON_COMFY", "1") not in ("0", "false", "no")
 # The engine the render loop is running now (set by render_worker.process_job).
 main_engine = [None]
+# What the music lane is running (set by music_lane).
+music_engine = [None]
 
 _stop = threading.Event()
-_idle = threading.Event()
+_idle = threading.Event()   # no light job running, in any slot
 _idle.set()
+_admit = threading.Lock()
+_running = {}               # engine -> jobs running now, under _admit
 _waiting_logged = [None]   # the reason last logged, so each new one is logged once
 
 
@@ -110,13 +120,16 @@ def _comfy_busy():
         return False
 
 
-def room():
-    """(ok, reason): whether the box has room to start a light job now."""
-    if main_engine[0] is None:
+def room(others_running=False):
+    """(ok, reason): whether the box has room to start a light job now.
+    others_running: another light job or a bed is on the box, so the bars apply
+    even with the render loop idle."""
+    if main_engine[0] is None and not others_running:
         return True, ""
     if main_engine[0] in PAUSE_DURING:
         return False, f"render loop is running {main_engine[0]}"
-    if PAUSE_ON_COMFY and _comfy_busy():
+    # A bed of the music lane is what the lane may run beside, so its prompt does not count.
+    if main_engine[0] is not None and PAUSE_ON_COMFY and music_engine[0] is None and _comfy_busy():
         return False, f"ComfyUI busy (render loop is running {main_engine[0]})"
     avail = psutil.virtual_memory().available / (1 << 30)
     if avail < config.LIGHT_LANE_MIN_AVAIL_RAM_GB:
@@ -137,6 +150,52 @@ def _pending_light():
     return bool(rows)
 
 
+def engine_limit(engine):
+    """Jobs of one engine at once. 1 unless it has been shown safe: two of an engine
+    was never exercised before slots, and one busy engine must not fill them all
+    (reference_extract is the lane's biggest user, 13 hours in 14 days)."""
+    if engine == "hyperframes" and config.KINETOGRAPH_CLI and config.KINETOGRAPH_ROUTE == "on":
+        return config.KINETOGRAPH_PARALLEL
+    return 1
+
+
+def _open_engines():
+    return {e for e in LIGHT_ENGINES if _running.get(e, 0) < engine_limit(e)}
+
+
+def _busy():
+    return any(_running.values())
+
+
+def _leave(engine):
+    with _admit:
+        _running[engine] -= 1
+        if not _busy():
+            _idle.set()
+
+
+def _claim_next():
+    """(job or None, wait reason or ""). Holding _admit makes the room reading, the
+    engine limits and the claim one step, so two slots cannot both act on one reading."""
+    with _admit:
+        ok, why = room(_busy() or music_engine[0] is not None)
+        if not ok:
+            return None, why
+        _idle.clear()
+        job = None
+        try:
+            open_engines = _open_engines()
+            # main_engine again: the loop may have taken a pause engine after room() looked
+            if open_engines and not _stop.is_set() and main_engine[0] not in PAUSE_DURING:
+                job = db.claim_conditional(include=open_engines)
+            if job:
+                _running[job["engine"]] = _running.get(job["engine"], 0) + 1
+        finally:
+            if not _busy():
+                _idle.set()
+        return job, ""
+
+
 def _loop(process_job, restart_flag, log):
     log(f"light lane started ({', '.join(sorted(LIGHT_ENGINES))})")
     err_logged = False
@@ -150,8 +209,8 @@ def _loop(process_job, restart_flag, log):
                 err_logged = False
                 _stop.wait(POLL_SECONDS)
                 continue
-            ok, why = room()
-            if not ok:
+            job, why = _claim_next()
+            if why:
                 if _waiting_logged[0] != why.split(" ")[0:2]:
                     log(f"waiting for room: {why}")
                     _waiting_logged[0] = why.split(" ")[0:2]
@@ -160,24 +219,14 @@ def _loop(process_job, restart_flag, log):
             if _waiting_logged[0]:
                 log("room again, claiming")
                 _waiting_logged[0] = None
-            _idle.clear()
-            if _stop.is_set():  # drain() started after the top-of-loop check
-                _idle.set()
-                break
-            if main_engine[0] in PAUSE_DURING:  # the loop took one after room() looked
-                _idle.set()
-                continue
-            job = db.claim_conditional(include=LIGHT_ENGINES)
             err_logged = False
         except Exception as e:  # noqa: BLE001
-            _idle.set()
             if not err_logged:
                 log(f"claim error (retrying quietly): {str(e)[:160]}")
                 err_logged = True
             _stop.wait(POLL_SECONDS * 5)
             continue
         if not job:
-            _idle.set()
             _stop.wait(POLL_SECONDS)
             continue
         try:
@@ -185,15 +234,18 @@ def _loop(process_job, restart_flag, log):
         except Exception as e:  # noqa: BLE001 - process_job records failures itself
             log(f"unexpected error after {job['id']}: {str(e)[:200]}")
         finally:
-            _idle.set()
+            _leave(job["engine"])
 
 
 def start(process_job, restart_flag, log):
-    """Run the lane on a daemon thread. log should mark its lines as the lane's."""
-    t = threading.Thread(target=_loop, args=(process_job, restart_flag, log),
-                         name="light-lane", daemon=True)
-    t.start()
-    return t
+    """Run the lane's slots on daemon threads; returns the first. log should mark
+    its lines as the lane's."""
+    threads = [threading.Thread(target=_loop, args=(process_job, restart_flag, log),
+                                name=f"light-lane-{i}", daemon=True)
+               for i in range(max(1, config.LIGHT_LANE_SLOTS))]
+    for t in threads:
+        t.start()
+    return threads[0]
 
 
 def is_idle():

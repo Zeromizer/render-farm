@@ -53,6 +53,7 @@ import zipfile
 
 _EXE = ".exe" if os.name == "nt" else ""
 
+import locks
 import proc
 from git_cache import rmtree_robust
 from runners import kinetograph
@@ -156,11 +157,12 @@ def _env(tmp_dir=None):
 
 def _ensure_browser(cli, project_dir, log, run_kw):
     ver = cli[-1]
-    if ver in _BROWSER_READY:
-        return
-    log("hyperframes: browser ensure (cached after the first run)")
-    proc.run_streaming(cli + ["browser", "ensure"], cwd=project_dir, env=_env(), **run_kw)
-    _BROWSER_READY.add(ver)
+    with locks.named("hyperframes-browser"):
+        if ver in _BROWSER_READY:
+            return
+        log("hyperframes: browser ensure (cached after the first run)")
+        proc.run_streaming(cli + ["browser", "ensure"], cwd=project_dir, env=_env(), **run_kw)
+        _BROWSER_READY.add(ver)
 
 
 def _at_least(ver, want):
@@ -320,7 +322,10 @@ def _run(job, repo, work_dir, tmp_dir, heartbeat, log, cancel_check, timeout_sec
             log(f"  {line[:400]}")
 
     log(f"rendering: {' '.join(cmd)}")
-    proc.run_streaming(cmd, cwd=project_dir, env=_env(tmp_dir), on_line=on_line, **run_kw)
+    # One Chrome render at a time: HyperFrames' frames changed under a parallel run
+    # (PC load test, 2026-10-30); Remotion takes the same lock.
+    with locks.named("chrome-render"):
+        proc.run_streaming(cmd, cwd=project_dir, env=_env(tmp_dir), on_line=on_line, **run_kw)
 
     if fmt == "png-sequence":
         files = sorted(os.path.join(dp, f) for dp, _, fs in os.walk(out_local) for f in fs)
