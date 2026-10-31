@@ -22,7 +22,8 @@ WebGL, WebGPU, three.js and iframes (not what this renderer was proved on); FX
 modules that draw with those or with putImageData; data-fx-chain audio effects
 (flaky on Windows, crash the worker's renders under repeats); full-frame
 putImageData (correct but 2.4x slower); mix-blend-mode on a 3D layer (a known
-silent failure in the fork's compositor); emoji in a composition that names no
+silent failure in the fork's compositor); SVG filters by url() (one silently
+dropped); emoji in a composition that names no
 colour emoji font (the fork would draw its bundled monochrome one, where Chrome
 draws colour, and --strict cannot see that); CJK text with no CJK font and vertical
 text (--strict refuses both; this only saves the wasted attempt). `--strict` then
@@ -69,6 +70,8 @@ _PIXELS_RE = re.compile(r"putImageData")
 _THREE_RE = re.compile(r"\bTHREE\.|three(?:\.module|\.min)?\.js|from\s+['\"]three['\"]")
 _WEBGPU_RE = re.compile(r"shaders\.iife")
 _BLEND_RE = re.compile(r"mix-blend-mode|mixBlendMode")
+# In CSS or a GSAP tween. A one-axis feGaussianBlur came out sharp with no warning (4e8e6e5e, 2026-10-31).
+_SVG_FILTER_RE = re.compile(r"filter[\"']?\s*:\s*[\"'`]?[^;}\n]*url\(", re.I)
 _3D_RE = re.compile(r"preserve-3d|perspective\s*:|perspective\(|transformPerspective")
 # Written out, or as the entity or escape a builder often uses (13c65c26 had &#x1F447;).
 _EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]"
@@ -171,6 +174,8 @@ def content_reasons(text, bundle):
         why.append("putImageData")
     if _BLEND_RE.search(text) and _3D_RE.search(text):
         why.append("blend mode with 3D")
+    if _SVG_FILTER_RE.search(text):
+        why.append("SVG filter")
     if _EMOJI_RE.search(text) and not _COLOUR_EMOJI_FONT_RE.search(text):
         why.append("emoji without a colour emoji font")
     if _CJK_RE.search(text) and not _CJK_FONT_RE.search(text):

@@ -46,6 +46,22 @@ class ChromeRunner(unittest.TestCase):
         self.assertGreaterEqual(config.HYPERFRAMES_PARALLEL, 1)
 
 
+class SvgFilter(unittest.TestCase):
+    def test_a_filter_by_url_stays_on_hyperframes(self):
+        for text in (".p-core { filter: url(#hblur-core); opacity: 0.92; }",
+                     "#s2.cool { filter: url(#wb-cool) saturate(0.85); }",
+                     '#c{filter:url("#rough")}',
+                     'tl.set(w, { filter: "url(#" + fid + ")" }, t);',
+                     'tl.set(w, { "filter": `url(#${id})` }, t);'):
+            self.assertIn("SVG filter", kt.content_reasons(text, ""), text)
+
+    def test_a_url_after_a_filter_is_not_one(self):
+        for text in (".a { filter: blur(4px); background: url(a.png); }",
+                     ".a{filter:none}.b{background:url(a.png)}",
+                     ".a { filter: brightness(1.1)\n  mask: url(#m); }"):
+            self.assertNotIn("SVG filter", kt.content_reasons(text, ""), text)
+
+
 class Enabled(unittest.TestCase):
     def check(self, cli, route, params, want):
         with mock.patch.object(config, "KINETOGRAPH_CLI", cli), mock.patch.object(config, "KINETOGRAPH_ROUTE", route):
