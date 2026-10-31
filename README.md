@@ -178,6 +178,12 @@ The music lane runs one bed at a time, since ComfyUI's queue is serial. Every Co
 engine in any lane, and matte for its VRAM, holds `locks.named("comfyui")`, so a bed
 never overlaps those. It does overlap python, which is why the lane exists. To turn either off, set it back and restart.
 
+Beside a `matte` job, light jobs must clear 4096 MiB free, not 2048. Its model takes up
+to 10.4 GB at once, so no light job starts from when it gets the GPU lock until 45 s
+after it starts, and it waits up to 120 s for 10500 MiB free if light jobs are running
+(`light_lane.clear_for_matte`; `MATTE_MIN_FREE_VRAM_MIB`, `MATTE_VRAM_WAIT_SECONDS`,
+`MATTE_LOAD_SECONDS`).
+
 ## reference_extract engine (added 2026-09-02)
 
 `engine: "reference_extract"` measures a video into a `motion_spec` JSON for

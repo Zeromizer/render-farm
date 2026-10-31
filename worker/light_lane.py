@@ -84,6 +84,7 @@ _running = {}               # engine -> jobs running now, under _admit
 _pending_lock = threading.Lock()
 _pending_seen = [-POLL_SECONDS, False]   # when last asked, and the answer
 _waiting_logged = [None]   # the reason last logged, so each new one is logged once
+_matte_hold_until = [0.0]  # monotonic time; no light job starts before it while a matte runs
 
 
 def may_recycle(lane):
@@ -137,6 +138,8 @@ def room(others_running=False):
         return True, ""
     if main_engine[0] in PAUSE_DURING:
         return False, f"render loop is running {main_engine[0]}"
+    if main_engine[0] == "matte" and time.monotonic() < _matte_hold_until[0]:
+        return False, "matte is loading"
     # A bed of the music lane is what the lane may run beside, so its prompt does not count.
     if main_engine[0] is not None and PAUSE_ON_COMFY and music_engine[0] is None and _comfy_busy():
         return False, f"ComfyUI busy (render loop is running {main_engine[0]})"
@@ -147,8 +150,10 @@ def room(others_running=False):
     if commit < config.LIGHT_LANE_MIN_COMMIT_GB:
         return False, f"commit headroom {commit:.1f} GB < {config.LIGHT_LANE_MIN_COMMIT_GB:g}"
     vram = _free_vram_mib()
-    if vram is not None and vram < config.LIGHT_LANE_MIN_FREE_VRAM_MIB:
-        return False, f"free VRAM {vram} MiB < {config.LIGHT_LANE_MIN_FREE_VRAM_MIB}"
+    # A render admitted at the usual bar beside a matte took the card to 431 MiB free (2026-10-31).
+    bar = config.KINETOGRAPH_MIN_FREE_VRAM_MIB if main_engine[0] == "matte" else config.LIGHT_LANE_MIN_FREE_VRAM_MIB
+    if vram is not None and vram < bar:
+        return False, f"free VRAM {vram} MiB < {bar}"
     return True, ""
 
 
@@ -277,6 +282,29 @@ def wait_for_light(log, max_wait_s=240):
         log(f"waiting up to {max_wait_s}s for the running light job to finish")
         if not _idle.wait(max_wait_s):
             log("light job still running; starting anyway")
+
+
+def clear_for_matte(log):
+    """Called by a matte job before it loads its model, holding the GPU lock. Unlike a
+    PAUSE_DURING job it runs beside light jobs, but it takes up to 10.4 GB in one step, which
+    the free VRAM bars cannot see coming: no light job starts until the model is on the card,
+    and the matte waits a bounded time for running ones to leave it room. Holding _admit to
+    set the hold lets a claim in progress finish first."""
+    with _admit:
+        _matte_hold_until[0] = float("inf")
+    try:
+        end = time.monotonic() + config.MATTE_VRAM_WAIT_SECONDS
+        while not _idle.is_set():
+            free = _free_vram_mib()
+            if free is None or free >= config.MATTE_MIN_FREE_VRAM_MIB:
+                break
+            if time.monotonic() >= end:
+                log(f"free VRAM {free} MiB; starting the matte anyway")
+                break
+            log(f"matte waiting for VRAM: {free} MiB free, wants {config.MATTE_MIN_FREE_VRAM_MIB}")
+            _idle.wait(POLL_SECONDS * 5)
+    finally:
+        _matte_hold_until[0] = time.monotonic() + config.MATTE_LOAD_SECONDS
 
 
 def drain(log, max_wait_s=None):

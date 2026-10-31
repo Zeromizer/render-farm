@@ -26,7 +26,9 @@ def _real_or_stub(name, **attrs):
 _real_or_stub("psutil")
 _real_or_stub("config", COMFYUI_URL="http://127.0.0.1:8188", LIGHT_LANE_MIN_AVAIL_RAM_GB=8, LIGHT_LANE_MIN_COMMIT_GB=8,
               LIGHT_LANE_MIN_FREE_VRAM_MIB=2048, LIGHT_LANE_SLOTS=4, KINETOGRAPH_CLI="", KINETOGRAPH_ROUTE="off",
-              KINETOGRAPH_PARALLEL=2, MUSIC_LANE_MIN_AVAIL_RAM_GB=12, MUSIC_LANE_MIN_FREE_VRAM_MIB=6500,
+              KINETOGRAPH_PARALLEL=2, KINETOGRAPH_MIN_FREE_VRAM_MIB=4096, MUSIC_LANE_MIN_AVAIL_RAM_GB=12,
+              MUSIC_LANE_MIN_FREE_VRAM_MIB=6500, MATTE_MIN_FREE_VRAM_MIB=10500, MATTE_VRAM_WAIT_SECONDS=120,
+              MATTE_LOAD_SECONDS=45,
               COMFY_ENGINES={"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap"},
               GPU_EXCLUSIVE_ENGINES={"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap", "matte"})
 _real_or_stub("db")
@@ -47,6 +49,7 @@ class Base(unittest.TestCase):
         ll._stop.clear()
         ll.main_engine[0] = None
         ll.music_engine[0] = None
+        ll._matte_hold_until[0] = 0.0
         ml._stop.clear()
         ml._idle.set()
         self.addCleanup(ll._running.clear)
@@ -86,6 +89,64 @@ class Limits(Base):
         self.assertNotIn("hyperframes", ll._open_engines())
 
 
+class MatteClearing(Base):
+    def wait_for(self, readings, seconds=120):
+        """clear_for_matte with light jobs running, a VRAM reading per pass and no real waiting."""
+        ll._idle.clear()
+        self.addCleanup(ll._idle.set)
+        logged = []
+        clock = [0.0]
+
+        def wait(timeout):
+            clock[0] += timeout
+            return False
+        with mock.patch.object(ll, "_free_vram_mib", side_effect=readings), \
+                mock.patch.object(ll.time, "monotonic", lambda: clock[0]), \
+                mock.patch.object(ll._idle, "wait", wait), \
+                mock.patch.object(config, "MATTE_MIN_FREE_VRAM_MIB", 10500), \
+                mock.patch.object(config, "MATTE_VRAM_WAIT_SECONDS", seconds), \
+                mock.patch.object(config, "MATTE_LOAD_SECONDS", 45):
+            ll.clear_for_matte(logged.append)
+        return logged, clock[0]
+
+    def test_room_on_the_card_starts_at_once(self):
+        logged, waited = self.wait_for([12000])
+        self.assertEqual((logged, waited), ([], 0.0))
+
+    def test_it_waits_for_renders_to_leave_room(self):
+        logged, waited = self.wait_for([6000, 8000, 11000])
+        self.assertEqual(waited, 2 * ll.POLL_SECONDS * 5)
+        self.assertEqual(len(logged), 2)
+
+    def test_the_wait_is_bounded(self):
+        logged, waited = self.wait_for([6000] * 20, seconds=30)
+        self.assertEqual(waited, 30.0)
+        self.assertIn("anyway", logged[-1])
+
+    def test_no_reading_does_not_hold_it_up(self):
+        self.assertEqual(self.wait_for([None])[1], 0.0)
+
+    def test_an_idle_lane_has_nothing_to_wait_for(self):
+        with mock.patch.object(ll, "_free_vram_mib", side_effect=AssertionError("no need to read")):
+            ll.clear_for_matte(lambda m: None)
+
+    def test_the_hold_runs_past_the_wait_for_the_load(self):
+        _, waited = self.wait_for([11000])
+        self.assertEqual(ll._matte_hold_until[0], waited + 45)
+
+    def test_light_jobs_are_held_during_the_wait(self):
+        seen = []
+
+        def reading():
+            seen.append(ll._matte_hold_until[0])
+            return 11000
+        ll._idle.clear()
+        self.addCleanup(ll._idle.set)
+        with mock.patch.object(ll, "_free_vram_mib", reading):
+            ll.clear_for_matte(lambda m: None)
+        self.assertEqual(seen, [float("inf")])
+
+
 class Admission(Base):
     def test_first_job_on_an_idle_box_always_starts(self):
         self.box(ram=1, commit=1, vram=1)
@@ -112,6 +173,30 @@ class Admission(Base):
         self.box()
         ll.main_engine[0] = "video_gen"
         self.assertFalse(ll.room(True)[0])
+
+    def test_beside_a_matte_a_light_job_meets_the_higher_bar(self):
+        self.box(vram=3545)  # 9280578e came in at this and took the card to 431 MiB free
+        ll.main_engine[0] = "matte"
+        ok, why = ll.room(True)
+        self.assertFalse(ok)
+        self.assertIn("< 4096", why)
+
+    def test_the_usual_bar_applies_beside_anything_else(self):
+        self.box(vram=3545)
+        ll.main_engine[0] = "python"
+        self.assertEqual(ll.room(True), (True, ""))
+
+    def test_nothing_starts_while_a_matte_loads(self):
+        self.box()
+        ll.main_engine[0] = "matte"
+        ll._matte_hold_until[0] = time.monotonic() + 30
+        self.assertEqual(ll.room(False), (False, "matte is loading"))
+
+    def test_a_hold_outlives_no_matte(self):
+        self.box()
+        ll._matte_hold_until[0] = time.monotonic() + 30
+        ll.main_engine[0] = "python"
+        self.assertEqual(ll.room(True), (True, ""))
 
     def test_a_bed_makes_the_next_light_job_meet_the_bars(self):
         self.box(ram=2)

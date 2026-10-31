@@ -89,6 +89,11 @@ COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fi
 # One of these at a time, whichever lane it came from (render_worker.run_job). matte is here
 # for its VRAM, not for ComfyUI: a bed (6 GB) beside a p90 matte (9.9 GB) is over the 16 GB card.
 GPU_EXCLUSIVE_ENGINES = COMFY_ENGINES | {"matte"}
+# A matte beside light jobs (light_lane.clear_for_matte). The largest birefnet peaks at 10.4 GB
+# over the box's baseline (48 jobs, 2026-10-31), and is on the card within about 20 s of starting.
+MATTE_MIN_FREE_VRAM_MIB = int(os.environ.get("MATTE_MIN_FREE_VRAM_MIB", "10500"))
+MATTE_VRAM_WAIT_SECONDS = int(os.environ.get("MATTE_VRAM_WAIT_SECONDS", "120"))
+MATTE_LOAD_SECONDS = int(os.environ.get("MATTE_LOAD_SECONDS", "45"))
 
 # --- Kinetograph (worker/runners/kinetograph.py): faster HyperFrames renders ---
 # The fork's dist/cli.js; unset leaves every job on HyperFrames.

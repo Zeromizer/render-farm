@@ -173,6 +173,8 @@ def run_job(job, log=log):
 
             with comfy_lock:
                 db.set_phase(jid, "rendering", 2)
+                if engine == "matte" and config.LIGHT_LANE:
+                    light_lane.clear_for_matte(log)
                 out_local, ext, content_type = runner(
                     job, repo, work_dir, hb, log, cancel_check, timeout_seconds
                 )
