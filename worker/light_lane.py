@@ -81,6 +81,8 @@ _idle = threading.Event()   # no light job running, in any slot
 _idle.set()
 _admit = threading.Lock()
 _running = {}               # engine -> jobs running now, under _admit
+_pending_lock = threading.Lock()
+_pending_seen = [-POLL_SECONDS, False]   # when last asked, and the answer
 _waiting_logged = [None]   # the reason last logged, so each new one is logged once
 
 
@@ -151,10 +153,14 @@ def room(others_running=False):
 
 
 def _pending_light():
-    rows = (db.sb.table("farm_render_jobs").select("id")
-            .in_("engine", sorted(LIGHT_ENGINES)).eq("status", "pending")
-            .eq("cancel_requested", False).limit(1).execute().data)
-    return bool(rows)
+    """Is a light job waiting? Asked once per poll however many slots ask."""
+    with _pending_lock:
+        if time.monotonic() - _pending_seen[0] >= POLL_SECONDS:
+            rows = (db.sb.table("farm_render_jobs").select("id")
+                    .in_("engine", sorted(LIGHT_ENGINES)).eq("status", "pending")
+                    .eq("cancel_requested", False).limit(1).execute().data)
+            _pending_seen[:] = [time.monotonic(), bool(rows)]
+        return _pending_seen[1]
 
 
 def engine_limit(engine):
@@ -185,15 +191,17 @@ def _claim_next():
     """(job or None, wait reason or ""). Holding _admit makes the room reading, the
     engine limits and the claim one step, so two slots cannot both act on one reading."""
     with _admit:
+        open_engines = _open_engines()
+        if not open_engines:  # no reading of the box, no query: nothing could start
+            return None, ""
         ok, why = room(_busy() or music_engine[0] is not None)
         if not ok:
             return None, why
         _idle.clear()
         job = None
         try:
-            open_engines = _open_engines()
             # main_engine again: the loop may have taken a pause engine after room() looked
-            if open_engines and not _stop.is_set() and main_engine[0] not in PAUSE_DURING:
+            if not _stop.is_set() and main_engine[0] not in PAUSE_DURING:
                 job = db.claim_conditional(include=open_engines)
             if job:
                 _running[job["engine"]] = _running.get(job["engine"], 0) + 1

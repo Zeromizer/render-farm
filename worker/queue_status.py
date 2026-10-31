@@ -17,6 +17,7 @@ With the light lane on (worker/light_lane.py) its engines form their own
 queue: a hyperframes job waits only behind light jobs, never behind an H3.
 """
 import statistics
+import threading
 import time
 from datetime import datetime
 
@@ -28,11 +29,15 @@ from music_lane import ENGINES as MUSIC_ENGINES
 from videogen import estimate
 
 OTHER_ENGINE_SECONDS = 180.0
+# Every job's heartbeat calls annotate, so parallel lanes multiplied it: at most once in this long.
+MIN_ANNOTATE_SECONDS = 15.0
 HISTORY_TTL_S = 600.0
 HISTORY_ROWS = 400
 MIN_PROGRESS_FOR_PROJECTION = 5
 _last = {}
 _history = {"at": 0.0, "median": {}}
+_annotating = threading.Lock()
+_last_annotate = [-MIN_ANNOTATE_SECONDS]
 
 
 def _ts(s):
@@ -80,6 +85,19 @@ def _remaining(row):
 
 
 def annotate(log):
+    """Refresh the waiting rows, unless another thread is at it or just did."""
+    if not _annotating.acquire(blocking=False):
+        return 0
+    try:
+        if time.monotonic() - _last_annotate[0] < MIN_ANNOTATE_SECONDS:
+            return 0
+        _last_annotate[0] = time.monotonic()
+        return _annotate_all(log)
+    finally:
+        _annotating.release()
+
+
+def _annotate_all(log):
     rows = (db.sb.table("farm_render_jobs")
             .select("id,engine,params,priority,created_at,claimed_at,status,progress,phase,cancel_requested")
             .in_("status", ["pending", "processing"]).order("priority").order("created_at").execute().data)
