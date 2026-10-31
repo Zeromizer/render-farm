@@ -67,6 +67,28 @@ class PseudoEffect(unittest.TestCase):
             self.assertNotIn(self.REASON, kt.content_reasons(text, ""), text)
 
 
+class WordGap(unittest.TestCase):
+    REASON = "word spans after a line break"
+    CSS = ".w { display: inline-block; }\n"
+
+    def test_inline_block_words_after_a_break_stay_on_hyperframes(self):
+        for html in ('<div><span class="w">If</span> <span class="w">row</span><br><span class="w">is</span> <span class="w">full</span></div>',
+                     '<div class="hook"><span class="w">Buying</span><br /><span class="w">first</span> <span class="w">used</span><br /></div>',
+                     '<p>a<br>\n<b class="w">one</b>\n<b class="w">two</b></p>'):
+            self.assertIn(self.REASON, kt.content_reasons(self.CSS + html, ""), html)
+
+    def test_what_drew_right_is_fine(self):
+        for html in ('<div><span class="w">If</span> <span class="w">row</span></div>',                 # no break
+                     '<div><span class="w">is</span>&nbsp;<span class="w">full</span><br>x</div>',       # a real space
+                     '<div>x<br><span class="w">is</span>&nbsp;<span class="w">full</span></div>',
+                     '<div>x<br></div><div><span class="w">is</span> <span class="w">full</span></div>',  # a div per line
+                     '<div>x<br><span class="w">a</span><span class="w">b</span></div>'):                # no gap
+            self.assertNotIn(self.REASON, kt.content_reasons(self.CSS + html, ""), html)
+
+    def test_plain_spans_are_fine(self):
+        self.assertNotIn(self.REASON, kt.content_reasons("<div>x<br><span>is</span> <span>full</span></div>", ""))
+
+
 class Enabled(unittest.TestCase):
     def check(self, cli, route, params, want):
         with mock.patch.object(config, "KINETOGRAPH_CLI", cli), mock.patch.object(config, "KINETOGRAPH_ROUTE", route):
