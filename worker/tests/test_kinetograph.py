@@ -109,11 +109,28 @@ class Content(unittest.TestCase):
         # 13c65c26 lost a pointing hand with no warning; it was written as an entity
         for text in ("Pick \U0001F447", "&#x1F447;", "&#x1f447;", "&#128071;", "&#129300;", r"'\u{1F447}'", r"'\uD83D\uDC47'",
                      "\u2605 5.0", "&#x2605;", "\u2B50"):
-            self.assertIn("emoji", kt.content_reasons(text, ""), text)
+            self.assertIn("emoji without a colour emoji font", kt.content_reasons(text, ""), text)
 
-    def test_cjk_stays(self):
-        for text in ("新车到店", "カタカナ", "한국어"):
-            self.assertIn("CJK text", kt.content_reasons(text, ""), text)
+    def test_emoji_goes_when_the_composition_draws_it_with_a_colour_font(self):
+        # 13c65c26's markup: the span names the font, and the fork paints its COLR glyphs
+        css = '.e { font-family: "Noto Color Emoji", sans-serif; }'
+        self.assertEqual(kt.content_reasons(css + " Pick &#x1F447;", ""), [])
+
+    def test_a_colour_font_only_linked_is_not_enough(self):
+        link = '<link href="https://fonts.googleapis.com/css2?family=Noto+Color+Emoji" /> Pick &#x1F447;'
+        self.assertEqual(kt.content_reasons(link, ""), ["emoji without a colour emoji font"])
+
+    def test_cjk_stays_without_a_cjk_font(self):
+        for text in ("\u65b0\u8f66\u5230\u5e97", "\u30ab\u30bf\u30ab\u30ca", "\ud55c\uad6d\uc5b4"):
+            self.assertEqual(kt.content_reasons(text, ""), ["CJK text without a CJK font"], text)
+
+    def test_cjk_goes_with_a_cjk_font(self):
+        for font in ("family=Noto+Sans+SC:wght@700", 'font-family: "Noto Serif TC"', 'font-family: "Noto Sans CJK SC"'):
+            self.assertEqual(kt.content_reasons(font + " \u65b0\u8f66", ""), [], font)
+
+    def test_vertical_text_stays(self):
+        for css in (".a{writing-mode:vertical-rl}", ".a { -webkit-writing-mode: vertical-lr }", ".a{writing-mode: tb-rl}"):
+            self.assertEqual(kt.content_reasons(css, ""), ["vertical text"], css)
 
     def test_latin_arrows_and_entities_pass(self):
         # In 3 of the 30 replayed compositions; the renderer has these glyphs
