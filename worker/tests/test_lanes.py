@@ -26,8 +26,9 @@ def _real_or_stub(name, **attrs):
 _real_or_stub("psutil")
 _real_or_stub("config", COMFYUI_URL="http://127.0.0.1:8188", LIGHT_LANE_MIN_AVAIL_RAM_GB=8, LIGHT_LANE_MIN_COMMIT_GB=8,
               LIGHT_LANE_MIN_FREE_VRAM_MIB=2048, LIGHT_LANE_SLOTS=4, KINETOGRAPH_CLI="", KINETOGRAPH_ROUTE="off",
-              KINETOGRAPH_PARALLEL=2, MUSIC_LANE_MIN_AVAIL_RAM_GB=12, MUSIC_LANE_MIN_FREE_VRAM_MIB=4096,
-              COMFY_ENGINES={"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap"})
+              KINETOGRAPH_PARALLEL=2, MUSIC_LANE_MIN_AVAIL_RAM_GB=12, MUSIC_LANE_MIN_FREE_VRAM_MIB=6500,
+              COMFY_ENGINES={"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap"},
+              GPU_EXCLUSIVE_ENGINES={"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap", "matte"})
 _real_or_stub("db")
 
 import config  # noqa: E402
@@ -210,6 +211,24 @@ class MusicRoom(Base):
             ll.main_engine[0] = engine
             self.assertFalse(ml.room()[0], engine)
 
+    def test_waits_for_matte(self):
+        # Its VRAM, not ComfyUI: a p90 matte beside a bed is over the card
+        self.box()
+        ll.main_engine[0] = "matte"
+        self.assertIn("matte", ml.room()[1])
+
+    def test_matte_shares_the_lock_with_every_comfy_engine(self):
+        self.assertIn("matte", config.GPU_EXCLUSIVE_ENGINES)
+        self.assertLessEqual(config.COMFY_ENGINES, config.GPU_EXCLUSIVE_ENGINES)
+        self.assertNotIn("python", config.GPU_EXCLUSIVE_ENGINES)
+
+    def test_a_bed_needs_room_for_its_real_peak(self):
+        self.box(vram=6000)
+        self.assertIn("VRAM", ml.room()[1])
+        mock.patch.stopall()
+        self.box(vram=7000)
+        self.assertEqual(ml.room(), (True, ""))
+
     def test_waits_for_comfy_busy_from_outside(self):
         self.box(comfy=True)
         self.assertIn("ComfyUI busy", ml.room()[1])
@@ -260,6 +279,19 @@ class MusicLoop(Base):
         self.run_once({"id": "m", "engine": "audio_gen"}, work=boom)
         self.assertIsNone(ll.music_engine[0])
         self.assertTrue(ml.is_idle())
+
+
+class Recycle(Base):
+    def test_the_loop_decides_for_itself(self):
+        ll.main_engine[0] = "python"
+        self.assertTrue(ll.may_recycle("main"))
+
+    def test_a_bed_cannot_restart_comfy_under_a_python_spike(self):
+        ll.main_engine[0] = "python"
+        self.assertFalse(ll.may_recycle("music"))
+
+    def test_a_bed_may_recycle_with_the_loop_idle(self):
+        self.assertTrue(ll.may_recycle("music"))
 
 
 class Locks(unittest.TestCase):

@@ -175,8 +175,8 @@ Remotion share one lock, because HyperFrames' frames changed under a parallel ru
 Past the first job on an idle box, every start has to clear the `LIGHT_LANE_MIN_*` bars.
 
 The music lane runs one bed at a time, since ComfyUI's queue is serial. Every ComfyUI
-engine in any lane holds `locks.named("comfyui")`, so a bed and a PC H3 job never
-overlap. To turn either off, set it back and restart.
+engine in any lane, and matte for its VRAM, holds `locks.named("comfyui")`, so a bed
+never overlaps those. It does overlap python, which is why the lane exists. To turn either off, set it back and restart.
 
 ## reference_extract engine (added 2026-09-02)
 

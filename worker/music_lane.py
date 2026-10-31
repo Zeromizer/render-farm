@@ -7,17 +7,20 @@ loop only claims by engine list when the lanes are on. One job at a time, becaus
 ComfyUI's queue is serial; a second bed in parallel would need a second ComfyUI.
 
 ComfyUI is shared, so nothing else may use it meanwhile. render_worker.run_job
-holds locks.named("comfyui") around every COMFY_ENGINES runner, which is what
-makes this safe: audio_gen swaps comfy_client.sampling_progress for the whole
-process, /free drops whatever is loaded, and tts_guard is not re-entrant. This
-lane also stays off while the render loop runs a ComfyUI engine, and while
-anything else has ComfyUI busy (a python spike drives it over HTTP, unseen by the
-lock). Music still yields to video the way it did: a PC H3 job waits at most for
-the bed in progress.
+holds locks.named("comfyui") around every GPU_EXCLUSIVE_ENGINES runner, which is
+what makes this safe: audio_gen swaps comfy_client.sampling_progress for the whole
+process, /free drops whatever is loaded, and tts_guard is not re-entrant. That list
+also has matte, for its VRAM. This lane stays off while the render loop runs one of
+them, and while anything else has ComfyUI busy (a python spike drives it over HTTP,
+unseen by the lock). Music still yields to video the way it did: a PC H3 job waits
+at most for the bed in progress.
 
-Admission reads the box as light_lane does. Free VRAM is read with the TTS workers
-still holding their 6-8 GB, which the job pauses, so the bar is below what YuE2 peaks
-at (5-10 GB).
+python is the reason for the lane, so it is not on that list: every long wait for a
+bed in those 14 days was behind one.
+
+Admission reads the box as light_lane does. 265 beds peaked at 6.05 GB over the
+baseline, and the bar is set so one fits. TTS auto-start has been off since
+2026-09-23, so nothing frees VRAM when the job pauses it.
 
 Restart: the render loop drains this lane too before it exits.
 """
@@ -42,7 +45,7 @@ _waiting_logged = [None]
 def room():
     """(ok, reason): whether a bed may start now."""
     engine = light_lane.main_engine[0]
-    if engine in config.COMFY_ENGINES or engine in light_lane.PAUSE_DURING:
+    if engine in config.GPU_EXCLUSIVE_ENGINES or engine in light_lane.PAUSE_DURING:
         return False, f"render loop is running {engine}"
     if light_lane._comfy_busy():
         return False, "ComfyUI busy"

@@ -155,8 +155,8 @@ def run_job(job, log=log):
     # (worker/light_lane.py): hold it from checkout until the render is done.
     repo_lock = (contextlib.nullcontext() if engine in NO_CLONE
                  else locks.named(f"repo:{git_cache.repo_dir(job['repo_url'])}"))
-    # One ComfyUI engine at a time, whichever lane it came from (worker/music_lane.py).
-    comfy_lock = locks.named("comfyui") if engine in config.COMFY_ENGINES else contextlib.nullcontext()
+    # One at a time, whichever lane it came from (worker/music_lane.py).
+    comfy_lock = locks.named("comfyui") if engine in config.GPU_EXCLUSIVE_ENGINES else contextlib.nullcontext()
     with Heartbeat(jid) as hb:
         with repo_lock:
             if engine in NO_CLONE:
@@ -414,7 +414,8 @@ def process_job(job, log):
     # Holding the ComfyUI lock, nothing of ours is using it, so restarting it
     # cannot fail a job (2026-09-27: a restart from outside the worker did).
     # A job of another lane holding it means not now; the next one checks again.
-    if job["engine"] in RECYCLE_AFTER and locks.named("comfyui").acquire(blocking=False):
+    if (job["engine"] in RECYCLE_AFTER and light_lane.may_recycle(lane)
+            and locks.named("comfyui").acquire(blocking=False)):
         try:
             comfy_client.recycle_if_bloated(log)
         except Exception as e:  # noqa: BLE001 - housekeeping must not stop the loop

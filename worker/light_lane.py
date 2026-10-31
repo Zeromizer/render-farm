@@ -84,6 +84,13 @@ _running = {}               # engine -> jobs running now, under _admit
 _waiting_logged = [None]   # the reason last logged, so each new one is logged once
 
 
+def may_recycle(lane):
+    """Whether a job that just ended in this lane may restart an idle ComfyUI. A python
+    spike in the render loop drives ComfyUI with no lock, and between its prompts the
+    queue looks empty, so only the loop itself may decide while it has a job."""
+    return lane == "main" or main_engine[0] is None
+
+
 def _commit_free_gb():
     """System commit headroom (what WinError 1455 runs out of), in GB."""
     class MS(ctypes.Structure):

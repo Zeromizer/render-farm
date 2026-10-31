@@ -365,8 +365,9 @@ def _snapshot(cli, project_dir, entry, params, work_dir, tmp_dir, heartbeat, log
         shutil.copy2(os.path.join(project_dir, entry), index)
     log(f"snapshot: {' '.join(cmd)}" + (f" (entry {entry} swapped into index.html)" if swap else ""))
     try:
-        proc.run_streaming(cmd, cwd=project_dir, env=_env(tmp_dir),
-                           on_line=lambda l: log(f"  {_clean(l)[:400]}"), **run_kw)
+        with locks.named("chrome-render"):
+            proc.run_streaming(cmd, cwd=project_dir, env=_env(tmp_dir),
+                               on_line=lambda l: log(f"  {_clean(l)[:400]}"), **run_kw)
     finally:
         if backup:
             shutil.copy2(backup, index)

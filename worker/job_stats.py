@@ -32,6 +32,7 @@ STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "job_stats
 _GB = 1 << 30
 _active_lock = threading.Lock()
 _active = [0]   # jobs currently inside a JobStats, across lanes
+_write_lock = threading.Lock()   # two jobs of different lanes can finish together
 
 
 def _gpu():
@@ -176,7 +177,7 @@ class JobStats:
             "comfyui_peak_gb": round(self.comfy_peak / _GB, 2) if self.comfy_peak else None,
             "cpu_avg": avg(self.cpu), "cpu_peak": max(self.cpu) if self.cpu else None,
         }
-        with open(STATS_FILE, "a", encoding="utf-8") as f:
+        with _write_lock, open(STATS_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
         self.log(f"stats {self.job_id} {self.engine} {rec['seconds']}s"
                  f"{' (overlapped)' if self.max_concurrent > 1 else ''}: "
