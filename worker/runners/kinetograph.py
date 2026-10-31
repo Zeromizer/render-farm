@@ -2,7 +2,7 @@
 
 Kinetograph is a Chrome-free Rust/GPU renderer (PolyForm Small Business licence).
 We run our own fork, https://github.com/0xS4N4TG/kinetograph plus fx-library
-spikes/kinetograph/fork/0001-0026, packed on the PC and installed with
+spikes/kinetograph/fork/0001-0027, packed on the PC and installed with
   npm install <dist>\\*.tgz react@19.3.1 react-dom@19.3.1 --ignore-scripts
 
 This is not an engine of its own: a job stays engine `hyperframes`, and
@@ -22,9 +22,8 @@ WebGL, WebGPU, three.js and iframes (not what this renderer was proved on); FX
 modules that draw with those or with putImageData; data-fx-chain audio effects
 (flaky on Windows, crash the worker's renders under repeats); full-frame
 putImageData (correct but 2.4x slower); mix-blend-mode on a 3D layer (a known
-silent failure in the fork's compositor); inline-block words after a <br> (the
-fork loses the spaces between them, with no warning); the DENZA brand font (drawn
-too high, with no warning); emoji in a composition that names no
+silent failure in the fork's compositor); the DENZA brand font (drawn too high,
+with no warning); emoji in a composition that names no
 colour emoji font (the fork would draw its bundled monochrome one, where Chrome
 draws colour, and --strict cannot see that); CJK text with no CJK font and vertical
 text (--strict refuses both; this only saves the wasted attempt). `--strict` then
@@ -71,10 +70,6 @@ _PIXELS_RE = re.compile(r"putImageData")
 _THREE_RE = re.compile(r"\bTHREE\.|three(?:\.module|\.min)?\.js|from\s+['\"]three['\"]")
 _WEBGPU_RE = re.compile(r"shaders\.iife")
 _BLEND_RE = re.compile(r"mix-blend-mode|mixBlendMode")
-# Past a <br>, the space between two inline-block words is lost, no warning: "isfullmostweeks," in
-# 722fa49b, on 1553b79f and ecce9678. Plain spans, a div per line and &nbsp; drew right (build26.py spaces).
-_WORD_GAP_RE = re.compile(r"<br\s*/?>(?:(?!</(?:div|p|h[1-6])\b).){0,4000}?</(?:span|b|i|em|strong)>\s+<(?:span|b|i|em|strong)\b", re.I | re.S)
-_INLINE_BLOCK_RE = re.compile(r"display\s*:\s*inline-block", re.I)
 # This font draws about 10 px high at 76 px, no warning, in all 4 DENZA videos read (build26.py sweep): the
 # fork places it differently from Chrome. Aileron, Montserrat, Oswald and Roboto matched.
 _HIGH_FONT_RE = re.compile(r"font-family\s*:[^;}]*URW[ +]Form[ +]Expand", re.I)
@@ -180,8 +175,6 @@ def content_reasons(text, bundle):
         why.append("putImageData")
     if _BLEND_RE.search(text) and _3D_RE.search(text):
         why.append("blend mode with 3D")
-    if _WORD_GAP_RE.search(text) and _INLINE_BLOCK_RE.search(text):
-        why.append("word spans after a line break")
     if _HIGH_FONT_RE.search(text):
         why.append("URW Form Expand")
     if _EMOJI_RE.search(text) and not _COLOUR_EMOJI_FONT_RE.search(text):
