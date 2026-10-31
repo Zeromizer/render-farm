@@ -174,19 +174,7 @@ def _run(job, log):
 
 
 def _claim():
-    rows = (db.sb.table("farm_render_jobs")
-            .select("id,attempts,max_attempts")
-            .eq("engine", ENGINE).eq("status", "pending").eq("cancel_requested", False)
-            .order("priority").order("created_at").limit(5).execute().data) or []
-    for r in rows:
-        won = (db.sb.table("farm_render_jobs")
-               .update({"status": "processing", "claimed_at": db.now_iso(),
-                        "heartbeat_at": db.now_iso(), "attempts": (r.get("attempts") or 0) + 1,
-                        "progress": 0, "phase": "downloading", "error": None})
-               .eq("id", r["id"]).eq("status", "pending").execute().data)
-        if won:
-            return won[0]
-    return None
+    return db.claim_conditional(include={ENGINE}, phase="downloading")
 
 
 def _loop(log):

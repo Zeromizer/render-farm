@@ -88,6 +88,10 @@ class Claim(unittest.TestCase):
         job = self.db.claim_conditional(include={"hyperframes"})
         self.assertEqual(job["id"], "j")
 
+    def test_the_fetch_lane_names_its_own_first_phase(self):
+        job = self.db.claim_conditional(include={"url_fetch"}, phase="downloading")
+        self.assertEqual(job["phase"], "downloading")
+
     def test_a_lost_reply_on_a_landed_claim_is_still_ours(self):
         # 5af15c24: the row went to processing, no slot ran it, and reclaim failed it
         self.box["lost_reply"] = True

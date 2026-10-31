@@ -52,7 +52,7 @@ def claim_job():
     return rows[0] if rows else None
 
 
-def claim_conditional(include=None, exclude=(), created_before=None, claimed_by=None):
+def claim_conditional(include=None, exclude=(), created_before=None, claimed_by=None, phase="cloning"):
     """Claim the next pending job (priority, then age) whose engine is in include
     / not in exclude, as claim_farm_job() would set it. A conditional update,
     atomic per row: used when the light lane splits engines between two claimers
@@ -75,7 +75,7 @@ def claim_conditional(include=None, exclude=(), created_before=None, claimed_by=
             won = (sb.table("farm_render_jobs")
                    .update({"status": "processing", "claimed_at": stamp, "heartbeat_at": stamp,
                             "attempts": (r.get("attempts") or 0) + 1, "progress": 0,
-                            "phase": "cloning", "error": None,
+                            "phase": phase, "error": None,
                             **({"claimed_by": claimed_by} if claimed_by else {})})
                    .eq("id", r["id"]).eq("status", "pending").execute().data)
         except (httpx.TransportError, httpcore.ProtocolError):
