@@ -2,7 +2,7 @@
 
 Kinetograph is a Chrome-free Rust/GPU renderer (PolyForm Small Business licence).
 We run our own fork, https://github.com/0xS4N4TG/kinetograph plus fx-library
-spikes/kinetograph/fork/0001-0027, packed on the PC and installed with
+spikes/kinetograph/fork/0001-0029, packed on the PC and installed with
   npm install <dist>\\*.tgz react@19.3.1 react-dom@19.3.1 --ignore-scripts
 
 This is not an engine of its own: a job stays engine `hyperframes`, and
@@ -31,8 +31,8 @@ refuses whatever the
 renderer knows it cannot draw. It cannot catch what it does not know about, which
 is why the routing comes first and _check_output() comes after.
 
-Job shapes never replayed stay on HyperFrames too. The CLI has no --fps and
-no alpha output; resolution and variables have no equivalent; `gpu` asks for
+Job shapes never replayed stay on HyperFrames too. The CLI has no alpha
+output; resolution and variables have no equivalent; `gpu` asks for
 NVENC; a non-root entry resolves its assets from another directory.
 
 Third-party code: the render gets an allowlisted environment, because the
@@ -113,7 +113,7 @@ def shape_reasons(params, entry, version, quality):
     why = []
     if (params.get("format") or "mp4") != "mp4":
         why.append(f"format {params.get('format')}")
-    for key in ("fps", "resolution", "variables", "gpu", "project_dir"):
+    for key in ("resolution", "variables", "gpu", "project_dir"):
         if params.get(key):
             why.append(key)
     if os.path.dirname(entry.replace("\\", "/")):
@@ -271,6 +271,8 @@ def _draw(job, params, project_dir, entry, quality, out_path, tmp_dir, ffmpeg_di
     tool = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(cli))))  # <tool>\node_modules\kinetograph\dist\cli.js
     cmd = [shutil.which("node") or "node", cli, "render", entry_path, "-o", out_path, "--crf", str(crf_for(params, quality)),
            "--concurrency", str(config.KINETOGRAPH_CONCURRENCY), "--strict"]
+    if params.get("fps"):
+        cmd += ["--fps", str(int(params["fps"]))]
 
     def on_line(raw):
         m = _PROGRESS_RE.search(raw)

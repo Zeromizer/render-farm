@@ -85,7 +85,8 @@ class Shape(unittest.TestCase):
         self.assertEqual(self.reasons(quality="draft"), [])
 
     def test_shapes_with_no_equivalent_stay(self):
-        for params in ({"fps": 24}, {"resolution": "portrait-4k"}, {"variables": {"a": 1}}, {"gpu": True},
+        self.assertEqual(self.reasons({"fps": 24}), [])
+        for params in ({"resolution": "portrait-4k"}, {"variables": {"a": 1}}, {"gpu": True},
                        {"project_dir": "fx/TYPE-01"}, {"format": "webm"}):
             self.assertTrue(self.reasons(params), params)
 
@@ -244,6 +245,19 @@ class Render(unittest.TestCase):
         self.assertIn("--strict", self.cmd)
         self.assertEqual(self.cmd[self.cmd.index("--crf") + 1], "16")
         self.assertEqual(self.cmd[self.cmd.index("--concurrency") + 1], "4")
+
+    def test_a_job_fps_reaches_the_cli(self):
+        self.job["params"]["fps"] = 24.0
+        self.child("import sys\nopen(sys.argv[1], 'wb').write(b'x')\n")
+        self.probe_says(**self.GOOD)
+        self.assertEqual(self.render(), self.out)
+        self.assertEqual(self.cmd[self.cmd.index("--fps") + 1], "24")
+
+    def test_no_fps_flag_without_one(self):
+        self.child("import sys\nopen(sys.argv[1], 'wb').write(b'x')\n")
+        self.probe_says(**self.GOOD)
+        self.render()
+        self.assertNotIn("--fps", self.cmd)
 
     def test_the_render_cannot_see_the_workers_secrets(self):
         self.child("import sys\nopen(sys.argv[1], 'wb').write(b'x')\n")
