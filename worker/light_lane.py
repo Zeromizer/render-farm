@@ -173,7 +173,9 @@ def engine_limit(engine):
     was never exercised before slots, and one busy engine must not fill them all
     (reference_extract is the lane's biggest user, 13 hours in 14 days)."""
     if engine == "hyperframes" and config.KINETOGRAPH_CLI and config.KINETOGRAPH_ROUTE == "on":
-        return config.KINETOGRAPH_PARALLEL
+        # Beside a matte, one: when a hold ends two slots can claim in the same second, and
+        # neither render has loaded when the other reads free VRAM, so the bar cannot stop them.
+        return 1 if main_engine[0] == "matte" else config.KINETOGRAPH_PARALLEL
     return 1
 
 

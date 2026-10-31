@@ -76,6 +76,12 @@ class Limits(Base):
         with mock.patch.object(config, "KINETOGRAPH_CLI", ""):
             self.assertEqual(ll.engine_limit("hyperframes"), 1)
 
+    def test_hyperframes_runs_one_beside_a_matte(self):
+        ll.main_engine[0] = "matte"
+        self.assertEqual(ll.engine_limit("hyperframes"), 1)
+        ll.main_engine[0] = "python"
+        self.assertEqual(ll.engine_limit("hyperframes"), 2)
+
     def test_every_other_engine_is_one(self):
         for engine in ll.LIGHT_ENGINES - {"hyperframes"}:
             self.assertEqual(ll.engine_limit(engine), 1, engine)
