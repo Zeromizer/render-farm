@@ -68,6 +68,16 @@ class WordGap(unittest.TestCase):
         self.assertNotIn(self.REASON, kt.content_reasons("<div>x<br><span>is</span> <span>full</span></div>", ""))
 
 
+class HighFont(unittest.TestCase):
+    REASON = "URW Form Expand"
+
+    def test_the_denza_font_stays_on_hyperframes(self):
+        self.assertIn(self.REASON, kt.content_reasons('.copy { font-family: "URW Form Expand", "Archivo", sans-serif; }', ""))
+
+    def test_a_font_file_nothing_uses_is_fine(self):
+        self.assertNotIn(self.REASON, kt.content_reasons('/* URW Form Expand */ .a { font-family: "Roboto"; }', ""))
+
+
 class Enabled(unittest.TestCase):
     def check(self, cli, route, params, want):
         with mock.patch.object(config, "KINETOGRAPH_CLI", cli), mock.patch.object(config, "KINETOGRAPH_ROUTE", route):
