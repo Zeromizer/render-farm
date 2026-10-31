@@ -2,7 +2,7 @@
 
 Kinetograph is a Chrome-free Rust/GPU renderer (PolyForm Small Business licence).
 We run our own fork, https://github.com/0xS4N4TG/kinetograph plus fx-library
-spikes/kinetograph/fork/0001-0024, packed on the PC and installed with
+spikes/kinetograph/fork/0001-0026, packed on the PC and installed with
   npm install <dist>\\*.tgz react@19.3.1 react-dom@19.3.1 --ignore-scripts
 
 This is not an engine of its own: a job stays engine `hyperframes`, and
@@ -22,9 +22,8 @@ WebGL, WebGPU, three.js and iframes (not what this renderer was proved on); FX
 modules that draw with those or with putImageData; data-fx-chain audio effects
 (flaky on Windows, crash the worker's renders under repeats); full-frame
 putImageData (correct but 2.4x slower); mix-blend-mode on a 3D layer (a known
-silent failure in the fork's compositor); opacity or a filter on ::before and
-::after (the fork draws the layer plain, with no warning); inline-block words after a
-<br> (the fork loses the spaces between them, with no warning); emoji in a composition that names no
+silent failure in the fork's compositor); inline-block words after a <br> (the
+fork loses the spaces between them, with no warning); emoji in a composition that names no
 colour emoji font (the fork would draw its bundled monochrome one, where Chrome
 draws colour, and --strict cannot see that); CJK text with no CJK font and vertical
 text (--strict refuses both; this only saves the wasted attempt). `--strict` then
@@ -71,9 +70,6 @@ _PIXELS_RE = re.compile(r"putImageData")
 _THREE_RE = re.compile(r"\bTHREE\.|three(?:\.module|\.min)?\.js|from\s+['\"]three['\"]")
 _WEBGPU_RE = re.compile(r"shaders\.iife")
 _BLEND_RE = re.compile(r"mix-blend-mode|mixBlendMode")
-# A ::before drew opaque and sharp with opacity 0.38 or 0 and any filter, no warning; the same layer as
-# a real element matched Chrome, SVG filter included (4e8e6e5e, fx-library blurtest.py, 2026-10-31).
-_PSEUDO_EFFECT_RE = re.compile(r"::?(?:before|after)\b[^{}]*\{[^{}]*?(?<!\w)(?:opacity|filter|mix-blend-mode)\s*:", re.I)
 # Past a <br>, the space between two inline-block words is lost, no warning: "isfullmostweeks," in
 # 722fa49b, on 1553b79f and ecce9678. Plain spans, a div per line and &nbsp; drew right (build26.py spaces).
 _WORD_GAP_RE = re.compile(r"<br\s*/?>(?:(?!</(?:div|p|h[1-6])\b).){0,4000}?</(?:span|b|i|em|strong)>\s+<(?:span|b|i|em|strong)\b", re.I | re.S)
@@ -180,8 +176,6 @@ def content_reasons(text, bundle):
         why.append("putImageData")
     if _BLEND_RE.search(text) and _3D_RE.search(text):
         why.append("blend mode with 3D")
-    if _PSEUDO_EFFECT_RE.search(text):
-        why.append("effect on a pseudo-element")
     if _WORD_GAP_RE.search(text) and _INLINE_BLOCK_RE.search(text):
         why.append("word spans after a line break")
     if _EMOJI_RE.search(text) and not _COLOUR_EMOJI_FONT_RE.search(text):

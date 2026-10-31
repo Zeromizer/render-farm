@@ -46,27 +46,6 @@ class ChromeRunner(unittest.TestCase):
         self.assertGreaterEqual(config.HYPERFRAMES_PARALLEL, 1)
 
 
-class PseudoEffect(unittest.TestCase):
-    REASON = "effect on a pseudo-element"
-
-    def test_opacity_or_a_filter_on_a_pseudo_element_stays_on_hyperframes(self):
-        for text in ('.power::before {\n  content: "POWER"; position: absolute;\n  filter: url(#g); opacity: 0.38;\n}',
-                     '.a::after{content:"";opacity:.5}',
-                     ".a:before { filter: blur(4px); }",
-                     ".a:hover::after { -webkit-filter: blur(4px); }",
-                     ".a::before { backdrop-filter: blur(4px); }",
-                     ".a::after { mix-blend-mode: screen; }"):
-            self.assertIn(self.REASON, kt.content_reasons(text, ""), text)
-
-    def test_a_filter_on_a_real_element_is_fine(self):
-        # the same blur drew right on a real element, and 13c65c26 and 5bf92d70 passed with theirs
-        for text in (".p-core { filter: url(#hblur-core); opacity: 0.92; }",
-                     'rig.style.filter = "url(#mb)";',
-                     '<g filter="url(#b)"></g>',
-                     '.a::before { content: ""; background: red; }\n.b { opacity: 0.5; filter: blur(2px); }'):
-            self.assertNotIn(self.REASON, kt.content_reasons(text, ""), text)
-
-
 class WordGap(unittest.TestCase):
     REASON = "word spans after a line break"
     CSS = ".w { display: inline-block; }\n"
