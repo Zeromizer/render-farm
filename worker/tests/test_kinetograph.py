@@ -46,20 +46,25 @@ class ChromeRunner(unittest.TestCase):
         self.assertGreaterEqual(config.HYPERFRAMES_PARALLEL, 1)
 
 
-class SvgFilter(unittest.TestCase):
-    def test_a_filter_by_url_stays_on_hyperframes(self):
-        for text in (".p-core { filter: url(#hblur-core); opacity: 0.92; }",
-                     "#s2.cool { filter: url(#wb-cool) saturate(0.85); }",
-                     '#c{filter:url("#rough")}',
-                     'tl.set(w, { filter: "url(#" + fid + ")" }, t);',
-                     'tl.set(w, { "filter": `url(#${id})` }, t);'):
-            self.assertIn("SVG filter", kt.content_reasons(text, ""), text)
+class PseudoEffect(unittest.TestCase):
+    REASON = "effect on a pseudo-element"
 
-    def test_a_url_after_a_filter_is_not_one(self):
-        for text in (".a { filter: blur(4px); background: url(a.png); }",
-                     ".a{filter:none}.b{background:url(a.png)}",
-                     ".a { filter: brightness(1.1)\n  mask: url(#m); }"):
-            self.assertNotIn("SVG filter", kt.content_reasons(text, ""), text)
+    def test_opacity_or_a_filter_on_a_pseudo_element_stays_on_hyperframes(self):
+        for text in ('.power::before {\n  content: "POWER"; position: absolute;\n  filter: url(#g); opacity: 0.38;\n}',
+                     '.a::after{content:"";opacity:.5}',
+                     ".a:before { filter: blur(4px); }",
+                     ".a:hover::after { -webkit-filter: blur(4px); }",
+                     ".a::before { backdrop-filter: blur(4px); }",
+                     ".a::after { mix-blend-mode: screen; }"):
+            self.assertIn(self.REASON, kt.content_reasons(text, ""), text)
+
+    def test_a_filter_on_a_real_element_is_fine(self):
+        # the same blur drew right on a real element, and 13c65c26 and 5bf92d70 passed with theirs
+        for text in (".p-core { filter: url(#hblur-core); opacity: 0.92; }",
+                     'rig.style.filter = "url(#mb)";',
+                     '<g filter="url(#b)"></g>',
+                     '.a::before { content: ""; background: red; }\n.b { opacity: 0.5; filter: blur(2px); }'):
+            self.assertNotIn(self.REASON, kt.content_reasons(text, ""), text)
 
 
 class Enabled(unittest.TestCase):
