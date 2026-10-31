@@ -53,6 +53,7 @@ import zipfile
 
 _EXE = ".exe" if os.name == "nt" else ""
 
+import config
 import locks
 import proc
 from git_cache import rmtree_robust
@@ -322,9 +323,9 @@ def _run(job, repo, work_dir, tmp_dir, heartbeat, log, cancel_check, timeout_sec
             log(f"  {line[:400]}")
 
     log(f"rendering: {' '.join(cmd)}")
-    # One Chrome render at a time: HyperFrames' frames changed under a parallel run
-    # (PC load test, 2026-10-30); Remotion takes the same lock.
-    with locks.named("chrome-render"):
+    # Two Chrome renders at once change a frame no more than two solo renders differ, near
+    # enough (fx-library hfpair.py, 2026-10-31). Remotion was not measured: it runs alone.
+    with locks.limited("chrome-render", config.HYPERFRAMES_PARALLEL):
         proc.run_streaming(cmd, cwd=project_dir, env=_env(tmp_dir), on_line=on_line, **run_kw)
 
     if fmt == "png-sequence":
@@ -365,7 +366,7 @@ def _snapshot(cli, project_dir, entry, params, work_dir, tmp_dir, heartbeat, log
         shutil.copy2(os.path.join(project_dir, entry), index)
     log(f"snapshot: {' '.join(cmd)}" + (f" (entry {entry} swapped into index.html)" if swap else ""))
     try:
-        with locks.named("chrome-render"):
+        with locks.limited("chrome-render", config.HYPERFRAMES_PARALLEL):
             proc.run_streaming(cmd, cwd=project_dir, env=_env(tmp_dir),
                                on_line=lambda l: log(f"  {_clean(l)[:400]}"), **run_kw)
     finally:

@@ -169,10 +169,12 @@ Both are off by default. In `.env`, with `LIGHT_LANE=1`:
     MUSIC_LANE=1               # audio_gen on its own thread
 
 Each engine has its own limit inside the slots, `light_lane.engine_limit`: one of
-each, except hyperframes, which gets `KINETOGRAPH_PARALLEL` (2) with
-`KINETOGRAPH_ROUTE=on`. Only Kinetograph actually runs in parallel: HyperFrames and
-Remotion share one lock, because HyperFrames' frames changed under a parallel run.
-Past the first job on an idle box, every start has to clear the `LIGHT_LANE_MIN_*` bars.
+each, except hyperframes, which gets `HYPERFRAMES_PARALLEL` (2), whichever renderer
+draws the job. Two Chrome renders at once stayed at solo's own variation and ran 1.5x
+faster (fx-library `hfpair.py`), and 3 or 4 gained nothing. Remotion was not measured,
+so it runs alone, with no Chrome render beside it; every Remotion job in the two weeks
+to 2026-10-31 came from one repo, so the repo lock kept them serial anyway. `.env`
+`HYPERFRAMES_PARALLEL=1` turns this off. Past the first job on an idle box, every start has to clear the `LIGHT_LANE_MIN_*` bars.
 
 The music lane runs one bed at a time, since ComfyUI's queue is serial. Every ComfyUI
 engine in any lane, and matte for its VRAM, holds `locks.named("comfyui")`, so a bed

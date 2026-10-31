@@ -26,7 +26,8 @@ def _real_or_stub(name, **attrs):
 _real_or_stub("psutil")
 _real_or_stub("config", COMFYUI_URL="http://127.0.0.1:8188", LIGHT_LANE_MIN_AVAIL_RAM_GB=8, LIGHT_LANE_MIN_COMMIT_GB=8,
               LIGHT_LANE_MIN_FREE_VRAM_MIB=2048, LIGHT_LANE_SLOTS=4, KINETOGRAPH_CLI="", KINETOGRAPH_ROUTE="off",
-              KINETOGRAPH_PARALLEL=2, KINETOGRAPH_MIN_FREE_VRAM_MIB=4096, MUSIC_LANE_MIN_AVAIL_RAM_GB=12,
+              KINETOGRAPH_PARALLEL=2, HYPERFRAMES_PARALLEL=2, KINETOGRAPH_MIN_FREE_VRAM_MIB=4096,
+              MUSIC_LANE_MIN_AVAIL_RAM_GB=12,
               MUSIC_LANE_MIN_FREE_VRAM_MIB=6500, MATTE_MIN_FREE_VRAM_MIB=10500, MATTE_VRAM_WAIT_SECONDS=120,
               MATTE_LOAD_SECONDS=45,
               COMFY_ENGINES={"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap"},
@@ -53,7 +54,8 @@ class Base(unittest.TestCase):
         ml._stop.clear()
         ml._idle.set()
         self.addCleanup(ll._running.clear)
-        for name, value in (("KINETOGRAPH_CLI", "cli.js"), ("KINETOGRAPH_ROUTE", "on"), ("KINETOGRAPH_PARALLEL", 2)):
+        for name, value in (("KINETOGRAPH_CLI", "cli.js"), ("KINETOGRAPH_ROUTE", "on"), ("KINETOGRAPH_PARALLEL", 2),
+                            ("HYPERFRAMES_PARALLEL", 2)):
             p = mock.patch.object(config, name, value)
             p.start()
             self.addCleanup(p.stop)
@@ -69,11 +71,13 @@ class Base(unittest.TestCase):
 
 
 class Limits(Base):
-    def test_hyperframes_runs_parallel_only_with_kinetograph_on(self):
+    def test_hyperframes_runs_parallel_with_or_without_kinetograph(self):
         self.assertEqual(ll.engine_limit("hyperframes"), 2)
-        with mock.patch.object(config, "KINETOGRAPH_ROUTE", "test"):
-            self.assertEqual(ll.engine_limit("hyperframes"), 1)
-        with mock.patch.object(config, "KINETOGRAPH_CLI", ""):
+        with mock.patch.object(config, "KINETOGRAPH_ROUTE", "off"):
+            self.assertEqual(ll.engine_limit("hyperframes"), 2)
+
+    def test_one_setting_turns_it_off(self):
+        with mock.patch.object(config, "HYPERFRAMES_PARALLEL", 1):
             self.assertEqual(ll.engine_limit("hyperframes"), 1)
 
     def test_hyperframes_runs_one_beside_a_matte(self):
@@ -93,6 +97,63 @@ class Limits(Base):
         self.assertIn("hyperframes", left)
         ll._running["hyperframes"] = 2
         self.assertNotIn("hyperframes", ll._open_engines())
+
+
+class ChromeLock(unittest.TestCase):
+    """HyperFrames shares chrome-render in twos; Remotion takes all of it."""
+
+    def setUp(self):
+        self.key = f"chrome-{self.id()}"
+
+    def in_thread(self):
+        entered = threading.Event()
+        leave = threading.Event()
+
+        def run():
+            with locks.exclusive(self.key, 2):
+                entered.set()
+                leave.wait(5)
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        self.addCleanup(t.join, 5)
+        self.addCleanup(leave.set)
+        return entered, leave
+
+    def test_two_share_it_and_a_third_waits(self):
+        slot = locks.limited(self.key, 2)
+        self.assertTrue(slot.acquire(blocking=False))
+        self.assertTrue(slot.acquire(blocking=False))
+        self.assertFalse(slot.acquire(blocking=False))
+        slot.release()
+        slot.release()
+
+    def test_remotion_waits_for_every_holder(self):
+        slot = locks.limited(self.key, 2)
+        slot.acquire()
+        slot.acquire()
+        entered, _ = self.in_thread()
+        self.assertFalse(entered.wait(0.1))
+        slot.release()
+        self.assertFalse(entered.wait(0.1))
+        slot.release()
+        self.assertTrue(entered.wait(2))
+
+    def test_nothing_starts_beside_remotion(self):
+        slot = locks.limited(self.key, 2)
+        entered, leave = self.in_thread()
+        self.assertTrue(entered.wait(2))
+        self.assertFalse(slot.acquire(blocking=False))
+        leave.set()
+        self.assertTrue(slot.acquire(timeout=2))
+        slot.release()
+
+    def test_two_remotions_cannot_each_hold_a_place(self):
+        first, leave_first = self.in_thread()
+        second, leave_second = self.in_thread()
+        self.assertTrue(first.wait(2) or second.wait(2))
+        leave_first.set()
+        leave_second.set()
+        self.assertTrue(first.wait(2) and second.wait(2))
 
 
 class MatteClearing(Base):

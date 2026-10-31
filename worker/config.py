@@ -103,6 +103,9 @@ KINETOGRAPH_CONCURRENCY = int(os.environ.get("KINETOGRAPH_CONCURRENCY", "4"))
 # Renders at once. 2 from the PC's load test: 48/48 clean, byte-identical to solo, CPU
 # past that is the limit (each render slows 1.25x at 2, 1.5x at 4).
 KINETOGRAPH_PARALLEL = int(os.environ.get("KINETOGRAPH_PARALLEL", "2"))
+# hyperframes jobs at once, whichever renderer draws them. 2 measured at solo's own variation
+# and 1.5x (fx-library hfpair.py, 2026-10-31); 3 and 4 gained nothing. 1 turns it off.
+HYPERFRAMES_PARALLEL = int(os.environ.get("HYPERFRAMES_PARALLEL", "2"))
 # Longest replayed render: 133.8 s. A hang past this costs the job a HyperFrames
 # render on top, so it stays well under a job's own timeout.
 KINETOGRAPH_TIMEOUT_SECONDS = int(os.environ.get("KINETOGRAPH_TIMEOUT_SECONDS", "600"))

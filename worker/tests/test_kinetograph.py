@@ -22,7 +22,7 @@ def _real_or_stub(name, **attrs):
         sys.modules[name] = stub
 
 
-_real_or_stub("config", KINETOGRAPH_CLI="", KINETOGRAPH_ROUTE="off", KINETOGRAPH_CONCURRENCY=4,
+_real_or_stub("config", KINETOGRAPH_CLI="", KINETOGRAPH_ROUTE="off", KINETOGRAPH_CONCURRENCY=4, HYPERFRAMES_PARALLEL=2,
               KINETOGRAPH_TIMEOUT_SECONDS=600, KINETOGRAPH_MIN_FREE_VRAM_MIB=4096, KINETOGRAPH_MIN_COMMIT_GB=8)
 
 import config  # noqa: E402
@@ -35,6 +35,15 @@ FX.define("TYPE-01", { in(t) { t.to(el, {y: 0}); } });
 FX.define("CAM-18", { in(t) { x.putImageData(id, 0, 0); } });
 """
 ROOT = '<div id="root" data-composition-id="main" data-start="0" data-duration="6" data-fps="30"></div>'
+
+
+class ChromeRunner(unittest.TestCase):
+    def test_the_runners_can_read_the_chrome_limit(self):
+        # the path no test here draws: a missing import fails every Chrome render, not one
+        from runners import hyperframes, remotion
+        self.assertIs(hyperframes.config, config)
+        self.assertIs(remotion.config, config)
+        self.assertGreaterEqual(config.HYPERFRAMES_PARALLEL, 1)
 
 
 class Enabled(unittest.TestCase):

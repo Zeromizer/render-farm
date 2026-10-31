@@ -2,6 +2,7 @@
 venvs, the asset cache). One job at a time never needed them; with the light
 lane (worker/light_lane.py) a remotion render and a python job could otherwise
 checkout two refs into the same repo dir, or build the same venv twice."""
+import contextlib
 import threading
 
 _guard = threading.Lock()
@@ -25,3 +26,18 @@ def limited(key, count):
         if slot is None:
             slot = _limits[key] = threading.BoundedSemaphore(max(1, count))
         return slot
+
+
+@contextlib.contextmanager
+def exclusive(key, count):
+    """Every place of limited(key, count): alone among its holders. named(key) keeps two of
+    these from each holding some places and waiting for the rest."""
+    slot = limited(key, count)
+    with named(key):
+        for _ in range(max(1, count)):
+            slot.acquire()
+        try:
+            yield
+        finally:
+            for _ in range(max(1, count)):
+                slot.release()
