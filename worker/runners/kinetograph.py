@@ -2,7 +2,7 @@
 
 Kinetograph is a Chrome-free Rust/GPU renderer (PolyForm Small Business licence).
 We run our own fork, https://github.com/0xS4N4TG/kinetograph plus fx-library
-spikes/kinetograph/fork/0001-0040, packed on the PC and installed with
+spikes/kinetograph/fork/0001-0044, packed on the PC and installed with
   npm install <dist>\\*.tgz react@19.3.1 react-dom@19.3.1 --ignore-scripts
 
 This is not an engine of its own: a job stays engine `hyperframes`, and
@@ -22,11 +22,9 @@ WebGL, WebGPU, three.js and iframes (not what this renderer was proved on); FX
 modules that draw with those or with putImageData; data-fx-chain audio effects
 (flaky on Windows, crash the worker's renders under repeats); full-frame
 putImageData (correct but much slower); emoji in a composition that names no
-colour emoji font (the fork would draw its bundled monochrome one, where Chrome
-draws colour, and --strict cannot see that); CJK text with no CJK font and vertical
-text (--strict refuses both; this only saves the wasted attempt). `--strict` then
-refuses whatever the
-renderer knows it cannot draw. It cannot catch what it does not know about, which
+colour emoji font, CJK text with no CJK font and vertical text (--strict refuses
+all three; this only saves the wasted attempt). `--strict` then refuses whatever
+the renderer knows it cannot draw. It cannot catch what it does not know about, which
 is why the routing comes first and _check_output() comes after.
 
 Job shapes never replayed stay on HyperFrames too. The CLI has no alpha
@@ -68,8 +66,9 @@ _PIXELS_RE = re.compile(r"putImageData")
 _THREE_RE = re.compile(r"\bTHREE\.|three(?:\.module|\.min)?\.js|from\s+['\"]three['\"]")
 _WEBGPU_RE = re.compile(r"shaders\.iife")
 # Written out, or as the entity or escape a builder often uses (13c65c26 had &#x1F447;).
-_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]"
-                       r"|&#x0*(?:1F[0-9A-F]{3}|2[67B][0-9A-F]{2}|FE0F);|&#1[23]\d{4};"
+# U+2713 and U+2717 are text marks, not emoji, read beside delivered on 62c5e065.
+_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u2712\u2714-\u2716\u2718-\u27BF\u2B00-\u2BFF\uFE0F]"
+                       r"|&#x0*(?!271[37];)(?:1F[0-9A-F]{3}|2[67B][0-9A-F]{2}|FE0F);|&#1[23]\d{4};"
                        r"|\\u\{?(?:1F[0-9A-F]{3}|D83[C-E])", re.I)
 # In a font-family, not just a link: Chrome only draws through the font the text names.
 _COLOUR_EMOJI_FONT_RE = re.compile(r"font-family\s*:[^;}]*Noto[ +]Color[ +]Emoji", re.I)

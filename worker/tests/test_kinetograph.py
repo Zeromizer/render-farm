@@ -126,6 +126,15 @@ class Content(unittest.TestCase):
                      "\u2605 5.0", "&#x2605;", "\u2B50"):
             self.assertIn("emoji without a colour emoji font", kt.content_reasons(text, ""), text)
 
+    def test_a_tick_and_a_cross_are_text(self):
+        # 62c5e065: two lines of plain marks, kept on HyperFrames as if they were emoji
+        for text in ("✓ Fun", "✗ Cheap", "&#x2713;", "&#x2717;", "&#X2713;"):
+            self.assertEqual(kt.content_reasons(text, ""), [], text)
+
+    def test_the_heavy_marks_and_their_neighbours_stay(self):
+        for text in ("✔", "✖", "✒", "✘", "&#x2714;", "&#x2712;", "✓️"):
+            self.assertIn("emoji without a colour emoji font", kt.content_reasons(text, ""), text)
+
     def test_emoji_goes_when_the_composition_draws_it_with_a_colour_font(self):
         # 13c65c26's markup: the span names the font, and the fork paints its COLR glyphs
         css = '.e { font-family: "Noto Color Emoji", sans-serif; }'
