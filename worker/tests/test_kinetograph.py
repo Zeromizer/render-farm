@@ -99,7 +99,13 @@ class Content(unittest.TestCase):
 
     def test_a_module_is_found_by_mention_whatever_the_call(self):
         # 408d8b58: the delivery used TRAN-09, a call-shaped regex did not see it
-        self.assertEqual(kt.content_reasons('const shot = {fx: "TRAN-09"}; run(shot);', BUNDLE), ["fx TRAN-09"])
+        self.assertEqual(kt.content_reasons('const shot = {fx: "CAM-18"}; run(shot);', BUNDLE), ["fx CAM-18"])
+
+    def test_a_proven_module_passes(self):
+        self.assertEqual(kt.content_reasons('const shot = {fx: "TRAN-09"}; run(shot);', BUNDLE), [])
+
+    def test_only_the_unproven_module_is_named(self):
+        self.assertEqual(kt.content_reasons('run("TRAN-09"); run("CAM-18");', BUNDLE), ["fx CAM-18"])
 
     def test_a_safe_module_passes(self):
         self.assertEqual(kt.content_reasons('FX.enter(tl, "TYPE-01", el);', BUNDLE), [])

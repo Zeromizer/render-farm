@@ -73,6 +73,9 @@ _EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]
                        r"|\\u\{?(?:1F[0-9A-F]{3}|D83[C-E])", re.I)
 # In a font-family, not just a link: Chrome only draws through the font the text names.
 _COLOUR_EMOJI_FONT_RE = re.compile(r"font-family\s*:[^;}]*Noto[ +]Color[ +]Emoji", re.I)
+# WebGL or pixel modules the fork draws right: rendered on cbe2991d, read beside what was delivered,
+# and passed by Shawn (fx-library build26.py full and pairs, 2026-11-01).
+_PROVEN_MODULES = {"TRAN-03", "TRAN-09", "STYL-09", "TYPE-09", "STYL-02", "STYL-03"}
 _CJK_RE = re.compile(r"[\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]")
 _CJK_FONT_RE = re.compile(r"Noto[ +](?:Sans|Serif)[ +](?:SC|TC|HK|JP|KR)\b|Noto[ +](?:Sans|Serif)[ +]CJK|Source[ +]Han|LXGW|ZCOOL|Ma[ +]Shan[ +]Zheng", re.I)
 _VERTICAL_RE = re.compile(r"writing-mode\s*:\s*(?:vertical|sideways|tb)", re.I)
@@ -174,7 +177,7 @@ def content_reasons(text, bundle):
         why.append("vertical text")
     # By mention, not by call syntax: the replay's call regex missed a TRAN-09 that
     # the delivery record shows. A false match here only costs the speed.
-    used = sorted(hf_modules(bundle) & set(re.findall(r"\b[A-Z]{2,4}-\d{2}\b", text)))
+    used = sorted((hf_modules(bundle) - _PROVEN_MODULES) & set(re.findall(r"\b[A-Z]{2,4}-\d{2}\b", text)))
     if used:
         why.append("fx " + ",".join(used))
     elif "FX." in text and not bundle:
