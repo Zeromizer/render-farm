@@ -2,7 +2,7 @@
 
 Kinetograph is a Chrome-free Rust/GPU renderer (PolyForm Small Business licence).
 We run our own fork, https://github.com/0xS4N4TG/kinetograph plus fx-library
-spikes/kinetograph/fork/0001-0029, packed on the PC and installed with
+spikes/kinetograph/fork/0001-0040, packed on the PC and installed with
   npm install <dist>\\*.tgz react@19.3.1 react-dom@19.3.1 --ignore-scripts
 
 This is not an engine of its own: a job stays engine `hyperframes`, and
@@ -21,9 +21,7 @@ Who stays on HyperFrames, from the replay of 30 delivered videos (2026-10-31):
 WebGL, WebGPU, three.js and iframes (not what this renderer was proved on); FX
 modules that draw with those or with putImageData; data-fx-chain audio effects
 (flaky on Windows, crash the worker's renders under repeats); full-frame
-putImageData (correct but 2.4x slower); mix-blend-mode on a 3D layer (a known
-silent failure in the fork's compositor); the DENZA brand font (drawn too high,
-with no warning); emoji in a composition that names no
+putImageData (correct but much slower); emoji in a composition that names no
 colour emoji font (the fork would draw its bundled monochrome one, where Chrome
 draws colour, and --strict cannot see that); CJK text with no CJK font and vertical
 text (--strict refuses both; this only saves the wasted attempt). `--strict` then
@@ -69,11 +67,6 @@ _GL_RE = re.compile(r"FXKit\.gl\(|getContext\(\s*['\"](?:webgl2?|experimental-we
 _PIXELS_RE = re.compile(r"putImageData")
 _THREE_RE = re.compile(r"\bTHREE\.|three(?:\.module|\.min)?\.js|from\s+['\"]three['\"]")
 _WEBGPU_RE = re.compile(r"shaders\.iife")
-_BLEND_RE = re.compile(r"mix-blend-mode|mixBlendMode")
-# This font draws about 10 px high at 76 px, no warning, in all 4 DENZA videos read (build26.py sweep): the
-# fork places it differently from Chrome. Aileron, Montserrat, Oswald and Roboto matched.
-_HIGH_FONT_RE = re.compile(r"font-family\s*:[^;}]*URW[ +]Form[ +]Expand", re.I)
-_3D_RE = re.compile(r"preserve-3d|perspective\s*:|perspective\(|transformPerspective")
 # Written out, or as the entity or escape a builder often uses (13c65c26 had &#x1F447;).
 _EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]"
                        r"|&#x0*(?:1F[0-9A-F]{3}|2[67B][0-9A-F]{2}|FE0F);|&#1[23]\d{4};"
@@ -173,10 +166,6 @@ def content_reasons(text, bundle):
         why.append("data-fx-chain")
     if _PIXELS_RE.search(text):
         why.append("putImageData")
-    if _BLEND_RE.search(text) and _3D_RE.search(text):
-        why.append("blend mode with 3D")
-    if _HIGH_FONT_RE.search(text):
-        why.append("URW Form Expand")
     if _EMOJI_RE.search(text) and not _COLOUR_EMOJI_FONT_RE.search(text):
         why.append("emoji without a colour emoji font")
     if _CJK_RE.search(text) and not _CJK_FONT_RE.search(text):

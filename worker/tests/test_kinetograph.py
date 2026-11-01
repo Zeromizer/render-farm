@@ -46,16 +46,6 @@ class ChromeRunner(unittest.TestCase):
         self.assertGreaterEqual(config.HYPERFRAMES_PARALLEL, 1)
 
 
-class HighFont(unittest.TestCase):
-    REASON = "URW Form Expand"
-
-    def test_the_denza_font_stays_on_hyperframes(self):
-        self.assertIn(self.REASON, kt.content_reasons('.copy { font-family: "URW Form Expand", "Archivo", sans-serif; }', ""))
-
-    def test_a_font_file_nothing_uses_is_fine(self):
-        self.assertNotIn(self.REASON, kt.content_reasons('/* URW Form Expand */ .a { font-family: "Roboto"; }', ""))
-
-
 class Enabled(unittest.TestCase):
     def check(self, cli, route, params, want):
         with mock.patch.object(config, "KINETOGRAPH_CLI", cli), mock.patch.object(config, "KINETOGRAPH_ROUTE", route):
@@ -121,8 +111,7 @@ class Content(unittest.TestCase):
         for text, why in (('c.getContext("webgl2")', "webgl"), ("c.getContext('webgpu')", "webgl"),
                           ('<script src="shaders.iife.js">', "webgpu"), ("new THREE.Scene()", "three"),
                           ('<iframe src="a.html">', "iframe"), ('<audio data-fx-chain="x">', "data-fx-chain"),
-                          ("g.putImageData(i, 0, 0)", "putImageData"),
-                          (".a{mix-blend-mode:screen;transform-style:preserve-3d}", "blend mode with 3D")):
+                          ("g.putImageData(i, 0, 0)", "putImageData")):
             self.assertIn(why, kt.content_reasons(text, ""), text)
 
     def test_emoji_stays_however_it_is_written(self):
@@ -156,9 +145,13 @@ class Content(unittest.TestCase):
         # In 3 of the 30 replayed compositions; the renderer has these glyphs
         self.assertEqual(kt.content_reasons("Tap → now &#x203A; S$77,800 — ≥ 90% &amp; café", ""), [])
 
-    def test_blend_alone_or_3d_alone_passes(self):
-        self.assertEqual(kt.content_reasons(".a{mix-blend-mode:screen}", ""), [])
-        self.assertEqual(kt.content_reasons(".a{transform-style:preserve-3d}", ""), [])
+    def test_blend_and_3d_pass_together_or_alone(self):
+        # 29479c69 and 9eb4cd5e read right with both on fork cbe2991d; --strict refuses the one case it can't draw
+        for css in (".a{mix-blend-mode:screen}", ".a{transform-style:preserve-3d}", ".a{mix-blend-mode:screen;transform-style:preserve-3d}"):
+            self.assertEqual(kt.content_reasons(css, ""), [], css)
+
+    def test_the_denza_font_passes(self):
+        self.assertEqual(kt.content_reasons('.copy { font-family: "URW Form Expand", "Archivo", sans-serif; }', ""), [])
 
 
 class ReadProject(unittest.TestCase):
