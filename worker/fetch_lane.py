@@ -6,13 +6,19 @@ platform's Vercel servers (measured 2026-09-29: three attempts, "fetch
 failed"), while this PC's home connection reaches it in seconds. Until now the
 agent pulled the file itself as a fallback. A url_fetch job is seconds of
 network work; in the single render loop it would wait behind a 10-minute
-video_gen or a 45-minute turntable, so it runs in its own thread instead.
+video_gen or a 45-minute turntable, so it runs on its own threads instead.
+
+Several threads, because one stalled download used to hold every file behind
+it (2026-11-02: three stalls of 135-164 s held 9 files for up to 268 s, and
+those 9 then took 20 s). A healthy file's first bytes arrive in about 1.3 s, so
+the read timeout is short: a stall is cut and retried instead of sat through.
 
 Claiming: the render loop's claim_farm_job() never takes url_fetch, because
 farm_engine_capabilities holds ('url_fetch', 'fetch-lane') and the loop
 advertises no capabilities. This lane takes rows with a conditional update
-(pending -> processing), which is atomic per row. reclaim_stale_farm_jobs()
-puts a row whose lane died back to pending, and the lane takes it again.
+(pending -> processing), which is atomic per row, so the threads cannot take
+the same row. reclaim_stale_farm_jobs() puts a row whose lane died back to
+pending, and the lane takes it again.
 
 params:
   files: [{url, role, content_type}]   role is a label the platform reads back
@@ -43,7 +49,11 @@ ENGINE = "url_fetch"
 LANE_ENGINES = {ENGINE}
 POLL_SECONDS = 2
 MAX_BYTES = 1024 * 1024 * 1024
-ATTEMPTS = 3
+THREADS = max(1, int(os.environ.get("FETCH_LANE_THREADS", "4")))
+# Seconds with no bytes before a try is cut. 5 tries at 20 s give up after about
+# the 2 minutes one try at the old 120 s sat through.
+READ_TIMEOUT_SECONDS = float(os.environ.get("FETCH_READ_TIMEOUT_SECONDS", "20"))
+ATTEMPTS = 5
 MAX_REDIRECTS = 5
 
 # This PC sits beside ComfyUI (127.0.0.1:8188), the relay bridge, the router
@@ -87,7 +97,7 @@ def check_url(url):
 
 def _fetch_once(url, dest, beat):
     h, size = hashlib.sha256(), 0
-    timeout = httpx.Timeout(120.0, connect=20.0)
+    timeout = httpx.Timeout(READ_TIMEOUT_SECONDS, connect=20.0)
     current = url
     for _ in range(MAX_REDIRECTS + 1):
         check_url(current)
@@ -113,8 +123,10 @@ def _fetch_once(url, dest, beat):
     raise Refused(f"url refused: more than {MAX_REDIRECTS} redirects")
 
 
-def _download(url, dest, beat):
-    """Stream url to dest, returning (sha256, size). Retries a flapping connect, never a refusal."""
+def _download(url, dest, beat, log):
+    """Stream url to dest, returning (sha256, size). Retries a flapping connect or
+    a stalled read, never a refusal, and logs each retry: they were silent, so a
+    stall could only be inferred from the heartbeats."""
     last = None
     for attempt in range(1, ATTEMPTS + 1):
         try:
@@ -124,6 +136,7 @@ def _download(url, dest, beat):
         except Exception as e:  # noqa: BLE001 - retried, then reported
             last = e
             if attempt < ATTEMPTS:
+                log(f"  url_fetch try {attempt} of {ATTEMPTS} failed, retrying: {type(e).__name__}: {str(e)[:160]}")
                 time.sleep(2 * attempt)
     raise RuntimeError(f"download failed after {ATTEMPTS} attempts: {str(last)[:300]}")
 
@@ -154,8 +167,9 @@ def _run(job, log):
             ctype = str(f.get("content_type") or "application/octet-stream")
             db.set_phase(jid, f"downloading {role}", int(100 * i / len(files)))
             local = os.path.join(tmp, f"{i}.bin")
-            sha, size = _download(f["url"], local, beat)
+            sha, size = _download(f["url"], local, beat, log)
             path = f"sha256/{sha}"
+            db.set_phase(jid, f"uploading {role}", int(100 * i / len(files)))
             with open(local, "rb") as fh:
                 db.sb.storage.from_(config.ASSETS_BUCKET).upload(
                     path, fh, {"content-type": ctype, "upsert": "true"})
@@ -178,7 +192,7 @@ def _claim():
 
 
 def _loop(log):
-    log("fetch lane started")
+    log(f"fetch lane started ({threading.current_thread().name})")
     err_logged = False
     while True:
         try:
@@ -210,7 +224,11 @@ def _loop(log):
 
 
 def start(log):
-    """Run the lane on a daemon thread; it dies with the worker and restarts with it."""
-    t = threading.Thread(target=_loop, args=(log,), name="fetch-lane", daemon=True)
-    t.start()
-    return t
+    """Run the lane's threads as daemons; they die with the worker and restart with
+    it. Returns the first. Each name starts with fetch-lane, so each thread gets its
+    own Supabase client (db._Clients)."""
+    threads = [threading.Thread(target=_loop, args=(log,), name=f"fetch-lane-{i}", daemon=True)
+               for i in range(THREADS)]
+    for t in threads:
+        t.start()
+    return threads[0]
