@@ -29,7 +29,8 @@ is why the routing comes first and _check_output() comes after.
 
 Job shapes never replayed stay on HyperFrames too. The CLI has no alpha
 output; resolution and variables have no equivalent; `gpu` asks for
-NVENC; a non-root entry resolves its assets from another directory.
+NVENC; an entry outside the project has no assets to resolve. An entry in a
+subfolder is fine: ee221c30 and 63c8b104 read beside delivered, 2026-11-02.
 
 Third-party code: the render gets an allowlisted environment, because the
 worker's own carries the Supabase service key.
@@ -111,7 +112,8 @@ def shape_reasons(params, entry, version, quality):
     for key in ("resolution", "variables", "gpu", "project_dir"):
         if params.get(key):
             why.append(key)
-    if os.path.dirname(entry.replace("\\", "/")):
+    parts = entry.replace("\\", "/").split("/")
+    if os.path.isabs(entry) or not parts[0] or ".." in parts:
         why.append("entry outside the project root")
     if not _at_least(version, MIN_VERSION):
         why.append(f"hyperframes {version}")

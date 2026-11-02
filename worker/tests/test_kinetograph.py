@@ -80,8 +80,15 @@ class Shape(unittest.TestCase):
                        {"project_dir": "fx/TYPE-01"}, {"format": "webm"}):
             self.assertTrue(self.reasons(params), params)
 
-    def test_non_root_entry_and_older_projects_stay(self):
-        self.assertTrue(self.reasons(entry="compositions/feed-4x5.html"))
+    def test_an_entry_in_a_subfolder_passes(self):
+        for entry in ("compositions/wide-16x9.html", "compositions\\wide-16x9.html", "a/b/c.html"):
+            self.assertEqual(self.reasons(entry=entry), [], entry)
+
+    def test_an_entry_outside_the_project_stays(self):
+        for entry in ("../other/index.html", "compositions/../../index.html", "..\\index.html", "/tmp/index.html", "C:\\x\\index.html"):
+            self.assertEqual(self.reasons(entry=entry), ["entry outside the project root"], entry)
+
+    def test_older_projects_stay(self):
         self.assertTrue(self.reasons(version="0.8.26"))
         self.assertTrue(self.reasons(version="0.8.154"))
         self.assertEqual(self.reasons(version="0.8.160"), [])
