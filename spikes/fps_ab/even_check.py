@@ -80,7 +80,7 @@ for rel in CLIPS:
         if not ok:
             break
         frames.append(f)
-    os.remove(src)
+    cap.release()
     rep[rel] = {}
     for cfg in CONFIGS:
         t0 = time.time()
