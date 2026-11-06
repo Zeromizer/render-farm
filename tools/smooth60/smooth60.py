@@ -8,24 +8,22 @@ normal hyperframes render of that branch with fps=60.
 
 usage: python smooth60.py SRC_WS GIT_REF DST_WS OUT_DIR [--fps=60]
 
-Model: the author's own RIFE v4.26 (hzwer/Practical-RIFE pinned + hzwer/RIFE HF weights), run in memory.
-2026-11-06 A/B (render-farm spike/fps-ab): at native resolution it keeps the Denza D9 grille straight, where
-rife-ncnn v4.6 bent the slats; ~3 s per 7 s clip on the 4080.
+Model: rife-ncnn-vulkan rife-v4.6 (worker config RIFE_DIR), run on frames lanczos-upscaled 2x and
+area-downscaled after. Why, from the 2026-11-06 A/B (render-farm spike/fps-ab):
+  - at native 720p RIFE bends fine repeating detail (the Denza D9 grille slats); at 2x it does not;
+  - RIFE v4.26 (latest) fixes the grille too, but its in-between frames are uneven on slow motion (a 5-frame
+    stutter, 0.18-0.35 vs 0.066 step spread on the hand clip), with or without its own scale=2 — so not v4.26.
 Cuts inside a clip get the nearest real frame, never a blend. Alpha clips (cutout mattes) are left alone.
 """
-import glob, io, json, os, re, shutil, subprocess, sys, time, urllib.request, zipfile
+import glob, json, os, re, shutil, subprocess, sys, time
 import numpy as np
-import cv2
 
 SRC, REF, DST, OUT = sys.argv[1], sys.argv[2], sys.argv[3], os.path.abspath(sys.argv[4])
 TARGET = int(next((a.split("=")[1] for a in sys.argv if a.startswith("--fps=")), "60"))
 ROOT = r"C:\rp-smooth"
 assert os.path.normcase(os.path.dirname(os.path.abspath(DST))) == os.path.normcase(ROOT), f"DST must be a child of {ROOT}"
-CACHE = os.path.join(ROOT, "_rife")
-PR_SHA = "bbfd2ea90910789a860ea3e2b32a240cd577b75e"
-W426 = "https://huggingface.co/hzwer/RIFE/resolve/main/RIFEv4.26_0921.zip"
 KEEP_DAYS = 3
-os.makedirs(OUT, exist_ok=True); os.makedirs(CACHE, exist_ok=True)
+os.makedirs(OUT, exist_ok=True)
 t_start = time.time()
 
 
@@ -76,29 +74,13 @@ stream(["git", "clone", "-q", "--no-checkout", SRC, DST], "clone")
 stream(["git", "-C", DST, "checkout", "-q", "-B", "smooth60", REF], "checkout")
 say("PROGRESS 4")
 
-# 2. RIFE v4.26
-pr = os.path.join(CACHE, "Practical-RIFE")
-if not os.path.isdir(os.path.join(pr, ".git")):
-    stream(["git", "clone", "-q", "https://github.com/hzwer/Practical-RIFE", pr], "rife-clone")
-stream(["git", "-C", pr, "checkout", "-q", PR_SHA], "rife-checkout")
-tl = os.path.join(pr, "train_log")
-if not os.path.exists(os.path.join(tl, "flownet.pkl")):
-    say("downloading", W426)
-    data = urllib.request.urlopen(W426, timeout=300).read()
-    os.makedirs(tl, exist_ok=True)
-    with zipfile.ZipFile(io.BytesIO(data)) as z:
-        for m in z.namelist():
-            base = os.path.basename(m)
-            if base.endswith((".py", ".pkl")) and "__MACOSX" not in m:
-                open(os.path.join(tl, base), "wb").write(z.read(m))
-sys.path.insert(0, pr)
-import torch
-from torch.nn import functional as F
-torch.set_grad_enabled(False)
-dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-from train_log.RIFE_HDv3 import Model
-model = Model(); model.load_model(tl, -1); model.eval(); model.device()
-say("rife", getattr(model, "version", "?"), "on", dev)
+# 2. RIFE
+RIFE_DIR = os.environ.get("RIFE_DIR", r"C:\Coding\tools\rife-ncnn-vulkan")
+RIFE = os.path.join(RIFE_DIR, "rife-ncnn-vulkan.exe")
+MODEL = os.path.join(RIFE_DIR, "rife-v4.6")
+if not (os.path.exists(RIFE) and os.path.isdir(MODEL)):
+    raise RuntimeError(f"rife-ncnn-vulkan / rife-v4.6 not found in {RIFE_DIR}")
+UP = 2
 say("PROGRESS 8")
 
 
@@ -124,7 +106,7 @@ for h in glob.glob(os.path.join(DST, "**", "*.*"), recursive=True):
     if h.lower().endswith((".html", ".js", ".json", ".css")) and os.sep + ".git" + os.sep not in h and "node_modules" not in h:
         text += open(h, encoding="utf-8", errors="replace").read()
 refs = set(os.path.basename(m) for m in re.findall(r'''["'(/]([^"'()/\\]+\.(?:mp4|mov|webm|m4v))''', text, re.I))
-report = {"ref": REF, "target": TARGET, "rife": "v4.26", "clips": {}, "skipped": {}}
+report = {"ref": REF, "target": TARGET, "rife": "ncnn rife-v4.6 at 2x", "clips": {}, "skipped": {}}
 todo = []
 for p in glob.glob(os.path.join(DST, "**", "*.*"), recursive=True):
     if not p.lower().endswith((".mp4", ".mov", ".webm", ".m4v")) or os.sep + ".git" + os.sep in p or "node_modules" in p:
@@ -142,80 +124,65 @@ for p in glob.glob(os.path.join(DST, "**", "*.*"), recursive=True):
 say("PROGRESS 10", json.dumps({"todo": [t[1] for t in todo], "skipped": report["skipped"]}))
 
 
-# 4. interpolate each clip, streaming frames through ffmpeg pipes
-def to_t(f, h, w, ph, pw):
-    x = torch.from_numpy(f).to(dev, non_blocking=True).permute(2, 0, 1).unsqueeze(0).float() / 255.
-    return F.pad(x, (0, pw - w, 0, ph - h))
+# 4. interpolate each clip: ffmpeg lanczos 2x -> PNG -> rife-ncnn -n -> ffmpeg area 1x -> x264
+def source_diffs(path, w, h):
+    """Mean abs grey change per step at quarter size, for the cut guard."""
+    sw, sh = max(16, w // 4), max(16, h // 4)
+    p = subprocess.Popen([FF, "-v", "error", "-i", path, "-map", "0:v:0", "-fps_mode", "passthrough", "-vf", f"scale={sw}:{sh}:flags=area",
+                          "-f", "rawvideo", "-pix_fmt", "gray", "-"], stdout=subprocess.PIPE)
+    out, prev = [], None
+    while True:
+        b = p.stdout.read(sw * sh)
+        if len(b) < sw * sh:
+            break
+        g = np.frombuffer(b, np.uint8).astype(np.float32)
+        if prev is not None:
+            out.append(float(np.abs(g - prev).mean()))
+        prev = g
+    p.wait()
+    return out
 
 
-done_frames = 0
+work = os.path.join(OUT, "work")
 total_out = sum(int(round(i["frames"] * TARGET / i["fps"])) for _, _, i in todo) or 1
+done_frames = 0
 for p, rel, info in todo:
     c0 = time.time()
-    w, h, n_src = info["w"], info["h"], info["frames"]
+    w, h = info["w"], info["h"]
+    src_dir, dst_dir = os.path.join(work, "src"), os.path.join(work, "dst")
+    for d in (src_dir, dst_dir):
+        shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
+    stream([FF, "-v", "error", "-i", p, "-map", "0:v:0", "-fps_mode", "passthrough", "-vf", f"scale={w * UP}:{h * UP}:flags=lanczos",
+            "-compression_level", "1", os.path.join(src_dir, "%08d.png")], "extract")
+    names = sorted(os.listdir(src_dir))
+    n_src = len(names)
     n_out = int(round(n_src * TARGET / info["fps"]))
-    ph, pw = ((h - 1) // 128 + 1) * 128, ((w - 1) // 128 + 1) * 128
-    dec = subprocess.Popen([FF, "-v", "error", "-i", p, "-map", "0:v:0", "-fps_mode", "passthrough", "-f", "rawvideo",
-                            "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE)
-    tmp_out = p + ".smooth.mp4"
-    enc_cmd = [FF, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", str(TARGET), "-i", "-"]
-    if info["audio"]:
-        enc_cmd += ["-i", p, "-map", "0:v:0", "-map", "1:a:0", "-c:a", "copy"]
-    enc_cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "15", "-bf", "0", "-pix_fmt", "yuv420p", "-movflags", "+faststart", tmp_out]
-    enc = subprocess.Popen(enc_cmd, stdin=subprocess.PIPE)
-    size = w * h * 3
-
-    def read():
-        b = dec.stdout.read(size)
-        return np.frombuffer(b, np.uint8).reshape(h, w, 3) if len(b) == size else None
-
-    small = lambda f: cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), (w // 4, h // 4), interpolation=cv2.INTER_AREA).astype(np.float32)
-    a, b = read(), read()
-    k = 0                     # a = source frame k, b = k+1 (None past the end)
-    diffs, cut, ta, tb = [], False, None, None
-    held = written = 0
-
-    def pair_changed():
-        global cut, ta, tb
-        ta = tb = None
-        if b is None:
-            cut = False
-            return
-        d = float(np.abs(small(a) - small(b)).mean())
-        med = float(np.median(diffs[-48:])) if diffs else d
-        cut = d > max(20.0, 6.0 * med) and len(diffs) >= 2
-        diffs.append(d)
-
-    pair_changed()
-    for j in range(n_out):
-        pos = j * info["fps"] / TARGET
-        while b is not None and pos >= k + 1 - 1e-6:
-            a, b, k = b, read(), k + 1
-            pair_changed()
-        t = pos - k
-        if b is None or t < 1e-3:
-            frame = a
-        elif cut:
-            frame = a if t < 0.5 else b
+    d = source_diffs(p, w, h)
+    med = float(np.median(d)) if d else 0.0
+    cuts = {i for i, x in enumerate(d) if x > max(20.0, 6.0 * med)}       # step i -> i+1 is a cut
+    stream([RIFE, "-i", src_dir, "-o", dst_dir, "-n", str(n_out), "-m", MODEL, "-g", "0", "-j", "2:4:4", "-f", "%08d.png"], "rife")
+    outs = sorted(os.listdir(dst_dir))
+    # rife -n puts output i at source position i * n_src / n_out (main.cpp); across a cut use the nearest real frame
+    held = 0
+    for i, name in enumerate(outs):
+        pos = i * n_src / len(outs)
+        lo = int(np.floor(pos))
+        if pos - lo > 1e-6 and lo in cuts:
+            shutil.copy2(os.path.join(src_dir, names[min(n_src - 1, int(round(pos)))]), os.path.join(dst_dir, name))
             held += 1
-        else:
-            if ta is None:
-                ta, tb = to_t(a, h, w, ph, pw), to_t(b, h, w, ph, pw)
-            o = model.inference(ta, tb, float(t), 1.0)
-            frame = (o[0].clamp(0, 1) * 255. + 0.5).byte().permute(1, 2, 0).cpu().numpy()[:h, :w]
-        enc.stdin.write(np.ascontiguousarray(frame).tobytes())
-        written += 1
-        done_frames += 1
-        if j % 60 == 0:
-            say(f"PROGRESS {10 + int(80 * done_frames / total_out)}")
-    enc.stdin.close()
-    dec.stdout.close(); dec.wait()
-    if enc.wait() != 0:
-        raise RuntimeError(f"encode failed for {rel}")
+    tmp_out = p + ".smooth.mp4"
+    cmd = [FF, "-v", "error", "-y", "-framerate", str(TARGET), "-i", os.path.join(dst_dir, "%08d.png")]
+    if info["audio"]:
+        cmd += ["-i", p, "-map", "0:v:0", "-map", "1:a:0", "-c:a", "copy"]
+    cmd += ["-vf", f"scale={w}:{h}:flags=area", "-c:v", "libx264", "-preset", "medium", "-crf", "15", "-bf", "0",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", tmp_out]
+    stream(cmd, "encode")
     os.replace(tmp_out, p)
-    report["clips"][rel] = {"src_fps": info["fps"], "src_frames": n_src, "out_frames": written, "cut_frames_held": held,
+    done_frames += len(outs)
+    report["clips"][rel] = {"src_fps": info["fps"], "src_frames": n_src, "out_frames": len(outs), "cut_frames_held": held,
                             "secs": round(time.time() - c0, 1)}
-    say(json.dumps({rel: report["clips"][rel]}))
+    say(f"PROGRESS {10 + int(80 * done_frames / total_out)}", json.dumps({rel: report["clips"][rel]}))
+shutil.rmtree(work, ignore_errors=True)
 
 # 5. commit on smooth60 so the farm's clone of DST renders the new clips
 g = lambda *a: subprocess.run(["git", "-C", DST, *a], capture_output=True, text=True)
