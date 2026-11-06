@@ -73,8 +73,10 @@ _EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u2712\u2714-\u2716\u2718-
 # In a font-family, not just a link: Chrome only draws through the font the text names.
 _COLOUR_EMOJI_FONT_RE = re.compile(r"font-family\s*:[^;}]*Noto[ +]Color[ +]Emoji", re.I)
 # WebGL or pixel modules the fork draws right: rendered on cbe2991d, read beside what was delivered,
-# and passed by Shawn (fx-library build26.py full and pairs, 2026-11-01).
-_PROVEN_MODULES = {"TRAN-03", "TRAN-09", "STYL-09", "TYPE-09", "STYL-02", "STYL-03"}
+# and passed by Shawn (fx-library build26.py full and pairs, 2026-11-01). The second row on 00bc6e1e
+# (build26.py lift and liftpairs: 82156e81, 59de93f1, 4ddaf509), passed by Shawn 2026-11-06.
+_PROVEN_MODULES = {"TRAN-03", "TRAN-09", "STYL-09", "TYPE-09", "STYL-02", "STYL-03",
+                   "MASK-06", "CAM-06", "TRAN-08", "STYL-01", "STYL-17"}
 _CJK_RE = re.compile(r"[\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]")
 _CJK_FONT_RE = re.compile(r"Noto[ +](?:Sans|Serif)[ +](?:SC|TC|HK|JP|KR)\b|Noto[ +](?:Sans|Serif)[ +]CJK|Source[ +]Han|LXGW|ZCOOL|Ma[ +]Shan[ +]Zheng", re.I)
 _VERTICAL_RE = re.compile(r"writing-mode\s*:\s*(?:vertical|sideways|tb)", re.I)

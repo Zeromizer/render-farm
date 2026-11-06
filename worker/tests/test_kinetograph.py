@@ -111,6 +111,13 @@ class Content(unittest.TestCase):
     def test_a_proven_module_passes(self):
         self.assertEqual(kt.content_reasons('const shot = {fx: "TRAN-09"}; run(shot);', BUNDLE), [])
 
+    def test_the_modules_passed_on_2026_11_06_pass(self):
+        bundle = "".join(f'FX.define("{m}", {{ in(t) {{ x.putImageData(id, 0, 0); }} }});\n'
+                         for m in ("MASK-06", "CAM-06", "TRAN-08", "STYL-01", "STYL-17", "MASK-09"))
+        self.assertEqual(kt.content_reasons('run("MASK-06"); run("CAM-06"); run("TRAN-08"); run("STYL-01"); run("STYL-17");', bundle), [])
+        # 6969c021: Kinetograph missed MASK-09's logo mask, so it stays
+        self.assertEqual(kt.content_reasons('run("CAM-06"); run("MASK-09");', bundle), ["fx MASK-09"])
+
     def test_only_the_unproven_module_is_named(self):
         self.assertEqual(kt.content_reasons('run("TRAN-09"); run("CAM-18");', BUNDLE), ["fx CAM-18"])
 
