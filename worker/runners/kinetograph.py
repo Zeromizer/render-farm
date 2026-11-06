@@ -18,10 +18,9 @@ Settings (.env; a worker restart reads them):
   params.renderer         "hyperframes" keeps one job off this path in any mode
 
 Who stays on HyperFrames, from the replay of 30 delivered videos (2026-10-31):
-WebGL, WebGPU, three.js and iframes (not what this renderer was proved on); FX
-modules that draw with those or with putImageData; data-fx-chain audio effects
-(flaky on Windows, crash the worker's renders under repeats); full-frame
-putImageData (correct but much slower); emoji in a composition that names no
+WebGL, WebGPU and three.js (not what this renderer was proved on); FX modules
+that draw with those or with putImageData; data-fx-chain audio effects (flaky on
+Windows, crash the worker's renders under repeats); emoji in a composition that names no
 colour emoji font, CJK text with no CJK font and vertical text (--strict refuses
 all three; this only saves the wasted attempt). `--strict` then refuses whatever
 the renderer knows it cannot draw. It cannot catch what it does not know about, which
@@ -164,12 +163,11 @@ def content_reasons(text, bundle):
         why.append("webgpu")
     if _THREE_RE.search(text):
         why.append("three")
-    if "<iframe" in text.lower():
-        why.append("iframe")
+    # Iframes and a composition's own putImageData run here: 90a78e22, e9778e87, 3ff04d24 (iframe)
+    # and a3a3f352 (putImageData) read beside delivered, 2026-11-06. 117f12c0 also drew right
+    # with putImageData, only slower than Chrome.
     if "data-fx-chain" in text:
         why.append("data-fx-chain")
-    if _PIXELS_RE.search(text):
-        why.append("putImageData")
     if _EMOJI_RE.search(text) and not _COLOUR_EMOJI_FONT_RE.search(text):
         why.append("emoji without a colour emoji font")
     if _CJK_RE.search(text) and not _CJK_FONT_RE.search(text):

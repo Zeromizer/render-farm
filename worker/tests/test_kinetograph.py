@@ -123,9 +123,16 @@ class Content(unittest.TestCase):
     def test_each_blocker(self):
         for text, why in (('c.getContext("webgl2")', "webgl"), ("c.getContext('webgpu')", "webgl"),
                           ('<script src="shaders.iife.js">', "webgpu"), ("new THREE.Scene()", "three"),
-                          ('<iframe src="a.html">', "iframe"), ('<audio data-fx-chain="x">', "data-fx-chain"),
-                          ("g.putImageData(i, 0, 0)", "putImageData")):
+                          ('<audio data-fx-chain="x">', "data-fx-chain")):
             self.assertIn(why, kt.content_reasons(text, ""), text)
+
+    def test_an_iframe_and_putimagedata_pass(self):
+        # 90a78e22, e9778e87, 3ff04d24 and a3a3f352 read beside delivered on fork 00bc6e1e
+        for text in ('<iframe src="a.html"></iframe>', '<IFRAME SRC="b.html">', "g.putImageData(i, 0, 0)"):
+            self.assertEqual(kt.content_reasons(text, ""), [], text)
+
+    def test_a_module_that_draws_with_putimagedata_still_stays(self):
+        self.assertEqual(kt.content_reasons('FX.enter(tl, "CAM-18", el);', BUNDLE), ["fx CAM-18"])
 
     def test_emoji_stays_however_it_is_written(self):
         # 13c65c26 lost a pointing hand with no warning; it was written as an entity
