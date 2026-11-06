@@ -12,6 +12,7 @@ import cv2, numpy as np
 
 SRC, REF, DST, OUT, TARGET = sys.argv[1], sys.argv[2], sys.argv[3], os.path.abspath(sys.argv[4]), int(sys.argv[5])
 PROBE_ONLY = "--probe-only" in sys.argv
+UP = int(next((a.split("=")[1] for a in sys.argv if a.startswith("--up=")), "1"))
 assert os.path.normcase(DST).startswith(os.path.normcase(r"C:\rp-workspace-tests")), "DST must be under C:\\rp-workspace-tests"
 RIFE_DIR = os.environ.get("RIFE_DIR", r"C:\Coding\tools\rife-ncnn-vulkan")
 RIFE = os.path.join(RIFE_DIR, "rife-ncnn-vulkan.exe")
@@ -149,8 +150,19 @@ for k, (p, rel, info) in enumerate(todo):
         continue
     fps_src = info["r_fps"] or info["avg_fps"]
     n_out = int(round(n_src * TARGET / fps_src))
-    stream([RIFE, "-i", src_dir, "-o", dst_dir, "-n", str(n_out), "-m", MODEL, "-g", "0", "-j", "2:4:4", "-f", "%08d.png"], "rife")
+    rife_in = src_dir
+    if UP > 1:   # fine repeating detail (grille slats) aliases at native res; flow at 2x stops the warp (fps_check2)
+        rife_in = os.path.join(tmp, "up"); shutil.rmtree(rife_in, ignore_errors=True); os.makedirs(rife_in)
+        for n in names:
+            f = cv2.imread(os.path.join(src_dir, n))
+            cv2.imwrite(os.path.join(rife_in, n), cv2.resize(f, (f.shape[1] * UP, f.shape[0] * UP), interpolation=cv2.INTER_LANCZOS4))
+    stream([RIFE, "-i", rife_in, "-o", dst_dir, "-n", str(n_out), "-m", MODEL, "-g", "0", "-j", "2:4:4", "-f", "%08d.png"], "rife")
     outs = sorted(os.listdir(dst_dir))
+    if UP > 1:
+        for name in outs:
+            f = cv2.imread(os.path.join(dst_dir, name))
+            cv2.imwrite(os.path.join(dst_dir, name), cv2.resize(f, (info["w"], info["h"]), interpolation=cv2.INTER_AREA))
+        shutil.rmtree(rife_in, ignore_errors=True)
     # cut guard: output i sits at source position i*n_src/n_out (rife main.cpp); straddling a cut -> nearest frame
     fixed = 0
     cutset = set(cut_steps)
