@@ -17,6 +17,9 @@ params (jsonb):
     seed              first seed (default 6332); takes use seed, seed+1009, ...
     steps / turbo     sampling (default turbo 4-step ref2v)
     settle_px         how still an element must hold to count as an anchor frame (2.5)
+    keep_anchor_min   anchor runs shorter than this (default 8 = two H3 latent groups) are
+                      rebuilt from their neighbours in compose instead of kept as pasted:
+                      H3 cannot see them, so a kept pasted frame pops (job a56e505c)
 
 Output: the best take at outputs/<job_id>.mp4 like every engine, plus siblings
 outputs/<job_id>-proof.png (before/fixed per element), outputs/<job_id>-lettering.json
@@ -108,7 +111,8 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
                            on_line=on_line, cancel_check=cancel_check, timeout_seconds=timeout_seconds)
 
     base = {"clip": clip, "reference": ref, "work_dir": work_dir, "elements": p["elements"],
-            "anchor_frame": int(p.get("anchor_frame", -1)), "settle_px": float(p.get("settle_px", 2.5))}
+            "anchor_frame": int(p.get("anchor_frame", -1)), "settle_px": float(p.get("settle_px", 2.5)),
+            "keep_anchor_min": int(p.get("keep_anchor_min", 8))}
     stream("prep", base, 3, 10)
     plan = json.load(open(os.path.join(work_dir, "plan.json")))
     W, H = plan["canvas"]

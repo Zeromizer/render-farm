@@ -40,6 +40,8 @@ from common import find_ffmpeg_tool  # noqa: E402
 FPS = 24
 MAX_WINDOW = 362          # H3's trained range tops out near 15 s at 24 fps
 CANVAS_AREA = 960 * 544   # follow-crop canvas: ~0.52 MP, plenty for a 16 GB card at 15 s
+KEEP_ANCHOR_MIN = 8       # shorter anchor runs are rebuilt from their neighbours in compose
+                          # (two of H3's ~4-frame latent groups; see prep)
 
 
 def emit(kind, text):
@@ -428,9 +430,23 @@ def prep(spec):
             "tracks": [{str(i): list(p[:4]) for i, p in t.items()} for t in tracks],
             "names": [e["name"] for e in elements], "align": {"ecc": cc, "inliers": inliers},
             "warnings": []}
-    if a1 - a0 + 1 < 6:
-        plan["warnings"].append(f"only {a1 - a0 + 1} anchor frame(s): the car never holds the reference pose for "
-                                f"long, so the real lettering has little to propagate from")
+    run_len = a1 - a0 + 1
+    keep_min = int(spec.get("keep_anchor_min", KEEP_ANCHOR_MIN))
+    if run_len < keep_min:
+        # H3 works in ~4-frame latent groups and the latent mask is max-pooled, so a run this
+        # short is masked in latent space: H3 never sees the pasted lettering and draws the
+        # element from the PROMPT. Keeping the pasted frames then leaves a one-frame pop (a
+        # different plate, size and font) in the middle of H3's own rendering - job a56e505c
+        # frame 98, 2026-11-07. So compose rebuilds them from their neighbours instead.
+        plan["anchor_policy"] = "rebuild"
+        plan["lettering_source"] = "prompt"
+        plan["warnings"].append(
+            f"only {run_len} anchor frame(s) (the car never holds the reference pose): H3 could not use the "
+            f"reference, so the lettering was drawn from the PROMPT - check the spelling on the proof sheet. "
+            f"The pasted anchor frame(s) {a0}-{a1} were rebuilt from their neighbours so they do not pop.")
+    else:
+        plan["anchor_policy"] = "keep"
+        plan["lettering_source"] = "reference"
     if not masks:
         raise RuntimeError("nothing to fix: the elements match the reference pose in every frame of the window")
     json.dump(plan, open(os.path.join(work, "plan.json"), "w"), indent=1)
@@ -451,6 +467,87 @@ def _ncc(a, b):
     b = b - b.mean()
     d = math.sqrt(float((a * a).sum()) * float((b * b).sum()))
     return float((a * b).sum() / d) if d > 1e-6 else 0.0
+
+
+def _pair_for_run(a0, a1, n):
+    """Two frames outside the anchor run to rebuild it from: one each side when possible
+    (interpolation), else the two nearest on the one side there is (extrapolation)."""
+    if a0 - 1 >= 0 and a1 + 1 < n:
+        return a0 - 1, a1 + 1
+    if a0 - 2 >= 0:
+        return a0 - 2, a0 - 1
+    if a1 + 2 < n:
+        return a1 + 1, a1 + 2
+    return None
+
+
+def _ecc_homography(img_p, img_q, roi):
+    """Homography W mapping frame-q coords -> frame-p coords, solved by ECC in `roi` of q.
+    Returns (W, cc) or (None, -1) when it does not converge."""
+    x0, y0, x1, y1 = [int(round(v)) for v in roi]
+    gp = cv2.GaussianBlur(cv2.cvtColor(img_p, cv2.COLOR_BGR2GRAY), (0, 0), 0.8).astype(np.float32)
+    gq = cv2.GaussianBlur(cv2.cvtColor(img_q, cv2.COLOR_BGR2GRAY), (0, 0), 0.8).astype(np.float32)
+    try:
+        cc, W = cv2.findTransformECC(gq[y0:y1, x0:x1], gp[y0:y1, x0:x1], np.eye(3, dtype=np.float32),
+                                     cv2.MOTION_HOMOGRAPHY,
+                                     (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 300, 1e-6), None, 3)
+    except cv2.error:
+        return None, -1.0
+    T = np.array([[1, 0, -x0], [0, 1, -y0], [0, 0, 1]], np.float64)
+    full = np.linalg.inv(T) @ W.astype(np.float64) @ T
+    return full / full[2, 2], float(cc)
+
+
+def _box_similarity(bp, bq):
+    """Fallback motion from two tracked boxes: scale about the centre + shift, as a
+    q-coords -> p-coords 3x3 (same direction as _ecc_homography)."""
+    sp = max(bp[2] - bp[0], 1e-3) / max(bq[2] - bq[0], 1e-3)
+    cpx, cpy = (bp[0] + bp[2]) / 2, (bp[1] + bp[3]) / 2
+    cqx, cqy = (bq[0] + bq[2]) / 2, (bq[1] + bq[3]) / 2
+    return np.array([[sp, 0, cpx - sp * cqx], [0, sp, cpy - sp * cqy], [0, 0, 1]], np.float64)
+
+
+def rebuild_run(frames, run, tracks, anchor_boxes, pad_frac=0.25, feather=2.5):
+    """Replace the elements on every frame of `run` (a0, a1) with frame p's pixels warped
+    along the measured p->q motion, interpolated (or extrapolated) to that frame's place in
+    time. p and q lie outside the run, so the rebuilt frames inherit the surrounding frames'
+    size, angle, blur and lettering instead of the pasted reference. In place; returns
+    [{frame, from, t, ecc}]."""
+    a0, a1 = run
+    fh, fw = frames[0].shape[:2]
+    pair = _pair_for_run(a0, a1, len(frames))
+    if pair is None:
+        return []
+    p, q = pair
+
+    def box(e, i):
+        return tracks[e].get(i, anchor_boxes[e])
+
+    # ECC window: all elements at q, with room for the car body around them
+    bs = [box(e, q) for e in range(len(anchor_boxes))]
+    m = 30
+    roi = clamp_box([min(b[0] for b in bs) - m, min(b[1] for b in bs) - m,
+                     max(b[2] for b in bs) + m, max(b[3] for b in bs) + m], fw, fh)
+    W, cc = _ecc_homography(frames[p], frames[q], roi)
+    if W is None or cc < 0.8:
+        W = _box_similarity(box(0, p), box(0, q))
+    done = []
+    for i in range(a0, a1 + 1):
+        t = (i - p) / float(q - p)
+        Wt = np.eye(3) + (W - np.eye(3)) * t
+        pred = cv2.warpPerspective(frames[p], Wt, (fw, fh), flags=cv2.INTER_CUBIC | cv2.WARP_INVERSE_MAP)
+        mk = np.zeros((fh, fw), np.uint8)
+        for e in range(len(anchor_boxes)):
+            b = box(e, i)
+            w, h = b[2] - b[0], b[3] - b[1]
+            pad = max(10.0, pad_frac * max(w, h) * 0.5 + 0.15 * h)
+            x0, y0, x1, y1 = clamp_box([b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad], fw, fh)
+            mk[int(y0):int(math.ceil(y1)), int(x0):int(math.ceil(x1))] = 255
+        a = (cv2.GaussianBlur(mk, (0, 0), feather).astype(np.float32) / 255.0)[..., None]
+        frames[i] = np.clip(frames[i].astype(np.float32) * (1 - a) + pred.astype(np.float32) * a,
+                            0, 255).astype(np.uint8)
+        done.append({"frame": i, "from": p, "t": round(t, 3), "ecc": round(cc, 4)})
+    return done
 
 
 def compose(spec):
@@ -490,6 +587,12 @@ def compose(spec):
             back = cv2.resize(gen[k], (rw, rh), interpolation=cv2.INTER_CUBIC).astype(np.float32)
             reg = out[i][ry:ry + rh, rx:rx + rw].astype(np.float32)
             out[i][ry:ry + rh, rx:rx + rw] = np.clip(reg * (1 - a) + back * a, 0, 255).astype(np.uint8)
+        rebuilt = []
+        if plan.get("anchor_policy") == "rebuild":
+            rebuilt = rebuild_run(out, (a0, a1), tracks, plan["anchor_boxes"])
+            for r in rebuilt:
+                print(f"MEASURED rebuilt anchor frame {r['frame']} from frame {r['from']} "
+                      f"(t {r['t']}, ecc {r['ecc']})", flush=True)
         # score: lettering similarity to the reference on masked frames (gradient NCC at
         # the tracked box, reference resized to it) minus a flicker penalty
         sims, flick = [], []
@@ -513,7 +616,8 @@ def compose(spec):
         write_clip(path, out, fps, audio_from=spec["clip"] if has_audio(spec["clip"]) else None)
         results.append({"take": ti + 1, "seed": spec["seeds"][ti], "score": round(score, 4),
                         "lettering_similarity": round(float(np.mean(sims)) if sims else 0.0, 4),
-                        "flicker": round(float(np.mean(flick)) if flick else 0.0, 3), "path": path})
+                        "flicker": round(float(np.mean(flick)) if flick else 0.0, 3),
+                        "rebuilt_frames": rebuilt, "path": path})
         print(f"MEASURED take {ti + 1} seed {spec['seeds'][ti]} score {score:.4f}", flush=True)
         emit("PROGRESS", str(int(100 * (ti + 1) / (len(spec["takes"]) + 1))))
 
@@ -523,7 +627,9 @@ def compose(spec):
     proof_sheet(spec, plan, read_clip(spec["clip"])[0], read_clip(best["path"])[0], best, results)
     report = {"best_take": best["take"], "takes": [{k: v for k, v in r.items() if k != "path"} for r in results],
               "anchor_frame": anchor, "anchor_run": plan["anchor_run"], "window": plan["window"],
-              "elements": names, "align": plan["align"], "warnings": plan["warnings"]}
+              "elements": names, "align": plan["align"], "warnings": plan["warnings"],
+              "anchor_policy": plan.get("anchor_policy", "keep"),
+              "lettering_source": plan.get("lettering_source", "reference")}
     json.dump(report, open(spec["report"], "w"), indent=1)
     emit("PROGRESS", "100")
 
@@ -552,7 +658,7 @@ def proof_sheet(spec, plan, original, fixed, best, results):
             x0 = int(min(max(0, cx - cw / 2), fw - cw)); y0 = int(min(max(0, cy - ch / 2), fh - ch))
             o = cv2.resize(original[i][y0:y0 + int(ch), x0:x0 + int(cw)], sz, interpolation=cv2.INTER_CUBIC)
             f = cv2.resize(fixed[i][y0:y0 + int(ch), x0:x0 + int(cw)], sz, interpolation=cv2.INTER_CUBIC)
-            for t, lab in ((o, f"{i} before"), (f, f"{i} fixed" if i not in range(plan['anchor_run'][0], plan['anchor_run'][1] + 1) else f"{i} anchor")):
+            for t, lab in ((o, f"{i} before"), (f, f"{i} fixed" if i not in range(plan['anchor_run'][0], plan['anchor_run'][1] + 1) else (f"{i} rebuilt" if plan.get("anchor_policy") == "rebuild" else f"{i} anchor"))):
                 cv2.putText(t, lab, (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3)
                 cv2.putText(t, lab, (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
             top.append(o)

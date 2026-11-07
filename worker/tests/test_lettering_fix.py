@@ -127,6 +127,41 @@ class PixelHelpersTest(unittest.TestCase):
         self.assertAlmostEqual((x0 + x1) / 2, 320, delta=3)
         self.assertAlmostEqual((y0 + y1) / 2, 210, delta=3)
 
+    def test_pair_for_run(self):
+        self.assertEqual(lettering._pair_for_run(98, 98, 170), (97, 99))      # interpolate
+        self.assertEqual(lettering._pair_for_run(150, 157, 158), (148, 149))  # run at the end
+        self.assertEqual(lettering._pair_for_run(0, 3, 158), (4, 5))          # run at the start
+        self.assertIsNone(lettering._pair_for_run(0, 0, 1))
+
+    def test_rebuild_removes_a_pasted_frame(self):
+        """A car closing in: the plate grows 1 px a frame. Frame 10 carries a pasted plate that
+        is bigger and a different colour (the job a56e505c frame-98 pop). After the rebuild
+        it must sit between frames 9 and 11 again, and nothing outside the plate may change."""
+        import cv2
+        import numpy as np
+        rng = np.random.default_rng(3)
+        body = cv2.GaussianBlur(rng.integers(40, 220, (240, 320, 3), dtype=np.uint8), (0, 0), 2)
+        frames, boxes = [], {}
+        for i in range(21):
+            f = body.copy()
+            x0, y0, x1, y1 = 120 - i, 110 - i // 3, 200 + i, 130 + i // 3
+            cv2.rectangle(f, (x0, y0), (x1, y1), (90, 80, 30), -1)
+            cv2.putText(f, "OLE", (x0 + 8, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1)
+            frames.append(f)
+            boxes[i] = [float(x0), float(y0), float(x1), float(y1)]
+        orig10 = frames[10].copy()
+        cv2.rectangle(frames[10], (104, 96), (226, 142), (160, 120, 20), -1)   # the pasted plate
+        before = frames[10].copy()
+        done = lettering.rebuild_run(frames, (10, 10), [boxes], [boxes[10]])
+        self.assertEqual([d["frame"] for d in done], [10])
+        self.assertEqual(done[0]["from"], 9)
+        diff = np.abs(frames[10].astype(int) - orig10.astype(int))
+        x0, y0, x1, y1 = [int(v) for v in boxes[10]]
+        self.assertLess(diff[y0:y1, x0:x1].mean(), 6.0)                          # back to the real plate
+        self.assertGreater(np.abs(before.astype(int) - orig10.astype(int))[y0:y1, x0:x1].mean(), 20)
+        self.assertEqual(np.abs(frames[10].astype(int) - before.astype(int))[:40].max(), 0)  # far area untouched
+        self.assertEqual(frames[9].tolist(), frames[9].tolist())
+
     def test_proof_sheet_with_growing_boxes(self):
         """Per-frame boxes change size (push-in): every tile must still share one shape."""
         import tempfile
