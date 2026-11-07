@@ -276,7 +276,10 @@ def free_vram():
 
 
 def build_graph(src_name, mask_name, amask_name, prompt, W, H, length, steps, turbo, seed, prefix,
-                ref_names=(), ref_image_size="match"):
+                ref_names=(), ref_image_size="match", denoise=1.0, keep=False):
+    """keep=False: classic inpaint (masked latent zeroed, full denoise).
+    keep=True + denoise<1: harmonise pass, the masked area is re-noised from its OWN
+    latent (SDEdit-style), so what is there survives but is re-rendered by H3."""
     g = {}
     g["unet"] = {"class_type": "UNETLoader", "inputs": {"unet_name": UNET, "weight_dtype": "default"}}
     model = ["unet", 0]
@@ -317,7 +320,7 @@ def build_graph(src_name, mask_name, amask_name, prompt, W, H, length, steps, tu
                     "inputs": {"destination": ["amasked", 0], "source": ["blank", 0],
                                "clear_mask": False, "force_binary_mask": True}}
     g["feather"] = {"class_type": "vloFeatherAudioLatentMask",
-                    "inputs": {"audio_latent": ["cleared", 0], "mode": "outer", "lead_ramp": 0.15,
+                    "inputs": {"audio_latent": ["amasked", 0] if keep else ["cleared", 0], "mode": "outer", "lead_ramp": 0.15,
                                "tail_ramp": 0.15, "lead_hold": 0.1, "tail_hold": 0.1, "curve": "cosine",
                                "floor": 0.0, "audio_vae": ["avae", 0], "layout_override": "auto",
                                "audio_latent_rate": 0.0}}
@@ -332,7 +335,7 @@ def build_graph(src_name, mask_name, amask_name, prompt, W, H, length, steps, tu
     g["guider"] = {"class_type": "BasicGuider", "inputs": {"model": model, "conditioning": ["cond", 0]}}
     g["sampler"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "res_multistep"}}
     g["sched"] = {"class_type": "BasicScheduler",
-                  "inputs": {"model": model, "scheduler": "simple", "steps": steps, "denoise": 1.0}}
+                  "inputs": {"model": model, "scheduler": "simple", "steps": steps, "denoise": float(denoise)}}
     g["noise"] = {"class_type": "RandomNoise", "inputs": {"noise_seed": seed}}
     g["sample"] = {"class_type": "SamplerCustomAdvanced",
                    "inputs": {"noise": ["noise", 0], "guider": ["guider", 0], "sampler": ["sampler", 0],
@@ -350,6 +353,12 @@ def build_graph(src_name, mask_name, amask_name, prompt, W, H, length, steps, tu
 
 def run_test(t, src_path, src_frames, out_dir, report):
     name = t["name"]
+    if t.get("source"):
+        # per-test source: a repo path, or "@out/<file>" = an earlier test's output in this job
+        s = t["source"]
+        src_path = os.path.join(out_dir, s[5:]) if s.startswith("@out/") else s
+        src_frames = read_frames(src_path)
+        log(f"[{name}] source {src_path}: {len(src_frames)} frames")
     fh, fw = src_frames[0].shape[:2]
     start = int(t.get("window_start", 0))
     length = snap_len(int(t.get("window_frames", 124)))
@@ -419,10 +428,14 @@ def run_test(t, src_path, src_frames, out_dir, report):
         steps = int(v.get("steps", 20))
         turbo = bool(v.get("turbo", False))
         seed = int(v.get("seed", 6332))
+        denoise = float(v.get("denoise", 1.0))
+        keep = bool(v.get("keep", False))
         g = build_graph(n_src, n_vm, n_am, t["prompt"], W, H, length, steps, turbo, seed,
-                        f"h3_inpaint_spike/{vname}", n_refs, t.get("ref_image_size", "match"))
+                        f"h3_inpaint_spike/{vname}", n_refs, t.get("ref_image_size", "match"),
+                        denoise=denoise, keep=keep)
         t0 = time.time()
         rec = {"test": name, "variant": v["label"], "steps": steps, "turbo": turbo, "seed": seed,
+               "denoise": denoise, "keep": keep,
                "gen_w": W, "gen_h": H, "frames": length, "region": list(regs[0]), "mode": mode}
         try:
             for attempt in (1, 2):
