@@ -24,3 +24,6 @@ on conflict (engine) do update set capability = excluded.capability;
 --    remake_paint (its first half, Codex keyframes) is NOT gated: it runs on the PC, which has the Codex login.
 insert into farm_engine_capabilities (engine, capability) values ('remake', 'gpu-cloud')
 on conflict (engine) do update set capability = excluded.capability;
+
+-- 4. face_swap (H3 r2v motion transfer) removed 2026-11-08: replaced by remake_paint + remake (Viggle Remake).
+delete from farm_engine_capabilities where engine = 'face_swap';

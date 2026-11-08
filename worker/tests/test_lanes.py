@@ -30,8 +30,8 @@ _real_or_stub("config", COMFYUI_URL="http://127.0.0.1:8188", LIGHT_LANE_MIN_AVAI
               MUSIC_LANE_MIN_AVAIL_RAM_GB=12,
               MUSIC_LANE_MIN_FREE_VRAM_MIB=6500, MATTE_MIN_FREE_VRAM_MIB=10500, MATTE_VRAM_WAIT_SECONDS=120,
               MATTE_LOAD_SECONDS=45,
-              COMFY_ENGINES={"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap"},
-              GPU_EXCLUSIVE_ENGINES={"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap", "matte"})
+              COMFY_ENGINES={"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit"},
+              GPU_EXCLUSIVE_ENGINES={"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "matte"})
 _real_or_stub("db")
 
 import config  # noqa: E402

@@ -64,7 +64,7 @@ import venvs
 from heartbeat import Heartbeat
 from job_stats import JobStats
 import queue_status
-from runners import (asset_check, audio_gen, blender, clip_edit, face_swap, footage, frame_extract, hyperframes,
+from runners import (asset_check, audio_gen, blender, clip_edit, footage, frame_extract, hyperframes,
                      lettering_fix, matte, planar_patch, python_script, ramp_shot, reference_extract, remake,
                      remake_paint, remotion, video_gen, video_split, voiceover)
 from videogen import comfy_client, ram_gate
@@ -107,7 +107,6 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # A person from a photo put into a video's performance (H3 r2v motion
            # transfer: the photo gives the identity, the video with its hair painted
            # out gives the motion). Background and hands are regenerated too.
-           "face_swap": face_swap.run,
            # Viggle Remake person swap (face only or whole body), two halves: remake_paint on the PC
            # (ingest, Codex-painted keyframes, prompt briefs) and remake on a cloud 5090 (their LoRA in
            # ComfyUI 0.42 renders every window with the source's motion, cuts and soundtrack).
@@ -135,7 +134,7 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
 # repo_url is a "-" placeholder (the column is NOT NULL).
 NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split",
             "matte", "video_gen", "planar_patch", "audio_gen", "footage", "voiceover", "lettering_fix",
-            "clip_edit", "face_swap", "remake_paint", "remake"}
+            "clip_edit", "remake_paint", "remake"}
 
 
 def log(msg):

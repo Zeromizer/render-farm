@@ -95,7 +95,7 @@ MUSIC_LANE_MIN_AVAIL_RAM_GB = float(os.environ.get("MUSIC_LANE_MIN_AVAIL_RAM_GB"
 # 265 beds peaked at 6.05 GB over the box's baseline (2026-10-31): below this one could not fit.
 MUSIC_LANE_MIN_FREE_VRAM_MIB = int(os.environ.get("MUSIC_LANE_MIN_FREE_VRAM_MIB", "6500"))
 # Engines whose runners drive the headless ComfyUI.
-COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap", "remake"}
+COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "remake"}
 # One of these at a time, whichever lane it came from (render_worker.run_job). matte is here
 # for its VRAM, not for ComfyUI: a bed (6 GB) beside a p90 matte (9.9 GB) is over the 16 GB card.
 GPU_EXCLUSIVE_ENGINES = COMFY_ENGINES | {"matte"}
