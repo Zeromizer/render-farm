@@ -60,6 +60,33 @@ def pack(d, sid, out):
         t.add(d, arcname=sid, filter=lambda ti: None if ti.name.endswith(".tmp") else ti)
 
 
+def keep_keyframes(S, d, sid):
+    """Every painted keyframe the agent chose goes into its window's refs. Their windows() takes ONE painted frame per
+    shot (pick_refs); a second keyframe in a shot (a shot over 8 s, the view changing a lot) is theirs to add with
+    set_refs, and windows() run again (the render stage re-sizes for the live worker) drops it. So this runs after
+    every windows(), before the prompts are cut or bound. Their limits: <= 4 refs a window, >= 72 frames apart in a
+    shot; their pick is kept first."""
+    rf = json.load(open(d / "case" / "refs.json"))
+    painted = sorted(int(p.stem[1:]) for p in (d / "case" / "paint" / "g2").glob("f*.png") if p.stem[1:].isdigit())
+    plan = json.load(open(d / "case" / "plan_grid.json"))
+    out = []
+    for i, w in enumerate(rf["windows"]):
+        if w.get("passthrough"):
+            continue
+        a, b = w["own"]
+        refs = list(w.get("refs") or [])
+        for f in painted:
+            if not (a <= f < b) or f in refs or len(refs) >= 4:
+                continue
+            shot = next((x for x in plan["shots"] if x["start"] <= f < x["end"]), None)
+            same = [g for g in refs if shot and shot["start"] <= g < shot["end"]]
+            if all(abs(f - g) >= 72 for g in same):
+                refs.append(f)
+        if sorted(refs) != sorted(w.get("refs") or []):
+            out.append(S.set_refs(sid, i, sorted(refs), "the agent's keyframes: one per view of the shot"))
+    return out
+
+
 def paint_edit(spec, S, kit, d, sid, warnings):
     """Edit session (their AGENTS.md "Edit sessions"): the object is a pseudo-person X1 replaced by `name`, people and
     other things kept ("none"); one epaint per keyframe with the instruction (what changes, the new object's OWN shape,
@@ -196,6 +223,8 @@ def paint(spec):
 
     emit("PHASE", "cutting windows and writing briefs")
     print(S.windows(sid), flush=True)
+    for x in keep_keyframes(S, d, sid):
+        print(x, flush=True)
     # swap: their brief per window (write_prompts); edit: their cut_windows (guide + the edit FORMAT EXAMPLE), the
     # prompt is written by hand from it, as their AGENTS.md says for edit sessions
     r = S.write_prompts(sid) if kind == "swap" else S.cut_windows(sid)
@@ -263,6 +292,8 @@ def render(spec):
         print(f"worker up in {secs:.0f}s", flush=True)
         emit("PROGRESS", 8)
         print(S.windows(sid), flush=True)                  # sized for the live worker, as their AGENTS.md says
+        for x in keep_keyframes(S, d, sid):                 # windows() just reset the refs to one per shot
+            print(x, flush=True)
         if (d / "kind").read_text().strip() == "edit":
             S.cut_windows(sid)                              # cuts each window for its span
         else:
