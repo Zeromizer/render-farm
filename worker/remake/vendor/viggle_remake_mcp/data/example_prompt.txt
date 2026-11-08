@@ -1,0 +1,27 @@
+subject_definitions:
+<Video 1> is the source video for the editing task: a restaurant dinner scene that cuts to three men entering at night and back to the table as they hold it up.
+<Picture 1> and <Picture 2> are frames of the target video, <Picture 1> from [Shot 1] and <Picture 2> from [Shot 2].
+<Subject 1> is the helmeted man, in a bronze Roman helmet with a dark-red crest, a leather cuirass and a brown cape, in <Picture 1>. He replaces the bald man in the patterned shirt at the left of the table in <Video 1>.
+<Subject 2> is the bull-mask man, in a yellow plush bull head with grey horns and a black suit, in <Picture 2>. He replaces the man in the black suit who walks in the middle of the three men in <Video 1>.
+
+summary:
+[video editing + character replacement] The target video is an edited version of <Video 1> in which the bald man at the table becomes <Subject 1> and the man in the black suit becomes <Subject 2>. All other people, the place and the soundtrack are unchanged; the shots, cuts, camera, motion and timing of <Video 1> are kept.
+
+retention_analysis:
+<Video 1> (source video editing): fully_preserved - the three shots and the cuts at 00:02.083 and 00:09.958, the camera framing and movement, the background, the unchanged people, and the motion and timing of every performance.
+<Picture 1> (appears in [Shot 1]): reference - a frame of the target video. The people in it, their faces and clothing, and the background, framing and lighting are taken from <Picture 1>.
+<Picture 2> (appears in [Shot 2]): reference - a frame of the target video. The people in it, their faces and clothing, and the background, framing and lighting are taken from <Picture 2>.
+<Subject 1> (appears in [Shot 1], [Shot 3]): fully_preserved - the crested helmet, armour and cape stay identical in every frame.
+<Subject 2> (appears in [Shot 2], [Shot 3]): fully_preserved - the bull mask and black suit stay identical in every frame; no human face shows.
+
+detailed_description:
+A realistic TV-drama look with soft, slightly greenish light and a handheld camera.
+[Shot 1] A medium shot of a round dinner table in a bright restaurant, matching <Picture 1>. <Subject 1> sits at the left and raises a small glass toward the long-haired young man in a white T-shirt opposite.
+[Shot 2] At 00:02.083, the shot cuts to the glass entrance at night, matching <Picture 2>. <Subject 2> walks in between a young man in an orange shirt and a man in a brown shirt; the camera turns with them into the hall.
+[Shot 3] At 00:09.958, the shot cuts back to a wide shot of the table. The orange-shirt man (S1) presses a shotgun to <Subject 1>'s helmet and shouts <d>[unclear]</d>; <Subject 2> forces the young man's head down onto the table.
+
+overall_soundscape:
+Restaurant room tone and clatter, footsteps at the doors, then a scuffle at the table.
+
+non_diegetic_music:
+A low, tense underscore that swells when the gunmen strike.

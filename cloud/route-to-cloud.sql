@@ -18,3 +18,9 @@ on conflict (engine) do update set capability = excluded.capability;
 
 -- Back to the PC (all of them; add "and engine = '...'" for one):
 -- delete from farm_engine_capabilities where capability = 'gpu-cloud';
+
+-- 3. remake (Viggle Remake person-swap render, 2026-11-08): cloud only. Needs cloud/setup-remake.sh run once on the
+--    volume first. worker/config.py CLOUD_ONLY_ENGINES keeps the PC from taking it as a fallback (16 GB card).
+--    remake_paint (its first half, Codex keyframes) is NOT gated: it runs on the PC, which has the Codex login.
+insert into farm_engine_capabilities (engine, capability) values ('remake', 'gpu-cloud')
+on conflict (engine) do update set capability = excluded.capability;

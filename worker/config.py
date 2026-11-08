@@ -47,6 +47,16 @@ ASSET_CACHE_MAX_GB = float(os.environ.get("ASSET_CACHE_MAX_GB", "40"))
 CLEANUP_EVERY_SECONDS = int(os.environ.get("CLEANUP_EVERY_SECONDS", str(6 * 3600)))
 SIGNED_URL_SECONDS = 7 * 24 * 3600
 
+# --- remake: Viggle Remake person swap (worker/remake, cloud/setup-remake.sh) ---
+# remake_paint runs on the PC: keyframes painted by `codex exec` on the ChatGPT subscription (Viggle's pool mode).
+# Empty = `codex` from PATH and ~/.codex/auth.json.
+REMAKE_CODEX_BIN = os.environ.get("REMAKE_CODEX_BIN", "")
+REMAKE_CODEX_AUTH = os.environ.get("REMAKE_CODEX_AUTH", "")
+# remake renders on a cloud card with Viggle's ComfyUI 0.42 worker, installed beside the farm's ComfyUI 0.37.
+REMAKE_COMFY_WORKER_DIR = os.environ.get("REMAKE_COMFY_WORKER_DIR", "/workspace/remake/repo/mcp/comfy_worker")
+# Gated engines the PC must never take over as a cloud fallback (its 16 GB card cannot run them).
+CLOUD_ONLY_ENGINES = {e.strip() for e in os.environ.get("CLOUD_ONLY_ENGINES", "remake").split(",") if e.strip()}
+
 # --- video_gen (MiniMax H3 via headless ComfyUI) ---
 COMFYUI_DIR = os.environ.get("COMFYUI_DIR", r"C:\ComfyUI" if WINDOWS else "/workspace/ComfyUI")
 COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188")
@@ -85,7 +95,7 @@ MUSIC_LANE_MIN_AVAIL_RAM_GB = float(os.environ.get("MUSIC_LANE_MIN_AVAIL_RAM_GB"
 # 265 beds peaked at 6.05 GB over the box's baseline (2026-10-31): below this one could not fit.
 MUSIC_LANE_MIN_FREE_VRAM_MIB = int(os.environ.get("MUSIC_LANE_MIN_FREE_VRAM_MIB", "6500"))
 # Engines whose runners drive the headless ComfyUI.
-COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap"}
+COMFY_ENGINES = {"video_gen", "audio_gen", "footage", "voiceover", "lettering_fix", "clip_edit", "face_swap", "remake"}
 # One of these at a time, whichever lane it came from (render_worker.run_job). matte is here
 # for its VRAM, not for ComfyUI: a bed (6 GB) beside a p90 matte (9.9 GB) is over the 16 GB card.
 GPU_EXCLUSIVE_ENGINES = COMFY_ENGINES | {"matte"}

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "viggle-remake-mcp"
+version = "0.2.0"
+description = "Viggle Remake as an MCP server: whole-person swap and object/background edit of videos, driven by an agent"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+# system: ffmpeg and ffprobe on PATH
+dependencies = [
+    "mcp==2.1.0",
+    "huggingface_hub==1.27.0",
+    "pillow==12.2.0",
+    "numpy==2.3.5",
+    "openai==3.0.0",
+    "requests==2.32.5",
+]
+
+[project.optional-dependencies]
+# the GPU render worker (viggle-remake-worker); the diffusers commit carries the MiniMax-H3 pipeline
+worker = [
+    "torch==2.9.1",
+    "torchvision==0.24.1",
+    "diffusers @ git+https://github.com/huggingface/diffusers@d6726f3",
+    "transformers==5.14.1",
+    "huggingface_hub==1.27.0",
+    "safetensors==0.8.0",
+    "peft==0.18.0",
+    "accelerate==1.12.0",
+    "tokenizers==0.22.1",
+    "av==16.1.0",
+    "numpy==2.3.5",
+    "Pillow==12.2.0",
+]
+# the optional face check (REMAKE_FACE_PY, facecheck.py); its insightface buffalo_l models are not included and
+# are licensed for non-commercial research only
+face = [
+    "onnxruntime",
+    "opencv-python-headless",
+    "numpy",
+]
+
+[project.scripts]
+viggle-remake-mcp = "viggle_remake_mcp.server:main"
+viggle-remake-worker = "viggle_remake_mcp.worker:main"
+
+[tool.setuptools]
+packages = ["viggle_remake_mcp"]
+
+[tool.setuptools.package-data]
+viggle_remake_mcp = ["data/*"]

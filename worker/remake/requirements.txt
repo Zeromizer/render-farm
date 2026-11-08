@@ -1,0 +1,8 @@
+# remake driver venv (worker/remake/driver.py): the vendored Viggle MCP package's own pins (vendor/pyproject.toml).
+# No torch: rendering runs in the separate ComfyUI 0.42 venv (cloud/setup-remake.sh).
+mcp==2.1.0
+huggingface_hub==1.27.0
+pillow==12.2.0
+numpy==2.3.5
+openai==3.0.0
+requests==2.32.5

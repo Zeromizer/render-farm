@@ -1,0 +1,19 @@
+MiniMax H3 is licensed under the MiniMax H3 Community License Agreement,
+Copyright © 2026 MiniMax. All Rights Reserved.
+
+---
+
+Viggle Remake is a Model Derivative of MiniMax H3, as that term is defined in
+Section I.11 of the MiniMax H3 Community License Agreement. It is distributed
+under that same Agreement, a copy of which is included in this repository as
+LICENSE. See MODIFICATIONS.md for the list of files that were modified or added.
+
+Modifications and additions Copyright © 2026 Viggle AI.
+
+If you build a product or service on Viggle Remake, please credit it where your users will see it:
+
+    Powered by Viggle Remake (https://huggingface.co/Viggle/Viggle-Remake)
+
+The code in inference/, examples/ and comfyui/ (.py and workflow .json files) and in mcp/ is licensed under
+the Apache License 2.0 (LICENSE-CODE, mcp/LICENSE). The model weights are not. Neither licence covers
+the third-party footage in examples/media/, examples/inputs/ and mcp/examples/.

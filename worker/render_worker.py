@@ -65,8 +65,8 @@ from heartbeat import Heartbeat
 from job_stats import JobStats
 import queue_status
 from runners import (asset_check, audio_gen, blender, clip_edit, face_swap, footage, frame_extract, hyperframes,
-                     lettering_fix, matte, planar_patch, python_script, ramp_shot, reference_extract, remotion,
-                     video_gen, video_split, voiceover)
+                     lettering_fix, matte, planar_patch, python_script, ramp_shot, reference_extract, remake,
+                     remake_paint, remotion, video_gen, video_split, voiceover)
 from videogen import comfy_client, ram_gate
 
 # After a ComfyUI engine the worker checks ComfyUI's host RAM (comfy_client.recycle_if_bloated).
@@ -108,6 +108,11 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # transfer: the photo gives the identity, the video with its hair painted
            # out gives the motion). Background and hands are regenerated too.
            "face_swap": face_swap.run,
+           # Viggle Remake person swap (face only or whole body), two halves: remake_paint on the PC
+           # (ingest, Codex-painted keyframes, prompt briefs) and remake on a cloud 5090 (their LoRA in
+           # ComfyUI 0.42 renders every window with the source's motion, cuts and soundtrack).
+           "remake_paint": remake_paint.run,
+           "remake": remake.run,
            # An instrumental music bed from a description (YuE2 + instrumental
            # LoRA) in the same headless ComfyUI video_gen uses. Feeds the
            # platform's music library; a minute or two per bed.
@@ -130,7 +135,7 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
 # repo_url is a "-" placeholder (the column is NOT NULL).
 NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split",
             "matte", "video_gen", "planar_patch", "audio_gen", "footage", "voiceover", "lettering_fix",
-            "clip_edit", "face_swap"}
+            "clip_edit", "face_swap", "remake_paint", "remake"}
 
 
 def log(msg):
@@ -321,7 +326,8 @@ def main():
             if (not job and cloud_gated and config.CLOUD_FALLBACK_MINUTES > 0
                     and ram_gate.available_gb() >= config.CLOUD_FALLBACK_MIN_AVAIL_RAM_GB):
                 # No pod took it in time (out of stock, budget used, broken boot).
-                job = db.claim_conditional(include=cloud_gated, created_before=cloud_lane.fallback_cutoff())
+                job = db.claim_conditional(include=cloud_gated - config.CLOUD_ONLY_ENGINES,
+                                           created_before=cloud_lane.fallback_cutoff())
                 if job:
                     log(f"cloud fallback: {job['engine']} job waited over "
                         f"{config.CLOUD_FALLBACK_MINUTES:g} min; running it here")

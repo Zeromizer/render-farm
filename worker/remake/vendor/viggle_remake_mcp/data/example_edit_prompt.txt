@@ -1,0 +1,33 @@
+subject_definitions:
+<Video 1> is the source video for the target video edit.
+<Picture 1> is a frame of the target video, exactly as the target video shows it at that moment.
+<Picture 2> is a frame of the target video, exactly as the target video shows it at that moment.
+<Subject 1> is a young man in a dark navy 1960s airline pilot's uniform with gold stripes on the sleeves, a white peaked pilot's cap and sunglasses.
+<Subject 2> is the stewardesses: eight young women in matching bright blue 1960s airline uniforms - fitted jackets, pencil skirts, small round blue caps and white gloves - walking arm in arm and carrying blue flight bags.
+<Subject 3> is the background extras: many 1960s travellers in suits, hats and summer dresses carrying suitcases, a policeman in a light-blue shirt and cap, and other pilots in dark uniforms.
+<Subject 4> is the setting from <Video 1>: a 1960s airport terminal hall with airline check-in counters, brown airline name signs, travel posters on cream walls, chrome rope posts, a speckled terrazzo floor, potted palms, big windows and a low white ceiling with long fluorescent light strips.
+<Subject 5> is the inside of a big wooden county-fair livestock barn: a wide walkway of packed dirt covered in loose golden straw, low wooden pens with pink pigs and black-and-white dairy cows along the sides, stacked hay bales, metal feed buckets, blue and red prize ribbons pinned to the pen rails, plain weathered wooden board walls without any lettering, and a high timber roof with open rafters and hanging work lamps.
+
+summary:
+[video editing] The target video is an edited version of <Video 1>. The pilot and the stewardesses stride arm in arm through the crowd exactly as in <Video 1>, but they are not in an airport terminal: they parade through a straw-covered county-fair livestock barn between pens of pigs and cows, the crowd of travellers walking through the barn with them, with the same framing, camera motion and timing as <Video 1>.
+
+retention_analysis:
+<Video 1> (source video editing): fully_preserved - the backward-tracking camera, the cut, the walk, every person's position and movement are copied frame for frame.
+<Picture 1> (target keyframe): fully_preserved - the target video passes through this exact frame.
+<Picture 2> (target keyframe): fully_preserved - the target video passes through this exact frame.
+<Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - his face, sunglasses, cap, uniform and his whole walk are retained.
+<Subject 2> (appears in [Shot 1], [Shot 2]): fully_preserved - every stewardess, every cap, glove, bag and smile, and their arm-in-arm walk are retained.
+<Subject 3> (appears in [Shot 1], [Shot 2]): fully_preserved - every traveller, the policeman and the other pilots are retained in the same places with the same movements.
+<Subject 4> (appears in [Shot 1], [Shot 2]): replaced - the whole setting is replaced by <Subject 5> in both shots; no airline signs, no counters, no posters, no terrazzo floor, no palms, no rope posts and no fluorescent lights remain anywhere.
+<Subject 5> (appears in [Shot 1], [Shot 2]): new - the same livestock barn in both shots: straw on the floor under every person, pens with pigs and cows where the counters were, hay bales and rafters with work lamps where the walls and ceiling were.
+
+detailed_description:
+The target video is in warm, sunny 1960s comedy-film style with bright light coming in through the barn doors.
+[Shot 1] From 00:00.000 to 00:06.583, the camera tracks backwards as <Subject 1> and <Subject 2> stride arm in arm toward it across the straw-covered walkway of <Subject 5>, smiling, while <Subject 3> with their suitcases walk past on the left in front of the wooden pens where pigs and cows look on; at 00:01.667 the scene matches <Picture 1>. The stewardesses come closer until they fill the frame, hay bales and rafters behind them.
+[Shot 2] From 00:06.583 to 00:10.125, seen from behind, <Subject 1> in his white cap and <Subject 2> walk forward into the crowded barn, <Subject 3> filling the straw walkway ahead between long rows of pens with pigs and black-and-white cows, people leaning on the pen rails on the right, the policeman watching on the right, hanging work lamps under the timber roof; at 00:08.333 the scene matches <Picture 2>.
+
+overall_soundscape:
+The murmur of the crowd and footsteps, as in <Video 1>.
+
+non_diegetic_music:
+The bright, jazzy 1960s orchestral music from <Video 1>, unchanged.
