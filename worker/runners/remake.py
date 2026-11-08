@@ -8,7 +8,8 @@ params.remake:
   org_id / job_id    uuids
   session            {bucket, path}: a remake_paint paint/repaint job's outputs/<id>.tgz
   prompts            {"0": "<six sections>", ...}: one per window the paint report lists (not passthrough ones)
-  consent            {confirmed: true, ...} (carried from the paint stage; refused without it)
+  consent            {confirmed: true, ...} (carried from the paint stage; refused without it; not for mode object)
+  mode               person (default) | object (an edit session: a car or other object replaced)
   seeds              [0] (a fix round: [1])
 Output: outputs/<job_id>.mp4 (final, source soundtrack), -sbs.mp4 (source | result), -strip.jpg (their review strip),
 -report.json (strip text with cut-timing / edge-band flags, picks, worker log tail).
@@ -31,9 +32,11 @@ REQUIREMENTS = os.path.join(RM_DIR, "requirements.txt")
 
 def validate(p):
     if not (p.get("org_id") and p.get("job_id") and isinstance(p.get("session"), dict) and p["session"].get("path")):
-        raise RuntimeError("remake needs params.remake.{org_id, job_id, session, prompts, consent}")
+        raise RuntimeError("remake needs params.remake.{org_id, job_id, session, prompts} (+ consent for a person)")
     c = p.get("consent")
-    if not (isinstance(c, dict) and c.get("confirmed") is True):
+    if p.get("mode") not in (None, "person", "face", "whole", "object"):
+        raise RuntimeError("mode is face or whole (a person) or object")
+    if p.get("mode") != "object" and not (isinstance(c, dict) and c.get("confirmed") is True):
         raise RuntimeError("remake refuses without consent.confirmed")
     pr = p.get("prompts")
     if not (isinstance(pr, dict) and pr and all(str(k).isdigit() and isinstance(v, str) and len(v) > 200 for k, v in pr.items())):

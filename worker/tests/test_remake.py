@@ -71,6 +71,52 @@ class PaintParams(unittest.TestCase):
             RP.validate({"org_id": "o", "job_id": "j", "stage": "repaint", "session": SRC, "consent": OK})
 
 
+def obj(**over):
+    p = {"org_id": "o", "job_id": "j", "stage": "paint", "mode": "object",
+         "session": {"bucket": "renders", "path": "outputs/a.tgz"}, "name": "SU7 Ultra",
+         "object": "the matte-black sports car on the motorway", "replacement": "a yellow Xiaomi SU7 Ultra prototype",
+         "edit": "The black sports car becomes the yellow SU7 Ultra prototype.",
+         "instruction": "Replace the black sports car with the SU7 Ultra in Image 1. Draw the SU7's OWN body: ...",
+         "keyframes": [{"at_s": 4.0, "where": "centre of the frame, head-on, close"}],
+         "refs": [SRC, SRC]}
+    p.update(over)
+    return p
+
+
+@unittest.skipIf(RP is None, "worker venv not available")
+class ObjectParams(unittest.TestCase):
+    """mode object = their edit session: a car or other object replaced, the rest of the footage kept."""
+    def test_object_paint_ok_without_consent(self):
+        RP.validate(obj())
+
+    def test_object_needs_instruction_and_keyframes(self):
+        with self.assertRaisesRegex(RuntimeError, "instruction"):
+            RP.validate(obj(instruction="short"))
+        with self.assertRaisesRegex(RuntimeError, "keyframes"):
+            RP.validate(obj(keyframes=[]))
+
+    def test_object_refs_at_most_four(self):
+        with self.assertRaisesRegex(RuntimeError, "refs"):
+            RP.validate(obj(refs=[SRC] * 5))
+
+    def test_object_repaint(self):
+        RP.validate(obj(stage="repaint", repaint={"frames": [96]}))
+        with self.assertRaisesRegex(RuntimeError, "repaint"):
+            RP.validate(obj(stage="repaint", repaint={}))
+
+    def test_person_face_and_whole_modes_still_valid(self):
+        RP.validate(paint(mode="face"))
+        RP.validate(paint(mode="whole"))
+
+    def test_person_mode_still_needs_consent(self):
+        with self.assertRaisesRegex(RuntimeError, "consent"):
+            RP.validate(paint(consent=None))
+
+    def test_bad_mode(self):
+        with self.assertRaisesRegex(RuntimeError, "mode"):
+            RP.validate(obj(mode="car"))
+
+
 @unittest.skipIf(RP is None, "worker venv not available")
 class CodexBin(unittest.TestCase):
     """The VS Code extension's folder is versioned (openai.chatgpt-26.51021...): the newest one must win, as a number."""
@@ -103,6 +149,11 @@ class RenderParams(unittest.TestCase):
     def test_refuses_without_consent(self):
         with self.assertRaisesRegex(RuntimeError, "consent"):
             R.validate(self.p(consent={}))
+
+    def test_object_mode_needs_no_consent(self):
+        R.validate(self.p(consent=None, mode="object"))
+        with self.assertRaisesRegex(RuntimeError, "mode"):
+            R.validate(self.p(mode="vehicle"))
 
     def test_prompts_shape(self):
         with self.assertRaisesRegex(RuntimeError, "prompts"):

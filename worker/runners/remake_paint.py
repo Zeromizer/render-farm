@@ -11,6 +11,13 @@ params.remake_paint:
             name, identity, outfit, person, keyframes [{frame | at_s, where}] (required), others [{desc}],
             shots_with_person [i], kind person|anthro|creature, note
   repaint:  session (a paint job's .tgz), consent, repaint {frames [..], note}
+  mode object (Viggle's edit session: a car or other object replaced, the footage otherwise kept; no consent):
+  prepare:  + mode "object"
+  paint:    session, name (the new object, e.g. "SU7 Ultra"), object (the thing in the video to replace), replacement
+            (what it becomes, its looks), edit (one sentence), instruction (the keyframe edit: what changes, the new
+            object's OWN shape, what fills the space), keyframes [{frame | at_s, where, instruction?}], refs [{bucket,
+            path}] (0-4 pictures of the new object), others [{desc}] (kept as they are), shots_with_object [i], note
+  repaint:  session, repaint {frames [..], instruction?}
 Output: outputs/<job_id>.tgz (the session folder, the next stage's input) plus outputs/<job_id>-report.json and the
 pictures the agent reviews under outputs/<job_id>/ (strips, character sheet, keyframe comparisons, window sheets).
 """
@@ -61,10 +68,37 @@ def _text(v, lo, hi):
     return isinstance(v, str) and lo <= len(v.strip()) <= hi
 
 
+def _validate_object(p, stage):
+    if stage == "repaint":
+        rp = p.get("repaint") or {}
+        if not rp.get("frames"):
+            raise RuntimeError("repaint needs repaint.frames")
+        if rp.get("instruction") is not None and not _text(rp["instruction"], 20, 2000):
+            raise RuntimeError("repaint.instruction: 20-2000 chars")
+        return p
+    if not (_text(p.get("name"), 1, 40) and set(p["name"]) <= NAME_OK):
+        raise RuntimeError("name: 1-40 letters, digits, spaces, - or _")
+    for k, lo, hi in (("object", 5, 400), ("replacement", 10, 800), ("edit", 10, 400), ("instruction", 40, 2000)):
+        if not _text(p.get(k), lo, hi):
+            raise RuntimeError(f"{k} must be text, {lo}-{hi} chars")
+    kfs = p.get("keyframes") or []
+    if not (1 <= len(kfs) <= 12 and all(isinstance(k, dict) and (k.get("frame") is not None or k.get("at_s") is not None)
+                                         and _text(k.get("where"), 3, 300)
+                                         and (k.get("instruction") is None or _text(k["instruction"], 40, 2000))
+                                         for k in kfs)):
+        raise RuntimeError("keyframes: 1-12 of {frame | at_s, where, instruction?}, one per shot that shows the object")
+    refs = p.get("refs") or []
+    if not (len(refs) <= 4 and all(_src_ok(r) for r in refs)):
+        raise RuntimeError("refs: 0-4 pictures {bucket, path} of the new object")
+    return p
+
+
 def validate(p):
     stage = p.get("stage")
     if not (p.get("org_id") and p.get("job_id") and stage in STAGES):
         raise RuntimeError(f"remake_paint needs params.remake_paint.{{org_id, job_id, stage in {list(STAGES)}}}")
+    if p.get("mode") not in (None, "person", "face", "whole", "object"):   # face | whole: a person swap's own modes
+        raise RuntimeError("mode is face or whole (a person) or object")
     if stage == "prepare":
         if not _src_ok(p.get("target")):
             raise RuntimeError("prepare needs target {bucket, path}")
@@ -74,6 +108,8 @@ def validate(p):
         return p
     if not _src_ok(p.get("session")):
         raise RuntimeError(f"{stage} needs session {{bucket, path}}: the previous stage's outputs/<id>.tgz")
+    if p.get("mode") == "object":
+        return _validate_object(p, stage)
     c = p.get("consent")
     if not (isinstance(c, dict) and c.get("confirmed") is True):
         raise RuntimeError("remake_paint refuses without consent.confirmed: the person in the picture must have agreed")
@@ -106,6 +142,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
             "sid": f"rm{p['job_id'].replace('-', '')[:12]}",
             "tar_out": os.path.join(work_dir, "session.tgz"), "report_out": os.path.join(work_dir, "report.json"),
             "codex_bin": codex_bin() if p["stage"] != "prepare" else "", "codex_auth": config.REMAKE_CODEX_AUTH}
+    spec["kind"] = "edit" if p.get("mode") == "object" else "swap"
     if p["stage"] == "prepare":
         spec["target"] = media_type.ensure_extension(gate_common.download(p["target"]["bucket"], p["target"]["path"],
                                                                           work_dir, "target", log), ("video",),
@@ -114,7 +151,14 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
         spec.update(start_s=s0, dur_s=(float(p["end_s"]) - s0) if p.get("end_s") is not None else None, crop=p.get("crop"))
     else:
         spec["tar_in"] = gate_common.download(p["session"]["bucket"], p["session"]["path"], work_dir, "session_in", log)
-        if p["stage"] == "paint":
+        if p["stage"] == "paint" and p.get("mode") == "object":
+            spec["refs"] = [media_type.ensure_extension(gate_common.download(r["bucket"], r["path"], work_dir,
+                                                                             f"ref{i + 1}", log), ("image",),
+                                                        name="reference picture", probe=True)
+                            for i, r in enumerate(p.get("refs") or [])]
+            spec.update({k: p[k] for k in ("name", "object", "replacement", "edit", "instruction", "keyframes",
+                                           "others", "shots_with_object", "note") if p.get(k) is not None})
+        elif p["stage"] == "paint":
             spec["photo"] = media_type.ensure_extension(gate_common.download(p["face"]["bucket"], p["face"]["path"],
                                                                              work_dir, "face", log), ("image",),
                                                         name="face picture", probe=True)

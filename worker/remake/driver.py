@@ -60,6 +60,45 @@ def pack(d, sid, out):
         t.add(d, arcname=sid, filter=lambda ti: None if ti.name.endswith(".tmp") else ti)
 
 
+def paint_edit(spec, S, kit, d, sid, warnings):
+    """Edit session (their AGENTS.md "Edit sessions"): the object is a pseudo-person X1 replaced by `name`, people and
+    other things kept ("none"); one epaint per keyframe with the instruction (what changes, the new object's OWN shape,
+    what fills the space) and the pictures of what the edit brings in as refs."""
+    nf, bounds = kit.nframes(d), kit.shot_bounds(d)
+    kfs = []
+    for k in spec.get("keyframes") or []:
+        f = int(k["frame"]) if k.get("frame") is not None else round(float(k["at_s"]) * 24)
+        kfs.append((min(max(f, 0), nf - 1), k["where"], (k.get("instruction") or "").strip()))
+    assert kfs, ("keyframes are required: one per shot that shows the object, where it is clearly visible and large, "
+                 ">= 3 frames from a cut, each with `where` (where the object is)")
+    shot_of = lambda f: next(j for j, (a, b) in enumerate(bounds) if a <= f < b)  # noqa: E731
+    with_obj = set(spec.get("shots_with_object") or []) | {shot_of(f) for f, _, _ in kfs}
+    missing = sorted(with_obj - {shot_of(f) for f, _, _ in kfs})
+    if missing:
+        warnings.append(f"shots {missing} show the object but have no keyframe: they keep the original object")
+    name = spec["name"]
+    people = [{"id": "X1", "desc": spec["object"], "replace_with": name}]
+    people += [{"id": f"K{i + 1}", "desc": o["desc"], "replace_with": "none"} for i, o in enumerate(spec.get("others") or [])]
+    shots = [{"start": a, "end": b, "people": (["X1"] if i in with_obj else []), "desc": ""}
+             for i, (a, b) in enumerate(bounds)]
+    where = {str(f): {"X1": w, **({"_note": spec["note"]} if spec.get("note") else {})} for f, w, _ in kfs}
+    print(S.save_case(sid, plan_grid={"people": people, "shots": shots},
+                      case={"chars": {name: spec["replacement"]}, "outfits": {name: "none"}, "edit": spec["edit"]},
+                      where=where), flush=True)
+    emit("PROGRESS", 15)
+    refs = [S.into_session(d, r) for r in spec.get("refs") or []]   # copied into photos/, session-relative
+    st = {"instruction": spec["instruction"], "instructions": {}, "refs": refs}
+    emit("PHASE", f"painting {len(kfs)} keyframe(s)")
+    for f, _, own in kfs:
+        text = own or spec["instruction"]
+        st["instructions"][str(f)] = text
+        for x in texts(S.epaint(sid, f, text, refs=refs)):
+            print(x, flush=True)
+            if '"error"' in x:
+                warnings.append(f"paint failed: {x[:300]}")
+    json.dump(st, open(d / "case" / "farm_edit.json", "w", encoding="utf-8"), indent=1)
+
+
 def paint(spec):
     os.environ["REMAKE_PAINT"] = "pool"                    # Codex subscription, one helper codex per picture
     if spec.get("codex_auth"):
@@ -76,10 +115,12 @@ def paint(spec):
     stage = spec.get("stage") or "paint"
     if stage == "prepare":                                  # ingest + shot strips: the agent picks keyframes from them
         emit("PHASE", "ingesting the video")
-        print(S.new_session(sid, "swap"), flush=True)
+        kind = spec.get("kind") or "swap"                   # swap: a person; edit: an object (a car) replaced
+        assert kind in ("swap", "edit"), "kind is swap or edit"
+        print(S.new_session(sid, kind), flush=True)
         r = S.ingest(sid, spec["target"], float(spec.get("start_s") or 0.0), spec.get("dur_s"), spec.get("crop"))
         print(texts(r)[0], flush=True)
-        report = {"sid": sid, "stage": "prepare", "frames": kit.nframes(d), "fps": 24,
+        report = {"sid": sid, "stage": "prepare", "kind": kind, "frames": kit.nframes(d), "fps": 24,
                   "cuts": json.load(open(d / "case" / "cuts.json")), "shots": kit.shot_bounds(d),
                   "meta": json.load(open(d / "case" / "meta.json")), "ingest": texts(r)[0],
                   "strips": sorted(x.relative_to(d).as_posix() for x in (d / "case" / "look").glob("strips_*.jpg"))}
@@ -91,14 +132,25 @@ def paint(spec):
     emit("PHASE", "unpacking the session")
     with tarfile.open(spec["tar_in"]) as t:
         t.extractall(home / "sessions")
+    kind = (d / "kind").read_text().strip()
     if stage == "repaint":
         rp = spec.get("repaint") or {}
         frames = [int(f) for f in rp.get("frames") or []]
         assert frames, "repaint needs frames"
         emit("PHASE", f"repainting {frames}")
         for f in frames:
-            for x in texts(S.paint(sid, [f], note=rp.get("note") or "", force=True, quality="medium")):
-                print(x, flush=True)
+            if kind == "edit":                              # their epaint again, with the corrected instruction
+                st = json.load(open(d / "case" / "farm_edit.json"))
+                text = rp.get("instruction") or st["instructions"].get(str(f)) or st["instruction"]
+                st["instructions"][str(f)] = text
+                json.dump(st, open(d / "case" / "farm_edit.json", "w", encoding="utf-8"), indent=1)
+                for x in texts(S.epaint(sid, f, text, refs=st["refs"], force=True)):
+                    print(x, flush=True)
+            else:
+                for x in texts(S.paint(sid, [f], note=rp.get("note") or "", force=True, quality="medium")):
+                    print(x, flush=True)
+    elif kind == "edit":
+        paint_edit(spec, S, kit, d, sid, warnings)
     else:
         nf = kit.nframes(d)
         bounds = kit.shot_bounds(d)
@@ -144,7 +196,9 @@ def paint(spec):
 
     emit("PHASE", "cutting windows and writing briefs")
     print(S.windows(sid), flush=True)
-    r = S.write_prompts(sid)
+    # swap: their brief per window (write_prompts); edit: their cut_windows (guide + the edit FORMAT EXAMPLE), the
+    # prompt is written by hand from it, as their AGENTS.md says for edit sessions
+    r = S.write_prompts(sid) if kind == "swap" else S.cut_windows(sid)
     brief = texts(r)[0]
     rf = json.load(open(d / "case" / "refs.json"))
     painted = {int(p.stem[1:]) for p in (d / "case" / "paint" / "g2").glob("f*.png") if p.stem[1:].isdigit()}
@@ -153,7 +207,8 @@ def paint(spec):
         "meta": json.load(open(d / "case" / "meta.json")),
         "keyframes": sorted(painted),
         "comparisons": sorted(p.relative_to(d).as_posix() for p in (d / "case" / "paint").glob("cmp_*.jpg")),
-        "sheet": f"case/chars/{spec.get('name') or ''}_sheet.png",
+        "kind": kind,
+        "sheet": f"case/chars/{spec.get('name') or ''}_sheet.png" if kind == "swap" else None,
         "windows": [{"w": i, "render": w["render"], "own": w["own"], "refs": w.get("refs", []),
                      "passthrough": bool(w.get("passthrough")), "sheet": f"case/win{i}/sheet.jpg"}
                     for i, w in enumerate(rf["windows"])],
@@ -208,7 +263,10 @@ def render(spec):
         print(f"worker up in {secs:.0f}s", flush=True)
         emit("PROGRESS", 8)
         print(S.windows(sid), flush=True)                  # sized for the live worker, as their AGENTS.md says
-        S.write_prompts(sid)                                # cuts each window for its span (briefs ignored here)
+        if (d / "kind").read_text().strip() == "edit":
+            S.cut_windows(sid)                              # cuts each window for its span
+        else:
+            S.write_prompts(sid)                            # cuts each window for its span (briefs ignored here)
         for w, text in (spec.get("prompts") or {}).items():
             print(S.set_prompt(sid, int(w), text), flush=True)   # their lint: raises on a bad prompt
         seeds = [int(s) for s in spec.get("seeds") or [0]]
