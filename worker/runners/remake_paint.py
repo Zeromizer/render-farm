@@ -14,8 +14,11 @@ params.remake_paint:
 Output: outputs/<job_id>.tgz (the session folder, the next stage's input) plus outputs/<job_id>-report.json and the
 pictures the agent reviews under outputs/<job_id>/ (strips, character sheet, keyframe comparisons, window sheets).
 """
+import glob
 import json
 import os
+import re
+import shutil
 
 import config
 import db
@@ -30,6 +33,24 @@ REQUIREMENTS = os.path.join(RM_DIR, "requirements.txt")
 STAGES = ("prepare", "paint", "repaint")
 MAX_SECONDS = 60
 NAME_OK = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_")
+
+
+def codex_bin():
+    """The codex executable for the painter. Viggle's pool runs subprocess.run(["codex", ...]) with no shell, so on
+    Windows it must be a real codex.exe (an npm codex.cmd shim is not found). REMAKE_CODEX_BIN wins (a path, or a glob);
+    else the newest VS Code ChatGPT extension's bundled binary, whose folder is versioned and changes on every
+    extension update; else codex(.exe) on PATH."""
+    exe = "codex.exe" if os.name == "nt" else "codex"
+    pats = [config.REMAKE_CODEX_BIN] if config.REMAKE_CODEX_BIN else [
+        os.path.join(os.path.expanduser("~"), ".vscode", "extensions", "openai.chatgpt-*", "bin", "*", exe)]
+    hits = [h for pat in pats for h in glob.glob(pat) if os.path.isfile(h)]
+    if hits:
+        ver = lambda h: [int(x) for x in re.findall(r"\d+", h.split("openai.chatgpt-")[-1].split(os.sep)[0])]
+        return max(hits, key=ver)
+    found = shutil.which(exe)
+    if found and found.lower().endswith((".exe", "codex")):
+        return found
+    raise RuntimeError(f"no codex executable for painting: set REMAKE_CODEX_BIN (looked for {pats} and {exe} on PATH)")
 
 
 def _src_ok(s):
@@ -84,7 +105,7 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     spec = {"work_dir": work_dir, "home": os.path.join(work_dir, "home"), "stage": p["stage"],
             "sid": f"rm{p['job_id'].replace('-', '')[:12]}",
             "tar_out": os.path.join(work_dir, "session.tgz"), "report_out": os.path.join(work_dir, "report.json"),
-            "codex_bin": config.REMAKE_CODEX_BIN, "codex_auth": config.REMAKE_CODEX_AUTH}
+            "codex_bin": codex_bin() if p["stage"] != "prepare" else "", "codex_auth": config.REMAKE_CODEX_AUTH}
     if p["stage"] == "prepare":
         spec["target"] = media_type.ensure_extension(gate_common.download(p["target"]["bucket"], p["target"]["path"],
                                                                           work_dir, "target", log), ("video",),

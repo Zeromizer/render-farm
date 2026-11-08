@@ -71,6 +71,25 @@ class PaintParams(unittest.TestCase):
             RP.validate({"org_id": "o", "job_id": "j", "stage": "repaint", "session": SRC, "consent": OK})
 
 
+@unittest.skipIf(RP is None, "worker venv not available")
+class CodexBin(unittest.TestCase):
+    """The VS Code extension's folder is versioned (openai.chatgpt-26.51021...): the newest one must win, as a number."""
+    def test_newest_extension_wins(self):
+        import tempfile
+        exe = "codex.exe" if os.name == "nt" else "codex"
+        with tempfile.TemporaryDirectory() as t:
+            for v in ("26.9.1", "26.51021.22027", "26.10000.1"):
+                d = os.path.join(t, f"openai.chatgpt-{v}-win32-x64", "bin", "windows-x86_64")
+                os.makedirs(d)
+                open(os.path.join(d, exe), "w").close()
+            old = RP.config.REMAKE_CODEX_BIN
+            RP.config.REMAKE_CODEX_BIN = os.path.join(t, "openai.chatgpt-*", "bin", "*", exe)
+            try:
+                self.assertIn("26.51021.22027", RP.codex_bin())
+            finally:
+                RP.config.REMAKE_CODEX_BIN = old
+
+
 @unittest.skipIf(R is None, "worker venv not available")
 class RenderParams(unittest.TestCase):
     def p(self, **over):
