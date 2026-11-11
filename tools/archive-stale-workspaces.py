@@ -411,7 +411,12 @@ def execute(plan, idle_gate):
         fails = delete_tree(a["path"])
         target = os.path.join(WORKSPACE, "ARCHIVED_" + a["dir"])
         if not os.path.exists(a["path"]):
-            os.rename(staging, target)
+            if os.path.exists(target):  # archived before, then reopened: add this round's finals
+                for n in os.listdir(staging):
+                    os.replace(os.path.join(staging, n), os.path.join(target, n))
+                os.rmdir(staging)
+            else:
+                os.rename(staging, target)
         else:  # partial removal: keep finals inside what is left
             for n in os.listdir(staging):
                 shutil.move(os.path.join(staging, n), os.path.join(a["path"], n))
