@@ -112,7 +112,7 @@ $$;
 -- drops only what that migration added, keeps videogen's own columns/data):
 drop function if exists claim_render_job();
 drop function if exists reclaim_stale_jobs(int);
-alter table render_jobs
+alter table if exists render_jobs
   drop column if exists engine,
   drop column if exists repo_url,
   drop column if exists git_ref,
