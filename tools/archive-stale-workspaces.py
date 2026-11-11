@@ -18,6 +18,16 @@ Dry run by default (read-only). --execute deletes. Nightly (tools/archive-nightl
 
 Every run appends its receipt to %LOCALAPPDATA%\\render-farm\\logs\\archive-YYYYMMDD.json
 (one JSON object per line) and prints a one-line summary last.
+
+More than one platform (worker/db.py projects, 2026-11-11): --project picks the Supabase
+project whose rp_jobs decide what is stale or an orphan, --workspace its folder and --site
+its job links. The defaults are the Aimotion values, so a bare run is what it always was.
+Pairing a workspace with the wrong project would delete every job dir as an "orphan", so
+the run refuses when the folder name and the project disagree (check_pairing).
+The idle gate counts farm jobs and agent turns in every project: the box is shared.
+
+    python tools\\archive-stale-workspaces.py --project nbd --workspace C:\\rp-workspace-nbd \\
+        --site https://nobudgetdirector.vercel.app/jobs/ --execute --idle-gate
 """
 import argparse
 import hashlib
@@ -31,7 +41,9 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "worker"))
-from db import sb  # noqa: E402  (uses the worker .env service key)
+import db  # noqa: E402  (uses the worker .env service keys)
+
+sb = db.sb  # resolves per call to the project main() picked (db.use_project)
 
 WORKSPACE = r"C:\rp-workspace"
 SITE = "https://render-platform-sandy.vercel.app/jobs/"
@@ -188,14 +200,18 @@ def storage_index():
 
 def busy_reasons():
     """Empty list = idle: no farm job processing or claimable, ComfyUI queue empty,
-    no agent turn claimed/running."""
+    no agent turn claimed/running, in any project (they share this box)."""
     reasons = []
-    farm = allrows("farm_render_jobs", "id,status", status="processing") + allrows("farm_render_jobs", "id,status", status="pending")
-    for f in farm:
-        reasons.append(f"farm job {f['id'][:8]} {f['status']}")
-    for s in TURN_BUSY:
-        for t in allrows("rp_agent_turns", "id,status", status=s):
-            reasons.append(f"agent turn {t['id'][:8]} {s}")
+    for name in db.projects():
+        tag = "" if len(db.projects()) == 1 else f"{name} "
+        with db.project(name):
+            farm = (allrows("farm_render_jobs", "id,status", status="processing")
+                    + allrows("farm_render_jobs", "id,status", status="pending"))
+            for f in farm:
+                reasons.append(f"{tag}farm job {f['id'][:8]} {f['status']}")
+            for s in TURN_BUSY:
+                for t in allrows("rp_agent_turns", "id,status", status=s):
+                    reasons.append(f"{tag}agent turn {t['id'][:8]} {s}")
     try:
         q = httpx.get(f"{COMFYUI_URL}/queue", timeout=5).json()
         n_run, n_pend = len(q.get("queue_running") or []), len(q.get("queue_pending") or [])
@@ -464,6 +480,25 @@ def execute(plan, idle_gate):
             "stopped": stopped, "not_reached": not_reached}
 
 
+KNOWN_PROJECTS = ("aimotion", "nbd")
+
+
+def check_pairing(workspace, project):
+    """None, or why this workspace must not be swept against this project. Orphans are
+    judged against the project's rp_jobs, so a mismatch deletes every job dir in the
+    folder (an NBD workspace checked against Aimotion's jobs, or the reverse). A folder
+    must name its project unless the project is the default, and must never name
+    another project."""
+    folder = os.path.basename(os.path.normpath(workspace)).lower()
+    others = {p for p in set(KNOWN_PROJECTS) | set(db.projects()) if p != project and p != db.DEFAULT_PROJECT}
+    named = sorted(p for p in others if p in folder)
+    if named:
+        return f"workspace {workspace} looks like project {named[0]}'s, not {project}'s"
+    if project != db.DEFAULT_PROJECT and project not in folder:
+        return f"workspace {workspace} does not name project {project}"
+    return None
+
+
 def write_log(entry):
     os.makedirs(LOG_DIR, exist_ok=True)
     path = os.path.join(LOG_DIR, f"archive-{datetime.now().strftime('%Y%m%d')}.json")
@@ -473,6 +508,7 @@ def write_log(entry):
 
 
 def main():
+    global WORKSPACE, SITE
     ap = argparse.ArgumentParser()
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--execute", action="store_true", help="actually delete")
@@ -481,7 +517,19 @@ def main():
                     help="skip unless the farm, ComfyUI and the agent relay are idle; re-checked before each deletion")
     ap.add_argument("--max-jobs", type=int, default=30, help="archive at most N jobs per run, oldest activity first")
     ap.add_argument("--json", help="also write the full plan/receipt to this file")
+    ap.add_argument("--project", default=db.DEFAULT_PROJECT,
+                    help="Supabase project whose jobs these are (worker/db.py projects)")
+    ap.add_argument("--workspace", default=WORKSPACE, help="the project's job workspace folder")
+    ap.add_argument("--site", default=SITE, help="job link prefix written into archive labels")
     args = ap.parse_args()
+    WORKSPACE, SITE = args.workspace, args.site
+    if args.project not in db.projects():
+        sys.exit(f"unknown project {args.project}: configured are {', '.join(db.projects())} "
+                 f"(nbd needs SUPABASE_URL_NBD and SUPABASE_SERVICE_KEY_NBD in the worker .env)")
+    bad = check_pairing(WORKSPACE, args.project)
+    if bad:
+        sys.exit(f"refusing: {bad}")
+    db.use_project(args.project)
     run = "execute" if args.execute else "dry-run"
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -489,7 +537,7 @@ def main():
         busy = busy_reasons()
         if busy:
             summary = f"{BUSY_MARKER}: {'; '.join(busy[:3])}"
-            write_log({"at": started, "mode": run, "summary": summary})
+            write_log({"at": started, "mode": run, "project": args.project, "summary": summary})
             print(summary)
             return
 
@@ -524,7 +572,7 @@ def main():
     slim["archive"] = [{k: a[k] for k in ("dir", "title", "last_activity", "gb")} for a in plan["archive"]]
     slim["children"] = [c["dir"] for c in plan["children"]]
     slim["temp"] = plan["temp"]
-    log_path = write_log({"at": started, "mode": run, **slim})
+    log_path = write_log({"at": started, "mode": run, "project": args.project, "workspace": WORKSPACE, **slim})
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(plan, fh, indent=1, default=str)

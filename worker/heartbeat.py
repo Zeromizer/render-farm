@@ -10,11 +10,14 @@ import db
 class Heartbeat:
     def __init__(self, job_id):
         self.job_id = job_id
+        # Its own thread starts on the default project; beat to the job's (worker/db.py).
+        self.project = db.current_project()
         self.progress = 0          # shared int, written by stdout parsers
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
     def _loop(self):
+        db.use_project(self.project)
         beats = 0
         while not self._stop.wait(config.HEARTBEAT_SECONDS):
             beats += 1

@@ -16,6 +16,8 @@ import os
 import re
 import zipfile
 
+import config
+import db
 import proc
 from venvs import venv_python
 
@@ -48,6 +50,10 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
 
     env = dict(os.environ)
     env["RENDER_WORK_DIR"] = work_dir
+    # A script that talks to Supabase must reach the project its job came from, not the
+    # worker's default one (worker/db.py). Unchanged for the default project.
+    if db.current_project() != db.DEFAULT_PROJECT:
+        env["SUPABASE_URL"], env["SUPABASE_SERVICE_KEY"] = config.PROJECTS[db.current_project()]
     env["PYTHONUNBUFFERED"] = "1"
 
     def on_line(line):

@@ -406,14 +406,15 @@ class MusicLoop(Base):
             return None
         claim = mock.Mock(side_effect=(lambda **kw: job) if job else none)
         with mock.patch.object(ml, "_pending", return_value=True), mock.patch.object(ml.db, "claim_conditional", claim, create=True), \
-             mock.patch.object(ml.db, "gated_engines", create=True, return_value=set(gated)), mock.patch.object(ml, "POLL_SECONDS", 0.001):
+             mock.patch.object(ml.db, "gated_engines_by_project", create=True, return_value={"aimotion": set(gated)}),              mock.patch.object(ml, "POLL_SECONDS", 0.001):
             ml._loop(work or done, "no-such-flag", lambda m: None)
         return seen, claim
 
     def test_a_bed_runs_and_marks_the_lane_busy_meanwhile(self):
         seen, claim = self.run_once({"id": "m", "engine": "audio_gen"})
         self.assertEqual(seen, [({"id": "m", "engine": "audio_gen"}, "audio_gen", False)])
-        claim.assert_called_once_with(include={"audio_gen"})
+        # Gating is per project (worker/db.py): one include set per project.
+        claim.assert_called_once_with(include={"aimotion": {"audio_gen"}})
         self.assertIsNone(ll.music_engine[0])
         self.assertTrue(ml.is_idle())
 

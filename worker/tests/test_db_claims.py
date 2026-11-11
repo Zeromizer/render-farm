@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -21,12 +22,16 @@ class ProtocolError(Exception):
     pass
 
 
-def load_db():
+def load_db(projects=None):
+    """projects: {name: (url, key)}; the default is the single Aimotion project, which is
+    what a worker .env without the NBD pair gives (worker/config.py)."""
+    projects = projects or {"aimotion": ("u", "k")}
     fakes = {
         "supabase": types.SimpleNamespace(ClientOptions=lambda **kw: kw, create_client=mock.Mock(side_effect=lambda *a, **kw: object())),
         "httpx": types.SimpleNamespace(TransportError=TransportError),
         "httpcore": types.SimpleNamespace(ProtocolError=ProtocolError),
-        "config": types.SimpleNamespace(SUPABASE_URL="u", SUPABASE_SERVICE_KEY="k", BUCKET="renders", SIGNED_URL_SECONDS=60),
+        "config": types.SimpleNamespace(SUPABASE_URL="u", SUPABASE_SERVICE_KEY="k", BUCKET="renders", SIGNED_URL_SECONDS=60,
+                                        STALE_MINUTES=5, DEFAULT_PROJECT="aimotion", PROJECTS=dict(projects)),
     }
     spec = importlib.util.spec_from_file_location("db_under_test", os.path.join(WORKER, "db.py"))
     module = importlib.util.module_from_spec(spec)
@@ -185,6 +190,195 @@ class Clients(unittest.TestCase):
         with mock.patch.object(db, "create_client", return_value=object()) as make:
             self.client_in(db, "music-lane")
         self.assertEqual(make.call_args.kwargs["options"]["storage_client_timeout"], db.STORAGE_TIMEOUT_SECONDS)
+
+
+TWO = {"aimotion": ("https://aim.supabase.co", "ka"), "nbd": ("https://nbd.supabase.co", "kn")}
+
+
+class Rpc:
+    """Per-project fake client: claim_farm_job hands out that project's queue in order,
+    and records which project each call reached."""
+
+    def __init__(self, name, queue, calls, fail=False):
+        self.name, self.queue, self.calls, self.fail = name, queue, calls, fail
+
+    def rpc(self, fn, params=None):
+        def execute():
+            self.calls.append((self.name, fn))
+            if self.fail:
+                raise TransportError("down")
+            if fn == "reclaim_stale_farm_jobs":
+                return types.SimpleNamespace(data=2)
+            return types.SimpleNamespace(data=[self.queue.pop(0)] if self.queue else [])
+        return types.SimpleNamespace(execute=execute)
+
+
+class Projects(unittest.TestCase):
+    def wire(self, db, queues, down=()):
+        """Point db.sb at a fake client per project, chosen by the thread's current project."""
+        self.calls = []
+        clients = {n: Rpc(n, list(q), self.calls, fail=n in down) for n, q in queues.items()}
+
+        class Sb:
+            def __getattr__(_, name):
+                return getattr(clients[db.current_project()], name)
+        db.sb = Sb()
+        return clients
+
+    def test_one_project_is_what_a_bare_env_gives(self):
+        db, _ = load_db()
+        self.assertEqual(db.projects(), ["aimotion"])
+        self.wire(db, {"aimotion": [{"id": "a1"}]})
+        job = db.claim_job()
+        self.assertEqual(job, {"id": "a1", "_project": "aimotion"})
+        self.assertEqual(db.claim_job(), None)
+        self.assertEqual(self.calls, [("aimotion", "claim_farm_job")] * 2)
+
+    def test_one_project_errors_propagate_as_before(self):
+        db, _ = load_db()
+        self.wire(db, {"aimotion": []}, down={"aimotion"})
+        with self.assertRaises(TransportError):
+            db.claim_job()
+
+    def test_round_robin_alternates_while_both_have_work(self):
+        db, _ = load_db(TWO)
+        self.wire(db, {"aimotion": [{"id": f"a{i}"} for i in range(3)], "nbd": [{"id": f"n{i}"} for i in range(3)]})
+        got = [db.claim_job()["_project"] for _ in range(6)]
+        self.assertEqual(got, ["aimotion", "nbd"] * 3)
+
+    def test_a_busy_project_does_not_starve_the_other(self):
+        db, _ = load_db(TWO)
+        self.wire(db, {"aimotion": [{"id": f"a{i}"} for i in range(10)], "nbd": [{"id": "n0"}]})
+        first_two = {db.claim_job()["_project"], db.claim_job()["_project"]}
+        self.assertEqual(first_two, {"aimotion", "nbd"})
+
+    def test_an_empty_project_is_skipped(self):
+        db, _ = load_db(TWO)
+        self.wire(db, {"aimotion": [], "nbd": [{"id": "n0"}]})
+        self.assertEqual(db.claim_job(), {"id": "n0", "_project": "nbd"})
+
+    def test_one_project_down_does_not_stop_the_other(self):
+        db, _ = load_db(TWO)
+        self.wire(db, {"aimotion": [{"id": "a0"}], "nbd": []}, down={"nbd"})
+        with mock.patch("builtins.print"):
+            got = [db.claim_job() for _ in range(2)]
+        self.assertIn({"id": "a0", "_project": "aimotion"}, got)
+
+    def test_every_project_down_raises(self):
+        db, _ = load_db(TWO)
+        self.wire(db, {"aimotion": [], "nbd": []}, down={"aimotion", "nbd"})
+        with mock.patch("builtins.print"), self.assertRaises(TransportError):
+            db.claim_job()
+
+    def test_a_claim_leaves_the_thread_on_its_project(self):
+        db, _ = load_db(TWO)
+        self.wire(db, {"aimotion": [], "nbd": [{"id": "n0"}]})
+        db.claim_job()
+        self.assertEqual(db.current_project(), "aimotion")
+
+    def test_reclaim_runs_in_every_project(self):
+        db, _ = load_db(TWO)
+        self.wire(db, {"aimotion": [], "nbd": []})
+        self.assertEqual(db.reclaim_stale(), 4)
+        self.assertEqual(sorted(p for p, fn in self.calls if fn == "reclaim_stale_farm_jobs"), ["aimotion", "nbd"])
+
+    def test_reclaim_survives_one_project_down(self):
+        db, _ = load_db(TWO)
+        self.wire(db, {"aimotion": [], "nbd": []}, down={"nbd"})
+        self.assertEqual(db.reclaim_stale(), 2)
+
+    def test_include_per_project_skips_a_project_with_nothing(self):
+        db, _ = load_db(TWO)
+        seen = []
+        with mock.patch.object(db, "_claim_conditional",
+                               side_effect=lambda inc, exc, *a: seen.append((db.current_project(), inc, exc))):
+            db.claim_conditional(include={"aimotion": {"video_gen"}, "nbd": set()}, exclude={"aimotion": {"x"}})
+        self.assertEqual(seen, [("aimotion", {"video_gen"}, {"x"})])
+
+    def test_a_project_missing_from_the_exclude_dict_is_not_claimed(self):
+        db, _ = load_db(TWO)
+        seen = []
+        with mock.patch.object(db, "_claim_conditional",
+                               side_effect=lambda inc, exc, *a: seen.append(db.current_project())):
+            db.claim_conditional(exclude={"aimotion": {"remotion"}})
+        self.assertEqual(seen, ["aimotion"])
+
+    def test_gating_survives_one_project_down(self):
+        db, _ = load_db(TWO)
+
+        def gated(capability=None):
+            if db.current_project() == "nbd":
+                raise TransportError("down")
+            return {"url_fetch"}
+        with mock.patch.object(db, "gated_engines", side_effect=gated):
+            self.assertEqual(db.gated_engines_by_project(), {"aimotion": {"url_fetch"}})
+            with mock.patch.object(db, "projects", return_value=["nbd"]), self.assertRaises(TransportError):
+                db.gated_engines_by_project()
+
+    def test_a_plain_set_applies_to_every_project(self):
+        db, _ = load_db(TWO)
+        seen = []
+        with mock.patch.object(db, "_claim_conditional",
+                               side_effect=lambda inc, exc, *a: seen.append((db.current_project(), inc, exc))):
+            db.claim_conditional(include={"remotion"})
+        self.assertEqual(seen, [("aimotion", {"remotion"}, ()), ("nbd", {"remotion"}, ())])
+
+    def test_a_pending_check_does_not_move_the_rotation(self):
+        db, _ = load_db(TWO)
+        before = db._rotation()
+        db._each(lambda name: {"x": 1} if name == "aimotion" else None, claim=False)
+        self.assertEqual(db._rotation(), before)
+
+    def test_unknown_project_fails_loudly(self):
+        db, _ = load_db()
+        with self.assertRaises(RuntimeError):
+            db.use_project("nbd")
+        self.assertEqual(db.job_project({"id": "x"}), "aimotion")
+
+
+class ProjectClients(unittest.TestCase):
+    def test_each_project_gets_its_own_client_and_credentials(self):
+        db, _ = load_db(TWO)
+        made = []
+        with mock.patch.object(db, "create_client", side_effect=lambda url, key, **kw: made.append(url) or object()):
+            a = db.sb._client()
+            with db.project("nbd"):
+                n = db.sb._client()
+            again = db.sb._client()
+        self.assertIsNot(a, n)
+        self.assertIs(a, again)
+        self.assertEqual(made, ["https://aim.supabase.co", "https://nbd.supabase.co"])
+
+    def test_threads_do_not_share_a_current_project(self):
+        db, _ = load_db(TWO)
+        db.use_project("nbd")
+        seen = []
+        t = threading.Thread(target=lambda: seen.append(db.current_project()))
+        t.start()
+        t.join()
+        self.assertEqual(seen, ["aimotion"])
+        self.assertEqual(db.current_project(), "nbd")
+        db.use_project("aimotion")
+
+
+class HeartbeatProject(unittest.TestCase):
+    def test_the_beat_thread_writes_to_the_jobs_project(self):
+        db, _ = load_db(TWO)
+        beats = []
+        db.update_job = lambda jid, fields: beats.append(db.current_project())
+        fake_config = types.SimpleNamespace(HEARTBEAT_SECONDS=0.01)
+        spec = importlib.util.spec_from_file_location("heartbeat_under_test", os.path.join(WORKER, "heartbeat.py"))
+        hb_mod = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(sys.modules, {"db": db, "config": fake_config,
+                                           "queue_status": types.SimpleNamespace(annotate=lambda log: None)}):
+            spec.loader.exec_module(hb_mod)
+            with db.project("nbd"):
+                with hb_mod.Heartbeat("j1"):
+                    deadline = time.time() + 2
+                    while not beats and time.time() < deadline:
+                        time.sleep(0.01)
+        self.assertTrue(beats)
+        self.assertEqual(set(beats), {"nbd"})
 
 
 if __name__ == "__main__":

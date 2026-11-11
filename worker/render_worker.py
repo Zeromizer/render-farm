@@ -251,37 +251,40 @@ def main():
         fetch_lane.start(log)
     except Exception as e:  # noqa: BLE001
         log(f"fetch lane not started (continuing): {str(e)[:160]}")
-    try:
-        # Tells the platform which subjects have planar_patch artwork on this box.
-        planar_patch.publish_library_index(log)
-    except Exception as e:
-        log(f"patch library index not published (continuing): {str(e)[:160]}")
+    for name in db.projects():
+        try:
+            # Tells the platform which subjects have planar_patch artwork on this box.
+            with db.project(name):
+                planar_patch.publish_library_index(log)
+        except Exception as e:
+            log(f"patch library index not published to {name} (continuing): {str(e)[:160]}")
     if config.CLOUD_LANE:
         try:
             cloud_lane.start(log)
         except Exception as e:  # noqa: BLE001 - without it the PC fallback still runs the jobs
             log(f"cloud lane not started (continuing): {str(e)[:160]}")
-    cloud_gated = set()
+    # Gating lives in each project's database, so both are {project: engines} (worker/db.py).
+    cloud_gated = {}
 
     light = None
     music = None
     lane_engines = set()
-    heavy_exclude = set()
+    heavy_exclude = {}
     if config.LIGHT_LANE:
         try:
             lane_engines = set(light_lane.LIGHT_ENGINES)
-            heavy_exclude = lane_engines | db.gated_engines()
+            heavy_exclude = _with_lanes(lane_engines, db.gated_engines_by_project())
             light = light_lane.start(process_job, RESTART_FLAG,
                                      lambda m: log(f"[light] {m}"))
         except Exception as e:  # noqa: BLE001 - without the lane the loop takes every engine
             lane_engines = set()
-            heavy_exclude = set()
+            heavy_exclude = {}
             log(f"light lane not started (continuing single-lane): {str(e)[:160]}")
     if light is not None and config.MUSIC_LANE:
         try:
             music = music_lane.start(process_job, RESTART_FLAG, lambda m: log(f"[music] {m}"))
             lane_engines |= music_lane.ENGINES
-            heavy_exclude |= music_lane.ENGINES
+            heavy_exclude = {p: e | music_lane.ENGINES for p, e in heavy_exclude.items()}
         except Exception as e:  # noqa: BLE001 - without it the loop takes music as before
             log(f"music lane not started (continuing): {str(e)[:160]}")
 
@@ -299,9 +302,9 @@ def main():
             # ~15 s: at go-live a once-a-minute read let the PC claim a job queued
             # 20 s after its engine was gated.
             try:
-                cloud_gated = db.gated_engines(config.CLOUD_CAPABILITY)
+                cloud_gated = db.gated_engines_by_project(config.CLOUD_CAPABILITY)
                 if light is not None:
-                    heavy_exclude = lane_engines | db.gated_engines()
+                    heavy_exclude = _with_lanes(lane_engines, db.gated_engines_by_project())
             except Exception:
                 pass
         if polls % 10 == 1:
@@ -322,10 +325,11 @@ def main():
             # With the light lane on, this loop leaves its engines to it; the RPC
             # cannot filter by engine, so it claims with a conditional update.
             job = db.claim_conditional(exclude=heavy_exclude) if light is not None else db.claim_job()
-            if (not job and cloud_gated and config.CLOUD_FALLBACK_MINUTES > 0
+            if (not job and any(cloud_gated.values()) and config.CLOUD_FALLBACK_MINUTES > 0
                     and ram_gate.available_gb() >= config.CLOUD_FALLBACK_MIN_AVAIL_RAM_GB):
                 # No pod took it in time (out of stock, budget used, broken boot).
-                job = db.claim_conditional(include=cloud_gated - config.CLOUD_ONLY_ENGINES,
+                job = db.claim_conditional(include={p: g - config.CLOUD_ONLY_ENGINES
+                                                    for p, g in cloud_gated.items()},
                                            created_before=cloud_lane.fallback_cutoff())
                 if job:
                     log(f"cloud fallback: {job['engine']} job waited over "
@@ -346,6 +350,11 @@ def main():
             time.sleep(config.POLL_SECONDS)
             continue
         process_job(job, log)
+
+
+def _with_lanes(lane_engines, gated):
+    """The render loop's exclude per project: the lanes' engines plus that project's gated ones."""
+    return {p: set(lane_engines) | g for p, g in gated.items()}
 
 
 def cloud_loop():
@@ -393,11 +402,18 @@ def cloud_loop():
 
 def process_job(job, log):
     """Run one claimed job to its final status. Called by this loop and by the
-    light lane's thread (worker/light_lane.py), each with its own log."""
+    light lane's thread (worker/light_lane.py), each with its own log. The whole
+    job runs under the project it was claimed from (worker/db.py)."""
+    with db.project(db.job_project(job)):
+        _process_job(job, log)
+
+
+def _process_job(job, log):
     jid = job["id"]
     thread = threading.current_thread().name
     lane = "light" if thread.startswith("light-lane") else "music" if thread == "music-lane" else "main"
-    log(f"claimed {jid} engine={job['engine']} repo={job['repo_url']}@{job.get('git_ref')}")
+    where = "" if db.job_project(job) == db.DEFAULT_PROJECT else f" project={db.job_project(job)}"
+    log(f"claimed {jid}{where} engine={job['engine']} repo={job['repo_url']}@{job.get('git_ref')}")
     if lane == "main":
         # Tells the light lane what is running here; it stays off the box
         # during engines that need all of it (light_lane.PAUSE_DURING).

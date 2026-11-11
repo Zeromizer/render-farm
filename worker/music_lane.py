@@ -62,9 +62,7 @@ def room():
 
 
 def _pending():
-    rows = (db.sb.table("farm_render_jobs").select("id").in_("engine", sorted(ENGINES))
-            .eq("status", "pending").eq("cancel_requested", False).limit(1).execute().data)
-    return bool(rows)
+    return db.any_pending(ENGINES)
 
 
 def _loop(process_job, restart_flag, log):
@@ -95,8 +93,9 @@ def _loop(process_job, restart_flag, log):
                 break
             # Set before the claim, so the light lane already counts this job.
             light_lane.music_engine[0] = "audio_gen"
-            include = ENGINES - db.gated_engines()
-            job = db.claim_conditional(include=include) if include else None
+            # Gating lives in each project's database (worker/db.py).
+            include = {p: ENGINES - g for p, g in db.gated_engines_by_project().items()}
+            job = db.claim_conditional(include=include) if any(include.values()) else None
             err_logged = False
         except Exception as e:  # noqa: BLE001
             light_lane.music_engine[0] = None

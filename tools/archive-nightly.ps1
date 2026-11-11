@@ -6,11 +6,17 @@
 # archive-nightly.log; the script's own JSON receipt goes to archive-YYYYMMDD.json.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\archive-nightly.ps1 [-DryRun]
+#
+# Another platform's workspace (worker/db.py projects): -Project nbd -Workspace C:\rp-workspace-nbd
+# -Site https://<its host>/jobs/. Without them the script archives Aimotion's, as always.
 param(
     [switch]$DryRun,
     [string]$Until = "07:00",
     [int]$RetryMinutes = 15,
-    [int]$MaxJobs = 30
+    [int]$MaxJobs = 30,
+    [string]$Project = "",
+    [string]$Workspace = "",
+    [string]$Site = ""
 )
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
@@ -21,6 +27,10 @@ New-Item -ItemType Directory -Force $logDir | Out-Null
 $log = Join-Path $logDir "archive-nightly.log"
 $deadline = [datetime]::ParseExact($Until, "HH:mm", $null)
 $mode = if ($DryRun) { "--dry-run" } else { "--execute" }
+$target = @()
+if ($Project) { $target += @("--project", $Project) }
+if ($Workspace) { $target += @("--workspace", $Workspace) }
+if ($Site) { $target += @("--site", $Site) }
 
 function Write-Log($line) {
     $stamped = "{0}  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $line
@@ -30,8 +40,8 @@ function Write-Log($line) {
 
 $env:PYTHONIOENCODING = "utf-8"
 while ($true) {
-    Write-Log "run: $mode --idle-gate --max-jobs $MaxJobs"
-    $out = & $python $script $mode --idle-gate --max-jobs $MaxJobs 2>&1 | ForEach-Object { "$_" }
+    Write-Log "run: $mode --idle-gate --max-jobs $MaxJobs $($target -join ' ')"
+    $out = & $python $script $mode --idle-gate --max-jobs $MaxJobs @target 2>&1 | ForEach-Object { "$_" }
     $code = $LASTEXITCODE
     foreach ($l in $out) { Write-Log "  $l" }
     if ($code -ne 0) { Write-Log "exit code $code"; exit $code }

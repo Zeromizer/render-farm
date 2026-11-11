@@ -158,13 +158,10 @@ def room(others_running=False):
 
 
 def _pending_light():
-    """Is a light job waiting? Asked once per poll however many slots ask."""
+    """Is a light job waiting, in any project? Asked once per poll however many slots ask."""
     with _pending_lock:
         if time.monotonic() - _pending_seen[0] >= POLL_SECONDS:
-            rows = (db.sb.table("farm_render_jobs").select("id")
-                    .in_("engine", sorted(LIGHT_ENGINES)).eq("status", "pending")
-                    .eq("cancel_requested", False).limit(1).execute().data)
-            _pending_seen[:] = [time.monotonic(), bool(rows)]
+            _pending_seen[:] = [time.monotonic(), db.any_pending(LIGHT_ENGINES)]
         return _pending_seen[1]
 
 

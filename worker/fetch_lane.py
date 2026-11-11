@@ -194,19 +194,21 @@ def _loop(log):
             time.sleep(POLL_SECONDS)
             continue
         jid = job["id"]
-        try:
-            _run(job, log)
-            log(f"fetch lane done {jid}")
-        except Exception as e:  # noqa: BLE001 - one bad url must not stop the lane
-            canceled = str(e) == "canceled"
+        # The whole job, failure included, goes to the project it came from (worker/db.py).
+        with db.project(db.job_project(job)):
             try:
-                db.update_job(jid, {"status": "canceled" if canceled else "failed",
-                                    "phase": "canceled" if canceled else "failed",
-                                    "error": None if canceled else str(e)[:2000],
-                                    "completed_at": db.now_iso()})
-            except Exception:  # noqa: BLE001
-                pass
-            log(f"fetch lane {'canceled' if canceled else 'failed'} {jid}: {str(e)[:300]}")
+                _run(job, log)
+                log(f"fetch lane done {jid}")
+            except Exception as e:  # noqa: BLE001 - one bad url must not stop the lane
+                canceled = str(e) == "canceled"
+                try:
+                    db.update_job(jid, {"status": "canceled" if canceled else "failed",
+                                        "phase": "canceled" if canceled else "failed",
+                                        "error": None if canceled else str(e)[:2000],
+                                        "completed_at": db.now_iso()})
+                except Exception:  # noqa: BLE001
+                    pass
+                log(f"fetch lane {'canceled' if canceled else 'failed'} {jid}: {str(e)[:300]}")
 
 
 def start(log):

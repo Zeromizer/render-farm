@@ -10,6 +10,15 @@ load_dotenv(os.path.join(ROOT, ".env"))
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+
+# Platforms this worker serves, each its own Supabase project (worker/db.py). "aimotion"
+# is the pair above and always present; "nbd" (No Budget Director) joins only when both of
+# its variables are set, so a .env without them runs exactly as before. Cloud pods get only
+# the first pair (cloud_lane.py), so they stay Aimotion-only.
+DEFAULT_PROJECT = "aimotion"
+PROJECTS = {DEFAULT_PROJECT: (SUPABASE_URL, SUPABASE_SERVICE_KEY)}
+if os.environ.get("SUPABASE_URL_NBD") and os.environ.get("SUPABASE_SERVICE_KEY_NBD"):
+    PROJECTS["nbd"] = (os.environ["SUPABASE_URL_NBD"], os.environ["SUPABASE_SERVICE_KEY_NBD"])
 BUCKET = "renders"
 ASSETS_BUCKET = "assets"
 

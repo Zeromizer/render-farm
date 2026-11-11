@@ -49,8 +49,10 @@ def _engine_medians():
     if time.time() - _history["at"] < HISTORY_TTL_S:
         return _history["median"]
     try:
-        rows = (db.sb.table("farm_render_jobs").select("engine,claimed_at,completed_at")
-                .eq("status", "done").order("completed_at", desc=True).limit(HISTORY_ROWS).execute().data)
+        # The box's speed, so the default project's history serves for both.
+        with db.project(db.DEFAULT_PROJECT):
+            rows = (db.sb.table("farm_render_jobs").select("engine,claimed_at,completed_at")
+                    .eq("status", "done").order("completed_at", desc=True).limit(HISTORY_ROWS).execute().data)
         runs = {}
         for r in rows:
             a, b = _ts(r.get("claimed_at")), _ts(r.get("completed_at"))
@@ -97,10 +99,31 @@ def annotate(log):
         _annotating.release()
 
 
+def _live_rows():
+    """Waiting and running rows of every project, tagged with it. The projects share
+    this box, so a job's place in line counts the other project's jobs too (claims
+    alternate between them, so this is an estimate, as the ETAs always were)."""
+    names = db.projects()
+    out = []
+    for name in names:
+        try:
+            with db.project(name):
+                rows = (db.sb.table("farm_render_jobs")
+                        .select("id,engine,params,priority,created_at,claimed_at,status,progress,phase,cancel_requested")
+                        .in_("status", ["pending", "processing"]).order("priority").order("created_at")
+                        .execute().data)
+        except Exception:  # noqa: BLE001 - one project down: annotate the other
+            if len(names) == 1:
+                raise
+            continue
+        out.extend(dict(r, _project=name) for r in rows)
+    if len(names) > 1:
+        out.sort(key=lambda r: (r.get("priority") or 0, r.get("created_at") or ""))
+    return out
+
+
 def _annotate_all(log):
-    rows = (db.sb.table("farm_render_jobs")
-            .select("id,engine,params,priority,created_at,claimed_at,status,progress,phase,cancel_requested")
-            .in_("status", ["pending", "processing"]).order("priority").order("created_at").execute().data)
+    rows = _live_rows()
     # The fetch lane's jobs never wait in this queue (worker/fetch_lane.py).
     rows = [r for r in rows if r["engine"] not in LANE_ENGINES]
     if config.LIGHT_LANE:
@@ -132,7 +155,8 @@ def _annotate_queue(rows, log):
                  else "queued: next up")
         if _last.get(r["id"]) != phase and r.get("phase") != phase:
             try:
-                db.update_job(r["id"], {"phase": phase})
+                with db.project(db.job_project(r)):
+                    db.update_job(r["id"], {"phase": phase})
                 _last[r["id"]] = phase
             except Exception as e:  # noqa: BLE001
                 log(f"queue annotate {r['id'][:8]}: {str(e)[:120]}")

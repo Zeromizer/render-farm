@@ -1,4 +1,13 @@
-﻿"""Supabase access for the render worker."""
+﻿"""Supabase access for the render worker.
+
+Projects (2026-11-11): one worker can serve more than one platform, each with its own
+Supabase project (config.PROJECTS: "aimotion" always, "nbd" when its env is set). Every
+call goes through `sb`, which resolves to the client of the thread's current project
+(use_project / project). Claims walk the projects round-robin and tag the row with
+"_project"; render_worker.process_job then runs the whole job under that project, so
+runners need no change. With one project configured nothing differs from before.
+"""
+import contextlib
 from datetime import datetime, timezone
 
 import threading
@@ -14,6 +23,118 @@ import config
 STORAGE_TIMEOUT_SECONDS = 300
 _LONG_LIVED = ("light-lane", "music-lane", "fetch-lane", "MainThread")
 
+DEFAULT_PROJECT = config.DEFAULT_PROJECT
+_local = threading.local()
+
+
+def projects():
+    """Configured project names, the default first."""
+    return list(config.PROJECTS)
+
+
+def current_project():
+    """The project this thread's calls go to. A new thread starts on the default:
+    thread-locals do not carry over, so a thread working for a job must be handed
+    the job's project (heartbeat.Heartbeat is)."""
+    return getattr(_local, "project", DEFAULT_PROJECT)
+
+
+def use_project(name):
+    """Point this thread's calls at a project. An unknown name fails loudly: a job run
+    against the wrong database would write its result where nobody looks."""
+    name = name or DEFAULT_PROJECT
+    if name not in config.PROJECTS:
+        raise RuntimeError(f"unknown project: {name}")
+    _local.project = name
+    return name
+
+
+@contextlib.contextmanager
+def project(name):
+    """Run a block under a project, then put the thread back on the one it had."""
+    before = current_project()
+    use_project(name)
+    try:
+        yield name
+    finally:
+        _local.project = before
+
+
+def job_project(job):
+    """The project a claimed row came from (an untagged row: the default)."""
+    return (job or {}).get("_project") or DEFAULT_PROJECT
+
+
+_rr_lock = threading.Lock()
+_rr_next = [0]
+
+
+def _rotation():
+    """Projects in claim order, starting after the one that last won, so a busy queue
+    cannot starve the other (round-robin). One project: just that one."""
+    names = projects()
+    with _rr_lock:
+        start = _rr_next[0] % len(names)
+    return names[start:] + names[:start]
+
+
+def _won(name):
+    names = projects()
+    with _rr_lock:
+        _rr_next[0] = (names.index(name) + 1) % len(names)
+
+
+def _tag(row, name):
+    row["_project"] = name
+    return row
+
+
+_down = {}   # project -> the error last seen while it was failing (logged once per outage)
+
+
+def _each(fn, claim=True):
+    """fn(name) under each project in round-robin order; the first truthy answer wins
+    and is tagged. With one project an error propagates exactly as before. With more,
+    one project being down (its database unreachable) must not stop claims from the
+    other: its error is logged once per outage, and raised only when every project
+    failed in the same pass. claim=False (a look, not a claim) leaves the
+    round-robin where it is."""
+    names = _rotation()
+    if len(names) == 1:
+        with project(names[0]):
+            row = fn(names[0])
+        return _tag(row, names[0]) if row else None
+    errors = []
+    for name in names:
+        try:
+            with project(name):
+                row = fn(name)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+            if name not in _down:
+                print(f"[{now_iso()}] project {name}: claim error, trying the others: {str(e)[:160]}",
+                      flush=True)
+            _down[name] = e
+            continue
+        if name in _down:
+            _down.pop(name, None)
+            print(f"[{now_iso()}] project {name}: claims working again", flush=True)
+        if row:
+            if claim:
+                _won(name)
+            return _tag(row, name)
+    if errors and len(errors) == len(names):
+        raise errors[0]
+    return None
+
+
+def _for(value, name):
+    """include/exclude may be one set for every project or a {project: set} dict
+    (gated engines differ per database). A dict without the project: None."""
+    if isinstance(value, dict):
+        return value.get(name)
+    return value
+
 
 class _Clients:
     """A Supabase client per lane. A client is one HTTP/2 connection, and when that drops,
@@ -27,12 +148,14 @@ class _Clients:
 
     def _client(self):
         name = threading.current_thread().name
-        key = name if name.startswith(_LONG_LIVED) else "shared"
+        proj = current_project()
+        key = (proj, name if name.startswith(_LONG_LIVED) else "shared")
         with self._guard:
             client = self._clients.get(key)
             if client is None:
+                url, service_key = config.PROJECTS[proj]
                 client = self._clients[key] = create_client(
-                    config.SUPABASE_URL, config.SUPABASE_SERVICE_KEY,
+                    url, service_key,
                     options=ClientOptions(storage_client_timeout=STORAGE_TIMEOUT_SECONDS))
             return client
 
@@ -48,11 +171,40 @@ def now_iso():
 
 
 def claim_job():
-    rows = sb.rpc("claim_farm_job").execute().data or []
-    return rows[0] if rows else None
+    """claim_farm_job() in each project, round-robin; the row comes back tagged."""
+    def one(_name):
+        rows = sb.rpc("claim_farm_job").execute().data or []
+        return rows[0] if rows else None
+    return _each(one)
 
 
 def claim_conditional(include=None, exclude=(), created_before=None, claimed_by=None, phase="cloning"):
+    """_claim_conditional in each project, round-robin; the row comes back tagged.
+    include / exclude: a set for every project, or {project: set}. A project missing
+    from either dict is skipped (its gating could not be read, so the render loop must
+    not guess what to leave to the lanes there), as is one whose include set is empty."""
+    def one(name):
+        if isinstance(exclude, dict) and name not in exclude:
+            return None
+        inc = _for(include, name)
+        if isinstance(include, dict) and not inc:
+            return None
+        return _claim_conditional(inc, _for(exclude, name) or (), created_before, claimed_by, phase)
+    return _each(one)
+
+
+def any_pending(engines):
+    """Is a job of these engines waiting in any project? The lanes ask before they
+    measure the box."""
+    def one(_name):
+        rows = (sb.table("farm_render_jobs").select("id")
+                .in_("engine", sorted(engines)).eq("status", "pending")
+                .eq("cancel_requested", False).limit(1).execute().data)
+        return {"pending": True} if rows else None
+    return bool(_each(one, claim=False))
+
+
+def _claim_conditional(include=None, exclude=(), created_before=None, claimed_by=None, phase="cloning"):
     """Claim the next pending job (priority, then age) whose engine is in include
     / not in exclude, as claim_farm_job() would set it. A conditional update,
     atomic per row: used when the light lane splits engines between two claimers
@@ -104,10 +256,31 @@ def _claimed_at(job_id, stamp):
     return None
 
 
+def gated_engines_by_project(capability=None):
+    """{project: gated_engines(capability)}: gating lives in each database. With one
+    project an error propagates as before; with more, a project that cannot be read is
+    left out (claim_conditional then skips it), so one database being down at startup
+    cannot cost the other its light lane. Raises only when none could be read."""
+    names = projects()
+    out, errors = {}, []
+    for name in names:
+        try:
+            with project(name):
+                out[name] = gated_engines(capability)
+        except Exception as e:  # noqa: BLE001
+            if len(names) == 1:
+                raise
+            errors.append(e)
+    if errors and len(errors) == len(names):
+        raise errors[0]
+    return out
+
+
 def gated_engines(capability=None):
     """Engines claim_farm_job() only gives to a worker with a capability
     (farm_engine_capabilities); the render loop advertises none. With
-    capability: only the engines gated behind that one."""
+    capability: only the engines gated behind that one. Asks the thread's
+    current project."""
     q = sb.table("farm_engine_capabilities").select("engine")
     if capability:
         q = q.eq("capability", capability)
@@ -116,6 +289,25 @@ def gated_engines(capability=None):
 
 
 def reclaim_stale():
+    """reclaim_stale_farm_jobs in every project. One project: its answer as is."""
+    names = projects()
+    if len(names) == 1:
+        with project(names[0]):
+            return _reclaim_stale()
+    total, errors = 0, []
+    for name in names:
+        try:
+            with project(name):
+                n = _reclaim_stale()
+            total += n if isinstance(n, int) else 0
+        except Exception as e:  # noqa: BLE001 - one project down must not stop the other's reclaim
+            errors.append(e)
+    if len(errors) == len(names):
+        raise errors[0]
+    return total
+
+
+def _reclaim_stale():
     return sb.rpc("reclaim_stale_farm_jobs", {"p_stale_minutes": config.STALE_MINUTES}).execute().data
 
 
