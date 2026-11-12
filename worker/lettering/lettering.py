@@ -42,6 +42,14 @@ MAX_WINDOW = 362          # H3's trained range tops out near 15 s at 24 fps
 CANVAS_AREA = 960 * 544   # follow-crop canvas: ~0.52 MP, plenty for a 16 GB card at 15 s
 KEEP_ANCHOR_MIN = 8       # shorter anchor runs are rebuilt from their neighbours in compose
                           # (two of H3's ~4-frame latent groups; see prep)
+# Multi-anchor mode (anchor_mode "multi"): when the car never holds the reference pose
+# (driving at or away from the camera), the real lettering is warped into short runs
+# spread over the window instead of one settled run. The layout is the one the Ole 911
+# spike measured (2026-11-07, farm job 64fddd5c): 8 frames at window offset 17j+5..17j+12,
+# i.e. aligned to H3's latent groups so the max-pooled latent mask leaves them visible.
+ANCHOR_PERIOD = 17
+ANCHOR_OFFSET = 5
+ANCHOR_LEN = 8
 
 
 def emit(kind, text):
@@ -274,6 +282,160 @@ def motion_scale(T):
     return math.sqrt(abs(np.linalg.det(T[:2, :2])))
 
 
+# ---------------------------------------------------------------- multi-anchor
+
+def _quad(b, pad=0.0):
+    return np.float32([[b[0] - pad, b[1] - pad], [b[2] + pad, b[1] - pad],
+                       [b[2] + pad, b[3] + pad], [b[0] - pad, b[3] + pad]]).reshape(-1, 1, 2)
+
+
+def plan_multi_runs(lo, hi, tracks, fw, fh, every=1, min_w=56.0, min_h=10.0):
+    """Anchor runs on H3's latent grid inside the window [lo, hi]: 8 frames at window offset
+    17j+5. A run is kept only when every element is tracked, fully inside the frame and big
+    enough to carry legible lettering on all 8 frames (56 px wide by default: below that the
+    letters are blobs, and on a car still in the dark a pasted plate floats; NIO s1, 2026-11-12).
+    every=2 keeps every other slot."""
+    runs, j = [], 0
+    while True:
+        s = lo + ANCHOR_PERIOD * j + ANCHOR_OFFSET
+        e = s + ANCHOR_LEN - 1
+        if e > hi:
+            break
+        if j % max(1, every) == 0:
+            ok = True
+            for t in tracks:
+                for i in range(s, e + 1):
+                    p = t.get(i)
+                    if (p is None or p[0] < 1 or p[1] < 1 or p[2] > fw - 2 or p[3] > fh - 2
+                            or p[2] - p[0] < min_w or p[3] - p[1] < min_h):
+                        ok = False
+                        break
+                if not ok:
+                    break
+            if ok:
+                runs.append([s, e])
+        j += 1
+    return runs
+
+
+def element_homography(grays, anchor, i, box, tbox):
+    """Homography anchor-frame coords -> frame i for the plane an element sits on.
+    Seeded with the similarity implied by the tracked boxes (it carries the scale change of a
+    car driving at or away from the camera, which a cold ECC cannot find), then refined by
+    ECC on the element's neighbourhood in frame i. Returns (H, ecc); ecc -1 = seed kept."""
+    S = _box_similarity(tbox[:4], box)            # anchor -> i
+    if i == anchor:
+        return np.eye(3), 1.0
+    fh, fw = grays[0].shape
+    w, h = tbox[2] - tbox[0], tbox[3] - tbox[1]
+    m = max(30.0, 0.6 * max(w, h))
+    x0, y0, x1, y1 = [int(round(v)) for v in clamp_box([tbox[0] - m, tbox[1] - m, tbox[2] + m, tbox[3] + m], fw, fh)]
+    if x1 - x0 < 24 or y1 - y0 < 24:
+        return S, -1.0
+    tpl = cv2.GaussianBlur(grays[i][y0:y1, x0:x1], (0, 0), 1.0).astype(np.float32)
+    inp = cv2.GaussianBlur(grays[anchor], (0, 0), 1.0).astype(np.float32)
+    Tsh = np.array([[1, 0, x0], [0, 1, y0], [0, 0, 1]], np.float64)
+    W0 = np.linalg.inv(S) @ Tsh                    # crop-of-i coords -> anchor coords
+    W0 = (W0 / W0[2, 2]).astype(np.float32)
+    try:
+        cc, W = cv2.findTransformECC(tpl, inp, W0, cv2.MOTION_HOMOGRAPHY,
+                                     (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 150, 1e-5), None, 3)
+    except cv2.error:
+        return S, -1.0
+    H = np.linalg.inv(W.astype(np.float64) @ np.linalg.inv(Tsh))
+    H /= H[2, 2]
+    q = _quad(box)
+    d = float(np.abs(cv2.perspectiveTransform(q, H) - cv2.perspectiveTransform(q, S)).max())
+    if cc < 0.6 or d > 0.35 * max(w, 1.0):
+        return S, float(cc)
+    return H, float(cc)
+
+
+def smooth_run(Hs, box):
+    """Fit each corner of the element's quad with a quadratic over the run, so the pasted
+    lettering does not jitter frame to frame (per-frame ECC is noisy at plate size)."""
+    idx = sorted(Hs)
+    if len(idx) < 4:
+        return Hs
+    q = _quad(box)
+    pts = np.stack([cv2.perspectiveTransform(q, Hs[i]).reshape(4, 2) for i in idx])   # n x 4 x 2
+    t = np.array(idx, np.float64) - idx[0]
+    fit = np.empty_like(pts)
+    for c in range(4):
+        for d in range(2):
+            fit[:, c, d] = np.polyval(np.polyfit(t, pts[:, c, d], 2), t)
+    src = q.reshape(4, 2).astype(np.float32)
+    return {i: cv2.getPerspectiveTransform(src, fit[k].astype(np.float32)).astype(np.float64)
+            for k, i in enumerate(idx)}
+
+
+def _velocity(track, i):
+    def c(p):
+        return np.array([(p[0] + p[2]) / 2, (p[1] + p[3]) / 2])
+    a, b = track.get(i - 1), track.get(i + 1)
+    if a is not None and b is not None:
+        return (c(b) - c(a)) / 2
+    if b is not None:
+        return c(b) - c(track[i])
+    if a is not None:
+        return c(track[i]) - c(a)
+    return np.zeros(2)
+
+
+def paste_element(frame, ref_warp, anchor_img, H, box, vel, pad=4.0, shutter=0.5):
+    """Warp the reference lettering (aligned to the anchor frame) into this frame along H.
+    Gain-matched per channel to the frame's light from a ring around the element (warped
+    anchor vs this frame), motion-blurred along the element's own velocity with a 180-degree
+    shutter, so the anchors sit in the clip instead of on it."""
+    fh, fw = frame.shape[:2]
+    qi = cv2.perspectiveTransform(_quad(box, pad), H).reshape(4, 2)
+    blur = shutter * float(np.hypot(*vel))
+    m = int(math.ceil(blur)) + 12
+    x0 = max(0, int(qi[:, 0].min()) - m); y0 = max(0, int(qi[:, 1].min()) - m)
+    x1 = min(fw, int(math.ceil(qi[:, 0].max())) + m); y1 = min(fh, int(math.ceil(qi[:, 1].max())) + m)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return frame
+    cw, ch = x1 - x0, y1 - y0
+    Hc = np.array([[1, 0, -x0], [0, 1, -y0], [0, 0, 1]], np.float64) @ H
+    patch = cv2.warpPerspective(ref_warp, Hc, (cw, ch), flags=cv2.INTER_AREA if np.linalg.det(H[:2, :2]) < 1 else cv2.INTER_CUBIC).astype(np.float32)
+    orig = cv2.warpPerspective(anchor_img, Hc, (cw, ch), flags=cv2.INTER_LINEAR).astype(np.float32)
+    mk = np.zeros((ch, cw), np.uint8)
+    cv2.fillPoly(mk, [np.round(qi - [x0, y0]).astype(np.int32)], 255)
+    r = max(3, int(round(0.25 * (qi[:, 1].max() - qi[:, 1].min()))))
+    ring = (cv2.dilate(mk, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))) > 0) & (mk == 0)
+    crop = frame[y0:y1, x0:x1].astype(np.float32)
+    if ring.sum() > 20:
+        gain = (crop[ring].mean(0) + 1.0) / (orig[ring].mean(0) + 1.0)
+        patch *= np.clip(gain, 0.2, 2.0)
+    a = cv2.GaussianBlur(mk, (0, 0), 1.2).astype(np.float32) / 255.0
+    if blur >= 1.0:
+        n = int(math.ceil(blur)) | 1
+        k = np.zeros((n, n), np.float32)
+        ang = math.atan2(vel[1], vel[0])
+        cx = cy = n // 2
+        dx, dy = math.cos(ang) * (n // 2), math.sin(ang) * (n // 2)
+        cv2.line(k, (int(round(cx - dx)), int(round(cy - dy))), (int(round(cx + dx)), int(round(cy + dy))), 1.0, 1)
+        k /= max(k.sum(), 1e-6)
+        patch = cv2.filter2D(patch, -1, k)
+        a = cv2.filter2D(a, -1, k)
+    a = a[..., None]
+    frame = frame.copy()
+    frame[y0:y1, x0:x1] = np.clip(crop * (1 - a) + patch * a, 0, 255).astype(np.uint8)
+    return frame
+
+
+def _mask_boxes(tracks, i, fw, fh, pad_frac):
+    boxes = []
+    for t in tracks:
+        p = t.get(i)
+        if p is None:
+            continue
+        w, h = p[2] - p[0], p[3] - p[1]
+        pad = max(10.0, pad_frac * max(w, h) * 0.5 + 0.15 * h)
+        boxes.append(clamp_box([p[0] - pad, p[1] - pad, p[2] + pad, p[3] + pad], fw, fh))
+    return boxes
+
+
 # ---------------------------------------------------------------- prep
 
 def prep(spec):
@@ -339,38 +501,65 @@ def prep(spec):
     while a1 + 1 <= hi and settled(a1 + 1):
         a1 += 1
     print(f"MEASURED anchor_run {a0}-{a1} ({a1 - a0 + 1} frames)", flush=True)
+    run_len = a1 - a0 + 1
+    keep_min = int(spec.get("keep_anchor_min", KEEP_ANCHOR_MIN))
+    mode = str(spec.get("anchor_mode", "settle"))
+    runs = []
+    if mode == "multi" or (mode == "auto" and run_len < keep_min):
+        runs = plan_multi_runs(lo, hi, tracks, fw, fh, every=int(spec.get("anchor_every", 1)),
+                               min_w=float(spec.get("anchor_min_w", 56)))
+        print(f"MEASURED multi anchor runs {runs}", flush=True)
+    multi = bool(runs)
 
-    # paste the real lettering on the anchor run (per element, moved with the car and its
-    # own correction)
     emit("PHASE", "pasting reference lettering")
     anchored = [f.copy() for f in frames]
     pad_a = int(spec.get("paste_pad", 4))
-    for k, b in enumerate(anchor_boxes):
-        mk = np.zeros((fh, fw), np.uint8)
-        cv2.rectangle(mk, (int(b[0]) - pad_a, int(b[1]) - pad_a), (int(b[2]) + pad_a, int(b[3]) + pad_a), 255, -1)
-        mf = cv2.GaussianBlur(mk, (0, 0), 2.5).astype(np.float32) / 255.0
-        for i in range(a0, a1 + 1):
-            p = tracks[k][i]
-            s = (p[2] - p[0]) / max(1e-6, b[2] - b[0])
-            M = np.float32([[s, 0, p[0] - s * b[0]], [0, s, p[1] - s * b[1]]])
-            r = cv2.warpAffine(ref_warp, M, (fw, fh), flags=cv2.INTER_CUBIC)
-            al = cv2.warpAffine(mf, M, (fw, fh))[..., None]
-            anchored[i] = np.clip(anchored[i] * (1 - al) + r * al, 0, 255).astype(np.uint8)
+    ref_elements = []
+    for b in anchor_boxes:
+        x0, y0, x1, y1 = [int(round(v)) for v in b]
+        ref_elements.append(ref_warp[y0:y1, x0:x1].copy())
+    anchor_eccs = []
+    if multi:
+        # warp the real lettering into every frame of every run along that frame's own
+        # homography (perspective, not just scale), light-matched and motion-blurred
+        for s, e in runs:
+            for k, b in enumerate(anchor_boxes):
+                Hs, ccs = {}, []
+                for i in range(s, e + 1):
+                    Hs[i], cc = element_homography(grays, anchor, i, b, tracks[k][i])
+                    ccs.append(cc)
+                Hs = smooth_run(Hs, b)
+                for i in range(s, e + 1):
+                    anchored[i] = paste_element(anchored[i], ref_warp, frames[anchor], Hs[i], b,
+                                                _velocity(tracks[k], i), pad=pad_a)
+                anchor_eccs.append({"run": [s, e], "element": k, "ecc_min": round(min(ccs), 3),
+                                    "seeded": sum(1 for c in ccs if c < 0.6)})
+                print(f"MEASURED run {s}-{e} element {k}: ecc min {min(ccs):.3f}, "
+                      f"{sum(1 for c in ccs if c < 0.6)} frame(s) on the box seed", flush=True)
+        anchor_set = {i for s, e in runs for i in range(s, e + 1)}
+    else:
+        # paste the real lettering on the settled anchor run (per element, moved with the car
+        # and its own correction)
+        for k, b in enumerate(anchor_boxes):
+            mk = np.zeros((fh, fw), np.uint8)
+            cv2.rectangle(mk, (int(b[0]) - pad_a, int(b[1]) - pad_a), (int(b[2]) + pad_a, int(b[3]) + pad_a), 255, -1)
+            mf = cv2.GaussianBlur(mk, (0, 0), 2.5).astype(np.float32) / 255.0
+            for i in range(a0, a1 + 1):
+                p = tracks[k][i]
+                s = (p[2] - p[0]) / max(1e-6, b[2] - b[0])
+                M = np.float32([[s, 0, p[0] - s * b[0]], [0, s, p[1] - s * b[1]]])
+                r = cv2.warpAffine(ref_warp, M, (fw, fh), flags=cv2.INTER_CUBIC)
+                al = cv2.warpAffine(mf, M, (fw, fh))[..., None]
+                anchored[i] = np.clip(anchored[i] * (1 - al) + r * al, 0, 255).astype(np.uint8)
+        anchor_set = set(range(a0, a1 + 1))
 
-    # masks: every window frame outside the anchor run where the element was located
+    # masks: every window frame outside the anchor frames where the element was located
     pad_frac = float(spec.get("mask_pad", 0.25))
     masks = {}
     for i in win:
-        if a0 <= i <= a1:
+        if i in anchor_set:
             continue
-        boxes = []
-        for k in range(len(anchor_boxes)):
-            p = tracks[k].get(i)
-            if p is None:
-                continue
-            w, h = p[2] - p[0], p[3] - p[1]
-            pad = max(10.0, pad_frac * max(w, h) * 0.5 + 0.15 * h)
-            boxes.append(clamp_box([p[0] - pad, p[1] - pad, p[2] + pad, p[3] + pad], fw, fh))
+        boxes = _mask_boxes(tracks, i, fw, fh, pad_frac)
         if boxes:
             masks[i] = boxes
 
@@ -430,9 +619,19 @@ def prep(spec):
             "tracks": [{str(i): list(p[:4]) for i, p in t.items()} for t in tracks],
             "names": [e["name"] for e in elements], "align": {"ecc": cc, "inliers": inliers},
             "warnings": []}
-    run_len = a1 - a0 + 1
-    keep_min = int(spec.get("keep_anchor_min", KEEP_ANCHOR_MIN))
-    if run_len < keep_min:
+    for k, crop in enumerate(ref_elements):
+        cv2.imwrite(os.path.join(work, f"ref_element{k}.png"), crop)
+    if multi:
+        plan["anchor_policy"] = "multi"
+        plan["lettering_source"] = "reference"
+        plan["anchor_runs"] = runs
+        plan["anchor_eccs"] = anchor_eccs
+    elif mode in ("multi", "auto") and run_len < keep_min:
+        plan["warnings"].append("multi-anchor mode found no run where the element is tracked, inside the frame "
+                                "and large enough on all 8 frames; fell back to the settled anchor")
+    if multi:
+        pass
+    elif run_len < keep_min:
         # H3 works in ~4-frame latent groups and the latent mask is max-pooled, so a run this
         # short is masked in latent space: H3 never sees the pasted lettering and draws the
         # element from the PROMPT. Keeping the pasted frames then leaves a one-frame pop (a
@@ -450,6 +649,54 @@ def prep(spec):
     if not masks:
         raise RuntimeError("nothing to fix: the elements match the reference pose in every frame of the window")
     json.dump(plan, open(os.path.join(work, "plan.json"), "w"), indent=1)
+    emit("PROGRESS", "100")
+
+
+def prep_harmonise(spec):
+    """Second pass for multi-anchor: the anchor frames are pasted, so they can still read as
+    a sticker. Mask ONLY the anchor runs on the composited first pass (spec["base"]) and let
+    H3 redraw them from the frames around them, which now carry the right lettering in H3's
+    own perspective, blur and light. Same window and follow-crop as the first pass; writes
+    gen2_*.mp4 and plan2.json."""
+    work = spec["work_dir"]
+    plan = json.load(open(os.path.join(work, "plan.json")))
+    runs = plan.get("anchor_runs") or []
+    if not runs:
+        raise RuntimeError("harmonise needs a multi-anchor plan (no anchor_runs in plan.json)")
+    base, fps = read_clip(spec["base"])
+    fh, fw = base[0].shape[:2]
+    lo, hi = plan["window"]
+    W, Hc = plan["canvas"]
+    regs = plan["regs"]
+    tracks = [{int(k): v for k, v in t.items()} for t in plan["tracks"]]
+    pad_frac = float(spec.get("mask_pad", 0.25))
+    masks = {}
+    for s, e in runs:
+        for i in range(s, e + 1):
+            boxes = _mask_boxes(tracks, i, fw, fh, pad_frac)
+            if boxes:
+                masks[i] = boxes
+    emit("PHASE", "writing harmonise inputs")
+    src_c, vm_c, am_c = [], [], []
+    for k, i in enumerate(range(lo, hi + 1)):
+        rx, ry, w_, h_ = regs[k]
+        src_c.append(cv2.resize(base[i][ry:ry + h_, rx:rx + w_], (W, Hc), interpolation=cv2.INTER_AREA))
+        m = np.zeros((fh, fw), np.uint8)
+        for b in masks.get(i, []):
+            m[int(b[1]):int(math.ceil(b[3])), int(b[0]):int(math.ceil(b[2]))] = 255
+        vm_c.append(cv2.cvtColor(cv2.resize(m[ry:ry + h_, rx:rx + w_], (W, Hc), interpolation=cv2.INTER_NEAREST),
+                                 cv2.COLOR_GRAY2BGR))
+        am_c.append(np.zeros((Hc, W, 3), np.uint8))
+    audio = spec["clip"] if has_audio(spec["clip"]) else os.path.join(work, "silence.wav")
+    if not os.path.exists(audio):
+        silent_wav(audio, len(base) / fps + 1)
+    write_clip(os.path.join(work, "gen2_src.mp4"), src_c, FPS, audio_from=audio, audio_start=lo / fps, lossless=True)
+    write_clip(os.path.join(work, "gen2_mask.mp4"), vm_c, FPS, lossless=True)
+    write_clip(os.path.join(work, "gen2_amask.mp4"), am_c, FPS, lossless=True)
+    plan2 = dict(plan, masks={str(k): v for k, v in masks.items()}, anchor_policy="harmonise", anchor_runs=[],
+                 harmonised_runs=runs)
+    json.dump(plan2, open(os.path.join(work, "plan2.json"), "w"), indent=1)
+    print(f"MEASURED harmonise masked frames {len(masks)} over runs {runs}", flush=True)
     emit("PROGRESS", "100")
 
 
@@ -552,8 +799,8 @@ def rebuild_run(frames, run, tracks, anchor_boxes, pad_frac=0.25, feather=2.5):
 
 def compose(spec):
     work = spec["work_dir"]
-    plan = json.load(open(os.path.join(work, "plan.json")))
-    anchored, fps = read_clip(os.path.join(work, "anchored.mp4"))
+    plan = json.load(open(os.path.join(work, spec.get("plan", "plan.json"))))
+    anchored, fps = read_clip(spec.get("base") or os.path.join(work, "anchored.mp4"))
     fh, fw = anchored[0].shape[:2]
     lo, hi = plan["window"]
     regs = plan["regs"]
@@ -562,12 +809,18 @@ def compose(spec):
     names = plan["names"]
     anchor = plan["anchor"]
     a0, a1 = plan["anchor_run"]
+    tag = str(spec.get("tag", ""))
 
-    # reference appearance of each element (from the anchored anchor frame) for scoring
+    # reference appearance of each element for scoring: the reference crop prep saved (in
+    # multi-anchor mode the anchor frame itself is masked, so it no longer carries it)
     refs = []
-    for b in plan["anchor_boxes"]:
-        x0, y0, x1, y1 = [int(round(v)) for v in b]
-        refs.append(_grad(anchored[anchor][y0:y1, x0:x1]))
+    for k, b in enumerate(plan["anchor_boxes"]):
+        p = os.path.join(work, f"ref_element{k}.png")
+        img = cv2.imread(p) if os.path.exists(p) else None
+        if img is None:
+            x0, y0, x1, y1 = [int(round(v)) for v in b]
+            img = anchored[anchor][y0:y1, x0:x1]
+        refs.append(_grad(img))
     tracks = [{int(k): v for k, v in t.items()} for t in plan["tracks"]]
 
     results = []
@@ -612,7 +865,7 @@ def compose(spec):
                     flick.append(float(np.abs(crop - prev).mean()))
                 prev = crop
         score = (float(np.mean(sims)) if sims else 0.0) - 0.002 * (float(np.mean(flick)) if flick else 0.0)
-        path = os.path.join(work, f"take{ti + 1}.mp4")
+        path = os.path.join(work, f"{tag}take{ti + 1}.mp4")
         write_clip(path, out, fps, audio_from=spec["clip"] if has_audio(spec["clip"]) else None)
         results.append({"take": ti + 1, "seed": spec["seeds"][ti], "score": round(score, 4),
                         "lettering_similarity": round(float(np.mean(sims)) if sims else 0.0, 4),
@@ -629,7 +882,9 @@ def compose(spec):
               "anchor_frame": anchor, "anchor_run": plan["anchor_run"], "window": plan["window"],
               "elements": names, "align": plan["align"], "warnings": plan["warnings"],
               "anchor_policy": plan.get("anchor_policy", "keep"),
-              "lettering_source": plan.get("lettering_source", "reference")}
+              "lettering_source": plan.get("lettering_source", "reference"),
+              "anchor_runs": plan.get("anchor_runs") or plan.get("harmonised_runs") or [],
+              "anchor_eccs": plan.get("anchor_eccs", [])}
     json.dump(report, open(spec["report"], "w"), indent=1)
     emit("PROGRESS", "100")
 
@@ -640,11 +895,19 @@ def proof_sheet(spec, plan, original, fixed, best, results):
     masks = sorted(int(k) for k in plan["masks"])
     tracks = [{int(k): v for k, v in t.items()} for t in plan["tracks"]]
     fh, fw = original[0].shape[:2]
+    runs = plan.get("anchor_runs") or []
+    anchors = {i for s, e in runs for i in range(s, e + 1)} or set(range(plan["anchor_run"][0], plan["anchor_run"][1] + 1))
+    first_anchor = runs[len(runs) // 2][0] + 3 if runs else plan["anchor_run"][0]
+
+    def label(i):
+        if i not in anchors:
+            return f"{i} fixed"
+        return f"{i} rebuilt" if plan.get("anchor_policy") == "rebuild" else f"{i} anchor"
     tile_w = 260
     rows = []
     for e, name in enumerate(plan["names"]):
         own = [i for i in masks if i in tracks[e]] or masks
-        picks = [own[int(round(t * (len(own) - 1)))] for t in np.linspace(0, 1, 6)] + [plan["anchor_run"][0]]
+        picks = [own[int(round(t * (len(own) - 1)))] for t in np.linspace(0, 1, 6)] + [first_anchor]
         b = plan["anchor_boxes"][e]
         bw, bh = b[2] - b[0], b[3] - b[1]
         k = max(bh * 3.0, 50) / max(bw * 2.2, 80)   # one tile shape per element; crops scale with the car
@@ -658,7 +921,7 @@ def proof_sheet(spec, plan, original, fixed, best, results):
             x0 = int(min(max(0, cx - cw / 2), fw - cw)); y0 = int(min(max(0, cy - ch / 2), fh - ch))
             o = cv2.resize(original[i][y0:y0 + int(ch), x0:x0 + int(cw)], sz, interpolation=cv2.INTER_CUBIC)
             f = cv2.resize(fixed[i][y0:y0 + int(ch), x0:x0 + int(cw)], sz, interpolation=cv2.INTER_CUBIC)
-            for t, lab in ((o, f"{i} before"), (f, f"{i} fixed" if i not in range(plan['anchor_run'][0], plan['anchor_run'][1] + 1) else (f"{i} rebuilt" if plan.get("anchor_policy") == "rebuild" else f"{i} anchor"))):
+            for t, lab in ((o, f"{i} before"), (f, label(i))):
                 cv2.putText(t, lab, (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3)
                 cv2.putText(t, lab, (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
             top.append(o)
@@ -677,7 +940,7 @@ def proof_sheet(spec, plan, original, fixed, best, results):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] not in ("prep", "compose"):
-        sys.exit("usage: lettering.py prep|compose <spec.json>")
-    s = json.load(open(sys.argv[2]))
-    prep(s) if sys.argv[1] == "prep" else compose(s)
+    cmds = {"prep": prep, "harmonise": prep_harmonise, "compose": compose}
+    if len(sys.argv) != 3 or sys.argv[1] not in cmds:
+        sys.exit("usage: lettering.py prep|harmonise|compose <spec.json>")
+    cmds[sys.argv[1]](json.load(open(sys.argv[2])))

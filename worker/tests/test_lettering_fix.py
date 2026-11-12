@@ -104,6 +104,36 @@ class PixelHelpersTest(unittest.TestCase):
         w, h = lettering.gen_dims(16 / 9)
         self.assertEqual((w % 32, h % 32), (0, 0))
 
+    def test_multi_runs_sit_on_the_latent_grid(self):
+        """Runs are 8 frames at window offset 17j+5 and skip frames where the element is
+        too small or untracked (the car still far down the road)."""
+        lo, hi = 14, 120
+        track = {i: (100.0, 500.0, 100.0 + i, 530.0, 1.0) for i in range(lo, hi + 1)}   # width = i px
+        runs = lettering.plan_multi_runs(lo, hi, [track], 720, 1280)
+        self.assertTrue(runs)
+        for s, e in runs:
+            self.assertEqual(e - s + 1, lettering.ANCHOR_LEN)
+            self.assertEqual((s - lo) % lettering.ANCHOR_PERIOD, lettering.ANCHOR_OFFSET)
+            self.assertGreaterEqual(s, 56)          # every frame of the run is >= 56 px wide
+        del track[90]
+        self.assertNotIn([87, 94], lettering.plan_multi_runs(lo, hi, [track], 720, 1280))
+        every2 = lettering.plan_multi_runs(lo, hi, [track], 720, 1280, every=2)
+        self.assertTrue(all(((s - lo - lettering.ANCHOR_OFFSET) // lettering.ANCHOR_PERIOD) % 2 == 0 for s, _ in every2))
+
+    def test_paste_follows_the_homography(self):
+        """A pure 2x scale about the origin puts the pasted element at twice the box."""
+        import numpy as np
+        ref = np.zeros((200, 200, 3), np.uint8)
+        ref[20:30, 20:60] = 255
+        frame = np.zeros((200, 200, 3), np.uint8)
+        H = np.diag([2.0, 2.0, 1.0])
+        anchor_img = np.zeros_like(ref)            # same light as the frame -> gain 1
+        out = lettering.paste_element(frame, ref, anchor_img, H, [20, 20, 60, 30], np.zeros(2), pad=0)
+        ys, xs = np.nonzero(out[..., 0] > 128)
+        self.assertAlmostEqual(xs.min(), 40, delta=2)
+        self.assertAlmostEqual(xs.max(), 119, delta=2)
+        self.assertAlmostEqual(ys.min(), 40, delta=2)
+
     def test_tracks_a_push_in(self):
         """A camera pushing in doubles the element's size: the box must grow with it."""
         import cv2

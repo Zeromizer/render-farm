@@ -1,0 +1,22 @@
+{
+ "tests": [
+  {
+   "name": "s1-arrival",
+   "clip": "s1.mp4",
+   "reference": "s1-ref.png",
+   "anchor_frame": 120,
+   "elements": [{"name": "front_plate", "box": [250, 755, 468, 823]}],
+   "takes": 2,
+   "prompt": "Close-up of a pale pistachio-green NIO Firefly compact electric hatchback driving toward the camera on a wet highway at night. The front number plate is a glossy black dealer plate with a thin silver rim; it reads \"FIREFLY\" in wide-spaced white capitals ending in a chevron mark, with a very small faint line underneath. Crisp, legible, correct lettering that keeps the same size, angle and font through the shot. The car and camera move exactly as before; natural night light."
+  },
+  {
+   "name": "s4-taillights",
+   "clip": "s4.mp4",
+   "reference": "s4-ref.png",
+   "anchor_frame": 80,
+   "elements": [{"name": "rear_plate", "box": [249, 499, 410, 550]}],
+   "takes": 2,
+   "prompt": "Close-up of the rear of a pale pistachio-green NIO Firefly compact electric hatchback pulling away on a wet highway at night, red ring taillights glowing. The rear number plate is a glossy black dealer plate with a thin silver rim in the recess under two small white plate lamps; it reads \"FIREFLY\" in wide-spaced white capitals ending in a chevron mark, with a very small faint line underneath. Crisp, legible, correct lettering that keeps the same size, angle and font through the shot. The car and camera move exactly as before; natural night light."
+  }
+ ]
+}
