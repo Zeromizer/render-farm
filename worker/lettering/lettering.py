@@ -797,6 +797,65 @@ def rebuild_run(frames, run, tracks, anchor_boxes, pad_frac=0.25, feather=2.5):
     return done
 
 
+def deflicker(frames, plan, frame_set, radius=3, iterations=3, max_gain=1.6, feather=6):
+    """H3 pulses the brightness of what it draws at its 17-frame chunk boundaries (NIO s4
+    2026-11-12: the plate letters jumped up to ~85 levels for one frame every 17). Per
+    element, take the letters' brightness (95th percentile in the tracked box), compare it
+    with the median of its +/-radius neighbours, and scale the masked box back to it. Only
+    frames in frame_set (the ones H3 drew) are touched; real footage keeps its own light.
+    Repeated `iterations` times with the brightness re-measured, because one correction can
+    push a neighbour's median (measured on the NIO s1/s4 pass-2 takes: radius 3 x 3 passes took
+    s4 from 27 one-frame pops > 12 levels, max 85, to 0, max 8). In place; returns
+    [{frame, element, gain}] for every change made."""
+    done = []
+    for _ in range(max(1, iterations)):
+        done += _deflicker_once(frames, plan, frame_set, radius, max_gain, feather)
+    return done
+
+
+def _deflicker_once(frames, plan, frame_set, radius, max_gain, feather):
+    fh, fw = frames[0].shape[:2]
+    tracks = [{int(k): v for k, v in t.items()} for t in plan["tracks"]]
+    pad_frac = 0.25
+    done = []
+    for e, t in enumerate(tracks):
+        lum = {}
+        for i in sorted(t):
+            if not 0 <= i < len(frames):
+                continue
+            x0, y0, x1, y1 = [int(round(v)) for v in clamp_box(t[i][:4], fw, fh)]
+            if x1 - x0 < 4 or y1 - y0 < 4:
+                continue
+            lum[i] = float(np.percentile(cv2.cvtColor(frames[i][y0:y1, x0:x1], cv2.COLOR_BGR2GRAY), 95))
+        for i in sorted(lum):
+            if i not in frame_set:
+                continue
+            nb = [lum[j] for j in range(i - radius, i + radius + 1) if j != i and j in lum]
+            if len(nb) < 2:
+                continue
+            target = float(np.median(nb))
+            g = float(np.clip((target + 1.0) / (lum[i] + 1.0), 1 / max_gain, max_gain))
+            if abs(g - 1.0) < 0.04:
+                continue
+            # only the element's own highlights (letters, rim) inside its tracked box: scaling
+            # the padded box darkened the plate lamps and bumper into a visible rectangle
+            # (NIO s4 frame 63)
+            b = t[i]
+            m = np.zeros((fh, fw), np.float32)
+            x0, y0, x1, y1 = [int(round(v)) for v in clamp_box([b[0] - 2, b[1] - 2, b[2] + 2, b[3] + 2], fw, fh)]
+            m[y0:y1, x0:x1] = 1.0
+            m = cv2.GaussianBlur(m, (0, 0), 1.5)
+            gray = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY).astype(np.float32)
+            crop = gray[y0:y1, x0:x1]
+            med, hi_ = float(np.median(crop)), float(np.percentile(crop, 95))
+            hl = np.clip((gray - med) / max(hi_ - med, 4.0), 0.0, 1.0)
+            a = (m * hl)[..., None]
+            f = frames[i].astype(np.float32)
+            frames[i] = np.clip(f * (1 - a) + f * g * a, 0, 255).astype(np.uint8)
+            done.append({"frame": i, "element": e, "gain": round(g, 3)})
+    return done
+
+
 def compose(spec):
     work = spec["work_dir"]
     plan = json.load(open(os.path.join(work, spec.get("plan", "plan.json"))))
@@ -840,7 +899,10 @@ def compose(spec):
             back = cv2.resize(gen[k], (rw, rh), interpolation=cv2.INTER_CUBIC).astype(np.float32)
             reg = out[i][ry:ry + rh, rx:rx + rw].astype(np.float32)
             out[i][ry:ry + rh, rx:rx + rw] = np.clip(reg * (1 - a) + back * a, 0, 255).astype(np.uint8)
-        rebuilt = []
+        rebuilt, levelled = [], []
+        if plan.get("anchor_policy") in ("multi", "harmonise") and spec.get("deflicker", True):
+            levelled = deflicker(out, plan, set(masks))
+            print(f"MEASURED deflicker take {ti + 1}: {len(levelled)} change(s)", flush=True)
         if plan.get("anchor_policy") == "rebuild":
             rebuilt = rebuild_run(out, (a0, a1), tracks, plan["anchor_boxes"])
             for r in rebuilt:
@@ -870,7 +932,7 @@ def compose(spec):
         results.append({"take": ti + 1, "seed": spec["seeds"][ti], "score": round(score, 4),
                         "lettering_similarity": round(float(np.mean(sims)) if sims else 0.0, 4),
                         "flicker": round(float(np.mean(flick)) if flick else 0.0, 3),
-                        "rebuilt_frames": rebuilt, "path": path})
+                        "rebuilt_frames": rebuilt, "deflickered": len(levelled), "path": path})
         print(f"MEASURED take {ti + 1} seed {spec['seeds'][ti]} score {score:.4f}", flush=True)
         emit("PROGRESS", str(int(100 * (ti + 1) / (len(spec["takes"]) + 1))))
 

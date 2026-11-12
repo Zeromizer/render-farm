@@ -120,6 +120,22 @@ class PixelHelpersTest(unittest.TestCase):
         every2 = lettering.plan_multi_runs(lo, hi, [track], 720, 1280, every=2)
         self.assertTrue(all(((s - lo - lettering.ANCHOR_OFFSET) // lettering.ANCHOR_PERIOD) % 2 == 0 for s, _ in every2))
 
+    def test_deflicker_levels_a_one_frame_pulse(self):
+        """H3's chunk-boundary pulse: one frame's letters jump bright; it comes back to its
+        neighbours, and a frame outside frame_set (real footage) is never touched."""
+        import numpy as np
+        frames = []
+        for i in range(12):
+            f = np.full((100, 200, 3), 20, np.uint8)
+            f[40:60, 50:150] = 30                             # dark plate face
+            f[46:54, 60:140:6] = 200 if i == 6 else 100      # light letter strokes
+            frames.append(f)
+        plan = {"tracks": [{str(i): [50, 40, 150, 60] for i in range(12)}]}
+        lettering.deflicker(frames, plan, set(range(12)) - {3})
+        self.assertLess(abs(int(frames[6][50, 60, 0]) - 100), 15)
+        self.assertEqual(int(frames[3][50, 60, 0]), 100)
+        self.assertEqual(int(frames[6][50, 61, 0]), 30)      # the plate face is not re-lit
+
     def test_paste_follows_the_homography(self):
         """A pure 2x scale about the origin puts the pasted element at twice the box."""
         import numpy as np
