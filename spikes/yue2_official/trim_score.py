@@ -103,6 +103,11 @@ def cut(text, seconds=30.0, intro_bars=2, outro_bars=2, max_tempo_change=0.04):
     ending_ids = {id(b) for b in ending}
     pool = [b for b in flat if b["label"] not in ("intro", "outro") and id(b) not in ending_ids]
     if not pool:
+        # Some plans are one long section (seen: a 36-bar plan labelled only "intro").
+        # Then the body is whatever follows the kept intro bars.
+        intro_ids = {id(b) for b in intro}
+        pool = [b for b in flat if id(b) not in intro_ids and id(b) not in ending_ids]
+    if not pool:
         raise ValueError("plan has no body bars")
     start = next((k for k, b in enumerate(pool) if b["label"] == "chorus"), 0)
     order = pool[start:] + pool[:start]
