@@ -136,6 +136,47 @@ def _relay(p, logfile, t):
     return code, round(time.monotonic() - t, 1)
 
 
+PROBE = r"""
+import json, torch, torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
+d = torch.device("cuda")
+q = torch.randn(1, 16, 1, 128, device=d, dtype=torch.bfloat16)
+k = torch.randn(1, 8, 64, 128, device=d, dtype=torch.bfloat16)
+mask = torch.ones(1, 1, 1, 64, device=d, dtype=torch.bool)
+out = {}
+try:
+    qq = torch.randn(1, 16, 128, device=d, dtype=torch.bfloat16)
+    kk = torch.randn(64, 8, 128, device=d, dtype=torch.bfloat16)
+    cu_q = torch.tensor([0, 1], device=d, dtype=torch.int32); cu_k = torch.tensor([0, 64], device=d, dtype=torch.int32)
+    torch.ops.aten._flash_attention_forward(qq[0:1].reshape(1, 16, 128), kk, kk, cu_q, cu_k, 1, 64, 0.0, False, False,
+                                            seqused_k=torch.tensor([64], device=d, dtype=torch.int32))
+    torch.cuda.synchronize(); out["flash"] = "ok"
+except Exception as e:
+    out["flash"] = f"{type(e).__name__}: {e}"[:200]
+try:
+    with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+        F.scaled_dot_product_attention(q, k, k, attn_mask=mask, is_causal=False, enable_gqa=True)
+    torch.cuda.synchronize(); out["cudnn"] = "ok"
+except Exception as e:
+    out["cudnn"] = f"{type(e).__name__}: {e}"[:200]
+print("PROBE " + json.dumps(out))
+"""
+
+
+def probe_attention(py):
+    """Which of GraphAR's backends actually run here, in the authors' order."""
+    r = subprocess.run([py, "-c", PROBE], capture_output=True, text=True, timeout=300,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    found = {}
+    for line in r.stdout.splitlines():
+        if line.startswith("PROBE "):
+            found = json.loads(line[6:])
+    if not found:
+        found = {"error": (r.stderr or r.stdout)[-500:]}
+    choice = "flash" if found.get("flash") == "ok" else "cudnn" if found.get("cudnn") == "ok" else "sdpa"
+    return choice, found
+
+
 def comfy_free():
     """Empty the card: wait for any running ComfyUI prompt (a live music bed), then /free."""
     try:
@@ -267,6 +308,18 @@ def main():
         results["steps"]["comfy_free"] = comfy_free()
         log(f"comfy: {results['steps']['comfy_free']}")
         results["vram_before_takes"] = nvidia_used()
+
+        set_phase("attention-probe")
+        choice, found = probe_attention(py)
+        results["attention"] = {"probe": found, "used": choice}
+        log(f"attention probe: {found} -> {choice}")
+        if choice != "flash":
+            # Their auto-pick would choose flash (the op is registered) and crash; pass the
+            # first working backend in their order through the sitecustomize shim.
+            os.environ["YUE2_ATTENTION"] = choice
+            os.environ["PYTHONPATH"] = os.path.join(HERE, "shim") + os.pathsep + os.environ.get("PYTHONPATH", "")
+            results["deviations"].append(f"GraphAR attention forced to '{choice}' (Windows torch has no FlashAttention kernel)")
+        save()
 
         set_phase("doctor")
         code, secs = stream([py, "-B", os.path.join(SCRIPTS, "setup_runtime.py"), "doctor", "--models-root", MODELS,
