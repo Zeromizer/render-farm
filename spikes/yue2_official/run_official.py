@@ -353,10 +353,42 @@ def main():
                     cmd += ["--planning-lyrics-file", pl]
             if "seed" in take:
                 cmd += ["--seed", str(take["seed"])]
-            cmd += ["--id", re.sub(r"[^A-Za-z0-9_.-]", "_", name), "--models-root", MODELS, "--offline", "--output", work]
-            code, secs = stream(cmd, os.path.join(slim, "log.txt"))
+            tail = ["--id", re.sub(r"[^A-Za-z0-9_.-]", "_", name), "--models-root", MODELS, "--offline"]
+            cut_info, plan_secs = None, 0.0
+            if take["kind"] == "cut":
+                # 1) their planner + Vocal->Ins transfer, stopping before audio (no GPU audio, no OOM);
+                # 2) cut the instrumental score to ad length (trim_score.py, YuE2's own bars only);
+                # 3) their run on the cut score as a provided ABC: prepare, generate, share.
+                plan_dir = work + ".plan"
+                if os.path.exists(plan_dir):
+                    shutil.rmtree(plan_dir)
+                code, plan_secs = stream(cmd + tail + ["--prepare-only", "--output", plan_dir], os.path.join(slim, "log.txt"))
+                src = os.path.join(plan_dir, "conversion", "score.abc")
+                copy_if(os.path.join(plan_dir, "planning", "score.abc"), os.path.join(slim, "score_model_plan.abc"))
+                copy_if(src, os.path.join(slim, "score_plan_instrumental.abc"))
+                if code == 0 and os.path.isfile(src):
+                    cut_abc = os.path.join(runs, f"{name}.cut.abc")
+                    r = subprocess.run([py, "-B", os.path.join(HERE, "trim_score.py"), src, cut_abc,
+                                        "--seconds", str(take.get("seconds", 30))] +
+                                       (["--intro-bars", str(take["intro_bars"])] if "intro_bars" in take else []),
+                                       capture_output=True, text=True, env=dict(os.environ, PYTHONUTF8="1"), timeout=120)
+                    log("cut: " + (r.stdout.strip() or r.stderr.strip()[-400:]))
+                    if r.returncode == 0:
+                        cut_info = json.loads(r.stdout.strip().splitlines()[-1])
+                        copy_if(cut_abc, os.path.join(slim, "score_cut.abc"))
+                        cmd = [py, "-B", os.path.join(SCRIPTS, "instrumental.py"), "run", "--abc", cut_abc,
+                               "--style", take["style"], "--seed", str(take["seed"])]
+                    else:
+                        code = 2
+                if code:
+                    cmd = None
+            if cmd:
+                code, secs = stream(cmd + tail + ["--output", work], os.path.join(slim, "log.txt"))
+            else:
+                secs = 0.0
             row = {"name": name, "kind": take["kind"], "style": take.get("style"), "seed": take.get("seed"),
-                   "exit": code, "wall_s": secs, "vram_peak_mib": _state["peak"].get(name)}
+                   "exit": code, "wall_s": round(secs + plan_secs, 1), "plan_s": plan_secs or None, "cut": cut_info,
+                   "vram_peak_mib": _state["peak"].get(name)}
             row.update(collect(work, slim))
             if code in (0, 1) and os.path.isdir(os.path.join(work, "generation")):
                 vcode, _ = stream([py, "-B", os.path.join(SCRIPTS, "instrumental.py"), "verify",

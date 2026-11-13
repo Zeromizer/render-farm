@@ -1,0 +1,186 @@
+{
+  "run_id": "p4",
+  "checks": false,
+  "takes": [
+    {
+      "name": "offer-funk_11",
+      "kind": "cut",
+      "style": "Instrumental, funk pop, slap bass, brass stabs, punchy drums, groovy, confident, upbeat, 120 BPM, no vocals",
+      "seed": 11,
+      "seconds": 30
+    },
+    {
+      "name": "family_11",
+      "kind": "cut",
+      "style": "Instrumental, warm indie pop, acoustic guitar, piano, soft claps, light drums, hopeful, heartfelt, 96 BPM, no vocals",
+      "seed": 11,
+      "seconds": 30
+    },
+    {
+      "name": "ev-cinematic_11",
+      "kind": "cut",
+      "style": "Instrumental, uplifting cinematic pop, strings, piano, big drums, inspiring, 100 BPM, no vocals",
+      "seed": 11,
+      "seconds": 30
+    },
+    {
+      "name": "offer-funk_222",
+      "kind": "cut",
+      "style": "Instrumental, funk pop, slap bass, brass stabs, punchy drums, groovy, confident, upbeat, 120 BPM, no vocals",
+      "seed": 222,
+      "seconds": 30
+    },
+    {
+      "name": "family_222",
+      "kind": "cut",
+      "style": "Instrumental, warm indie pop, acoustic guitar, piano, soft claps, light drums, hopeful, heartfelt, 96 BPM, no vocals",
+      "seed": 222,
+      "seconds": 30
+    },
+    {
+      "name": "ev-cinematic_222",
+      "kind": "cut",
+      "style": "Instrumental, uplifting cinematic pop, strings, piano, big drums, inspiring, 100 BPM, no vocals",
+      "seed": 222,
+      "seconds": 30
+    },
+    {
+      "name": "offer-funk_3333",
+      "kind": "cut",
+      "style": "Instrumental, funk pop, slap bass, brass stabs, punchy drums, groovy, confident, upbeat, 120 BPM, no vocals",
+      "seed": 3333,
+      "seconds": 30
+    },
+    {
+      "name": "family_3333",
+      "kind": "cut",
+      "style": "Instrumental, warm indie pop, acoustic guitar, piano, soft claps, light drums, hopeful, heartfelt, 96 BPM, no vocals",
+      "seed": 3333,
+      "seconds": 30
+    },
+    {
+      "name": "ev-cinematic_3333",
+      "kind": "cut",
+      "style": "Instrumental, uplifting cinematic pop, strings, piano, big drums, inspiring, 100 BPM, no vocals",
+      "seed": 3333,
+      "seconds": 30
+    },
+    {
+      "name": "offer-funk_44444",
+      "kind": "cut",
+      "style": "Instrumental, funk pop, slap bass, brass stabs, punchy drums, groovy, confident, upbeat, 120 BPM, no vocals",
+      "seed": 44444,
+      "seconds": 30
+    },
+    {
+      "name": "family_44444",
+      "kind": "cut",
+      "style": "Instrumental, warm indie pop, acoustic guitar, piano, soft claps, light drums, hopeful, heartfelt, 96 BPM, no vocals",
+      "seed": 44444,
+      "seconds": 30
+    },
+    {
+      "name": "ev-cinematic_44444",
+      "kind": "cut",
+      "style": "Instrumental, uplifting cinematic pop, strings, piano, big drums, inspiring, 100 BPM, no vocals",
+      "seed": 44444,
+      "seconds": 30
+    },
+    {
+      "name": "hero-rock_11",
+      "kind": "cut",
+      "style": "Instrumental, powerful cinematic rock, big punchy drums, heavy electric guitar riffs, driving bass, heroic, confident, 128 BPM, no vocals",
+      "seed": 11,
+      "seconds": 30,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "hero-orchestral_11",
+      "kind": "cut",
+      "style": "Instrumental, epic hybrid orchestral, huge cinematic drums, bold brass, driving string ostinato, powerful, majestic, 120 BPM, no vocals",
+      "seed": 11,
+      "seconds": 30,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "beat-drive_11",
+      "kind": "cut",
+      "style": "Instrumental, driving electronic, punchy kick on every beat, tight claps, deep clean bass, bright synth stabs, energetic, confident, 138 BPM, no vocals",
+      "seed": 11,
+      "seconds": 30,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "beat-phonk_11",
+      "kind": "cut",
+      "style": "Instrumental, drift phonk, punchy kick on every beat, cowbell melody, deep clean bass, tight claps, energetic, 138 BPM, no vocals",
+      "seed": 11,
+      "seconds": 30,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "hero-rock_222",
+      "kind": "cut",
+      "style": "Instrumental, powerful cinematic rock, big punchy drums, heavy electric guitar riffs, driving bass, heroic, confident, 128 BPM, no vocals",
+      "seed": 222,
+      "seconds": 30,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "hero-orchestral_222",
+      "kind": "cut",
+      "style": "Instrumental, epic hybrid orchestral, huge cinematic drums, bold brass, driving string ostinato, powerful, majestic, 120 BPM, no vocals",
+      "seed": 222,
+      "seconds": 30,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "beat-drive_222",
+      "kind": "cut",
+      "style": "Instrumental, driving electronic, punchy kick on every beat, tight claps, deep clean bass, bright synth stabs, energetic, confident, 138 BPM, no vocals",
+      "seed": 222,
+      "seconds": 30,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "beat-phonk_222",
+      "kind": "cut",
+      "style": "Instrumental, drift phonk, punchy kick on every beat, cowbell melody, deep clean bass, tight claps, energetic, 138 BPM, no vocals",
+      "seed": 222,
+      "seconds": 30,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "hero-rock_3333",
+      "kind": "cut",
+      "style": "Instrumental, powerful cinematic rock, big punchy drums, heavy electric guitar riffs, driving bass, heroic, confident, 128 BPM, no vocals",
+      "seed": 3333,
+      "seconds": 30,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "hero-orchestral_3333",
+      "kind": "cut",
+      "style": "Instrumental, epic hybrid orchestral, huge cinematic drums, bold brass, driving string ostinato, powerful, majestic, 120 BPM, no vocals",
+      "seed": 3333,
+      "seconds": 30,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "beat-drive_3333",
+      "kind": "cut",
+      "style": "Instrumental, driving electronic, punchy kick on every beat, tight claps, deep clean bass, bright synth stabs, energetic, confident, 138 BPM, no vocals",
+      "seed": 3333,
+      "seconds": 30,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "beat-phonk_3333",
+      "kind": "cut",
+      "style": "Instrumental, drift phonk, punchy kick on every beat, cowbell melody, deep clean bass, tight claps, energetic, 138 BPM, no vocals",
+      "seed": 3333,
+      "seconds": 30,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    }
+  ]
+}
