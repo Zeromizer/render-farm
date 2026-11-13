@@ -95,6 +95,14 @@ def stream(cmd, logfile=None, cwd=None):
     log("$ " + " ".join(cmd))
     p = subprocess.Popen(cmd, cwd=cwd or SKILL, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        return _relay(p, logfile, t)
+    finally:
+        if p.poll() is None:
+            p.kill()
+
+
+def _relay(p, logfile, t):
     fh = open(logfile, "a", encoding="utf-8") if logfile else None
     buf, last_cr = b"", 0.0
     while True:
@@ -201,6 +209,9 @@ def collect(work, slim):
 
 
 def main():
+    # The farm pipes stdout with the locale codec (cp1252); tqdm's block characters crash it.
+    for s in (sys.stdout, sys.stderr):
+        s.reconfigure(encoding="utf-8", errors="replace")
     job_path, out = sys.argv[1], sys.argv[2]
     with open(os.path.join(os.getcwd(), job_path) if not os.path.isabs(job_path) else job_path, encoding="utf-8") as f:
         job = json.load(f)
