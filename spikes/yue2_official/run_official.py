@@ -345,6 +345,12 @@ def main():
                         "--style-file", os.path.join(a, "example-style.txt"), "--repairs", os.path.join(a, "example-repairs.json")]
             else:
                 cmd += ["--style", take["style"]]
+                if take.get("planning_lyrics"):
+                    # Their documented --planning-lyrics-file: planner-only section tags, never sung.
+                    pl = os.path.join(runs, f"{name}.planning-lyrics.txt")
+                    with open(pl, "w", encoding="utf-8", newline="\n") as f:
+                        f.write(take["planning_lyrics"])
+                    cmd += ["--planning-lyrics-file", pl]
             if "seed" in take:
                 cmd += ["--seed", str(take["seed"])]
             cmd += ["--id", re.sub(r"[^A-Za-z0-9_.-]", "_", name), "--models-root", MODELS, "--offline", "--output", work]

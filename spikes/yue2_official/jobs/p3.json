@@ -1,0 +1,90 @@
+{
+  "run_id": "p3",
+  "checks": false,
+  "takes": [
+    {
+      "name": "hero-rock_11",
+      "kind": "style",
+      "style": "Instrumental, powerful cinematic rock, big punchy drums, heavy electric guitar riffs, driving bass, heroic, confident, 128 BPM, no vocals",
+      "seed": 11,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "hero-orchestral_11",
+      "kind": "style",
+      "style": "Instrumental, epic hybrid orchestral, huge cinematic drums, bold brass, driving string ostinato, powerful, majestic, 120 BPM, no vocals",
+      "seed": 11,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "beat-drive_11",
+      "kind": "style",
+      "style": "Instrumental, driving electronic, punchy kick on every beat, tight claps, deep clean bass, bright synth stabs, energetic, confident, 138 BPM, no vocals",
+      "seed": 11,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "beat-phonk_11",
+      "kind": "style",
+      "style": "Instrumental, drift phonk, punchy kick on every beat, cowbell melody, deep clean bass, tight claps, energetic, 138 BPM, no vocals",
+      "seed": 11,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "hero-rock_222",
+      "kind": "style",
+      "style": "Instrumental, powerful cinematic rock, big punchy drums, heavy electric guitar riffs, driving bass, heroic, confident, 128 BPM, no vocals",
+      "seed": 222,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "hero-orchestral_222",
+      "kind": "style",
+      "style": "Instrumental, epic hybrid orchestral, huge cinematic drums, bold brass, driving string ostinato, powerful, majestic, 120 BPM, no vocals",
+      "seed": 222,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "beat-drive_222",
+      "kind": "style",
+      "style": "Instrumental, driving electronic, punchy kick on every beat, tight claps, deep clean bass, bright synth stabs, energetic, confident, 138 BPM, no vocals",
+      "seed": 222,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "beat-phonk_222",
+      "kind": "style",
+      "style": "Instrumental, drift phonk, punchy kick on every beat, cowbell melody, deep clean bass, tight claps, energetic, 138 BPM, no vocals",
+      "seed": 222,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "hero-rock_3333",
+      "kind": "style",
+      "style": "Instrumental, powerful cinematic rock, big punchy drums, heavy electric guitar riffs, driving bass, heroic, confident, 128 BPM, no vocals",
+      "seed": 3333,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "hero-orchestral_3333",
+      "kind": "style",
+      "style": "Instrumental, epic hybrid orchestral, huge cinematic drums, bold brass, driving string ostinato, powerful, majestic, 120 BPM, no vocals",
+      "seed": 3333,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "beat-drive_3333",
+      "kind": "style",
+      "style": "Instrumental, driving electronic, punchy kick on every beat, tight claps, deep clean bass, bright synth stabs, energetic, confident, 138 BPM, no vocals",
+      "seed": 3333,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    },
+    {
+      "name": "beat-phonk_3333",
+      "kind": "style",
+      "style": "Instrumental, drift phonk, punchy kick on every beat, cowbell melody, deep clean bass, tight claps, energetic, 138 BPM, no vocals",
+      "seed": 3333,
+      "planning_lyrics": "[Intro]\n\n[Chorus]\n\n[Outro]\n"
+    }
+  ]
+}
