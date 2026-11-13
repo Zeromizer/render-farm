@@ -1,0 +1,6 @@
+# m-a-p's pinned YuE2 runtime (skill/requirements-inference.txt: same wheel, same sha256).
+# torch is pinned to the CUDA build because PyPI's Windows torch 2.10.0 is CPU-only;
+# the wheel itself requires torch==2.10.0, which 2.10.0+cu128 satisfies.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.10.0+cu128
+https://huggingface.co/m-a-p/YuE2-3B/resolve/14fc6c6f146441b1dd6363fcb2e01e82a6914cb7/yue2_infer-0.1.5-py3-none-any.whl#sha256=8801e2c0d969db02df78d2994150b4ccd86077d87c24fdb8509b1f6f31462641

@@ -1,0 +1,78 @@
+{
+  "run_id": "p2",
+  "checks": false,
+  "takes": [
+    {
+      "name": "offer-funk_11",
+      "kind": "style",
+      "style": "Instrumental, funk pop, slap bass, brass stabs, punchy drums, groovy, confident, upbeat, 120 BPM, no vocals",
+      "seed": 11
+    },
+    {
+      "name": "family_11",
+      "kind": "style",
+      "style": "Instrumental, warm indie pop, acoustic guitar, piano, soft claps, light drums, hopeful, heartfelt, 96 BPM, no vocals",
+      "seed": 11
+    },
+    {
+      "name": "ev-cinematic_11",
+      "kind": "style",
+      "style": "Instrumental, uplifting cinematic pop, strings, piano, big drums, inspiring, 100 BPM, no vocals",
+      "seed": 11
+    },
+    {
+      "name": "offer-funk_222",
+      "kind": "style",
+      "style": "Instrumental, funk pop, slap bass, brass stabs, punchy drums, groovy, confident, upbeat, 120 BPM, no vocals",
+      "seed": 222
+    },
+    {
+      "name": "family_222",
+      "kind": "style",
+      "style": "Instrumental, warm indie pop, acoustic guitar, piano, soft claps, light drums, hopeful, heartfelt, 96 BPM, no vocals",
+      "seed": 222
+    },
+    {
+      "name": "ev-cinematic_222",
+      "kind": "style",
+      "style": "Instrumental, uplifting cinematic pop, strings, piano, big drums, inspiring, 100 BPM, no vocals",
+      "seed": 222
+    },
+    {
+      "name": "offer-funk_3333",
+      "kind": "style",
+      "style": "Instrumental, funk pop, slap bass, brass stabs, punchy drums, groovy, confident, upbeat, 120 BPM, no vocals",
+      "seed": 3333
+    },
+    {
+      "name": "family_3333",
+      "kind": "style",
+      "style": "Instrumental, warm indie pop, acoustic guitar, piano, soft claps, light drums, hopeful, heartfelt, 96 BPM, no vocals",
+      "seed": 3333
+    },
+    {
+      "name": "ev-cinematic_3333",
+      "kind": "style",
+      "style": "Instrumental, uplifting cinematic pop, strings, piano, big drums, inspiring, 100 BPM, no vocals",
+      "seed": 3333
+    },
+    {
+      "name": "offer-funk_44444",
+      "kind": "style",
+      "style": "Instrumental, funk pop, slap bass, brass stabs, punchy drums, groovy, confident, upbeat, 120 BPM, no vocals",
+      "seed": 44444
+    },
+    {
+      "name": "family_44444",
+      "kind": "style",
+      "style": "Instrumental, warm indie pop, acoustic guitar, piano, soft claps, light drums, hopeful, heartfelt, 96 BPM, no vocals",
+      "seed": 44444
+    },
+    {
+      "name": "ev-cinematic_44444",
+      "kind": "style",
+      "style": "Instrumental, uplifting cinematic pop, strings, piano, big drums, inspiring, 100 BPM, no vocals",
+      "seed": 44444
+    }
+  ]
+}

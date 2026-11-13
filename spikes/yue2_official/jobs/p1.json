@@ -1,0 +1,16 @@
+{
+  "run_id": "p1",
+  "checks": true,
+  "takes": [
+    {
+      "name": "smoke",
+      "kind": "smoke",
+      "stop_on_fail": true
+    },
+    {
+      "name": "authors_piano",
+      "kind": "style",
+      "style": "Instrumental, warm solo piano, lyrical and gentle, no vocals"
+    }
+  ]
+}
