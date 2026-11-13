@@ -166,7 +166,9 @@ def cut(text, seconds=30.0, intro_bars=2, outro_bars=2, max_tempo_change=0.04):
     rep = report(score)
     info = {"plan_bars": len(flat), "plan_seconds": round(len(flat) * bar_s, 1), "plan_sections": labels,
             "kept": [f"{l}:{len(b)}" for l, b in out_sections], "bars": len(picked),
-            "tempo": [q, new_q], "nominal_seconds": round(rep["nominal_duration_seconds"], 2)}
+            "tempo": [q, new_q], "nominal_seconds": round(rep["nominal_duration_seconds"], 2),
+            "bar_seconds": float(quarters_per_bar) * 60 / new_q,
+            "sections": [[l, len(b)] for l, b in out_sections]}
     return result, info
 
 

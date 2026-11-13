@@ -32,6 +32,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -201,6 +202,92 @@ def comfy_free():
     urllib.request.urlopen(req, timeout=30).read()
     time.sleep(5)
     return f"freed after waiting {waited}s"
+
+
+CKPT = "yue2_3b_int8_convrot.safetensors"          # what audio_gen runs
+LORA = "ar_lora_inst_v3abc_comfyui.safetensors"
+LORA_SECTIONS = {"intro", "verse", "pre-chorus", "chorus", "bridge", "outro"}
+
+
+def timed_tags(sections, bar_s):
+    """The live format the instrumental LoRA was used with: '[chorus 0:04-0:16]'."""
+    out, t = [], 0.0
+    for label, bars in sections:
+        label = label if label in LORA_SECTIONS else "bridge"
+        end = t + bars * bar_s
+        a, b = int(round(t)), int(round(end))
+        out.append(f"[{label} {a // 60}:{a % 60:02d}-{b // 60}:{b % 60:02d}]")
+        t = end
+    return "\n".join(out)
+
+
+def comfy_post(path, payload, timeout=60):
+    req = urllib.request.Request(COMFY + path, data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    return json.loads(urllib.request.urlopen(req, timeout=timeout).read() or b"{}")
+
+
+def comfy_render(row, arm, dest):
+    """Play the cut score through ComfyUI's YuE2GenerateMusic (live int8 model), with the
+    instrumental LoRA (arm 'lora') or without it (arm 'nolora'). Returns facts about the take."""
+    import soundfile as sf
+    with open(row["cut_abc"], encoding="utf-8") as f:
+        abc = f.read()
+    style = row["style"]
+    if os.path.isfile(row.get("prepared_style") or ""):
+        with open(row["prepared_style"], encoding="utf-8") as f:
+            style = f.read().strip()
+    cut = row["cut"]
+    tags = timed_tags(cut["sections"], cut["bar_seconds"])
+    max_duration = round(round((cut["nominal_seconds"] + 8.0) / 0.04) * 0.04, 2)
+    clip = ["2", 1] if arm == "lora" else ["1", 1]
+    model = ["2", 0] if arm == "lora" else ["1", 0]
+    seed = int(row["seed"])
+    g = {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": CKPT}},
+        "3": {"class_type": "PrimitiveStringMultiline", "inputs": {"value": abc}},
+        "5": {"class_type": "YuE2GenerateMusic",
+              "inputs": {"clip": clip, "style": style, "lyrics": tags, "seed": seed, "mode": "full", "abc": ["3", 0],
+                         "max_duration": max_duration, "temperature": 1.0, "top_p": 0.95, "top_k": 100,
+                         "repetition_penalty": 1.2}},
+        "6": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["5", 0]}},
+        "7": {"class_type": "EmptyYuE2LatentAudio", "inputs": {"seconds": ["5", 1], "batch_size": 1}},
+        "8": {"class_type": "KSampler",
+              "inputs": {"model": model, "seed": seed, "steps": 32, "cfg": 1.0, "sampler_name": "dpm_2",
+                         "scheduler": "sgm_uniform", "positive": ["5", 0], "negative": ["6", 0],
+                         "latent_image": ["7", 0], "denoise": 1.0}},
+        "9": {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["8", 0], "vae": ["1", 2]}},
+        "10": {"class_type": "SaveAudio", "inputs": {"audio": ["9", 0], "filename_prefix": f"yue2_official/{row['name']}_{arm}"}},
+    }
+    if arm == "lora":
+        g["2"] = {"class_type": "LoraLoader", "inputs": {"model": ["1", 0], "clip": ["1", 1], "lora_name": LORA,
+                                                         "strength_model": 0.0, "strength_clip": 1.0}}
+    t0 = time.monotonic()
+    pid = comfy_post("/prompt", {"prompt": g, "client_id": "yue2-official-spike"})["prompt_id"]
+    while True:
+        if time.monotonic() - t0 > 900:
+            raise RuntimeError("ComfyUI render timed out")
+        e = json.loads(urllib.request.urlopen(COMFY + f"/history/{pid}", timeout=60).read()).get(pid)
+        if e:
+            st = e.get("status") or {}
+            if st.get("status_str") == "error":
+                msgs = st.get("messages") or []
+                err = next((m[1] for m in msgs if m[0] == "execution_error"), {})
+                raise RuntimeError(f"{err.get('node_type')}: {err.get('exception_message')}")
+            break
+        time.sleep(2)
+    wall = round(time.monotonic() - t0, 1)
+    for node_out in (e.get("outputs") or {}).values():
+        for f in node_out.get("audio", []) or []:
+            q = urllib.parse.urlencode({"filename": f["filename"], "subfolder": f.get("subfolder", ""), "type": f.get("type", "output")})
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with urllib.request.urlopen(COMFY + "/view?" + q, timeout=120) as resp, open(dest, "wb") as out:
+                shutil.copyfileobj(resp, out)
+            info = sf.info(dest)
+            secs = info.frames / info.samplerate
+            return {"audio_s": round(secs, 2), "wall_s": wall, "max_duration": max_duration, "tags": tags,
+                    "hit_cap": secs >= max_duration - 0.1}
+    raise RuntimeError("no audio in ComfyUI outputs")
 
 
 def read_json(path):
@@ -394,6 +481,9 @@ def main():
                 vcode, _ = stream([py, "-B", os.path.join(SCRIPTS, "instrumental.py"), "verify",
                                    os.path.join(work, "generation")], os.path.join(slim, "verify.log"))
                 row["verify_exit"] = vcode
+            if cut_info:
+                row["cut_abc"] = os.path.join(runs, f"{name}.cut.abc")
+                row["prepared_style"] = os.path.join(work, "prepared", "style.txt")
             results["takes"].append(row)
             log(f"take {name}: exit={code} wall={secs}s audio={row['audio_seconds']} nominal={row['nominal_seconds']} "
                 f"truncated={row['truncated']} vram_peak={row['vram_peak_mib']}")
@@ -401,6 +491,30 @@ def main():
             if code == 2 and take.get("stop_on_fail"):
                 log("stop_on_fail: stopping here")
                 break
+        arms = job.get("comfy_arms") or []
+        if arms:
+            # Same cut score, played by the LIVE renderer (ComfyUI int8 YuE2, as audio_gen runs it),
+            # with and without the instrumental LoRA. Runs after every official render so the
+            # official runtime and ComfyUI are never on the card together.
+            results["comfy"] = []
+            cut_rows = [r for r in results["takes"] if r.get("cut_abc") and os.path.isfile(r["cut_abc"])]
+            for k, row in enumerate(cut_rows):
+                for arm in arms:
+                    tag = f"{row['name']}.{arm}"
+                    set_phase(tag)
+                    log(f"PROGRESS {80 + int(19 * k / max(1, len(cut_rows)))}")
+                    log(f"=== comfy {arm}: {row['name']}")
+                    entry = {"name": row["name"], "arm": arm}
+                    try:
+                        entry.update(comfy_render(row, arm, os.path.join(out, "takes", row["name"], f"comfy_{arm}.flac")))
+                    except Exception as e:
+                        entry["error"] = f"{type(e).__name__}: {e}"[:400]
+                    entry["vram_peak_mib"] = _state["peak"].get(tag)
+                    log(f"comfy {tag}: {entry}")
+                    results["comfy"].append(entry)
+                    save()
+            urllib.request.urlopen(urllib.request.Request(COMFY + "/free", data=b'{"unload_models": true, "free_memory": true}',
+                                                          headers={"Content-Type": "application/json"}, method="POST"), timeout=30)
         log("PROGRESS 99")
     except Exception as e:
         results["error"] = f"{type(e).__name__}: {e}"
