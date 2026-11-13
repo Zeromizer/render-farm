@@ -32,6 +32,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -224,7 +225,11 @@ def timed_tags(sections, bar_s):
 def comfy_post(path, payload, timeout=60):
     req = urllib.request.Request(COMFY + path, data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
-    return json.loads(urllib.request.urlopen(req, timeout=timeout).read() or b"{}")
+    try:
+        return json.loads(urllib.request.urlopen(req, timeout=timeout).read() or b"{}")
+    except urllib.error.HTTPError as e:   # /prompt explains a rejected graph in the body
+        body = e.read().decode("utf-8", "replace")[:1500]
+        raise RuntimeError(f"{path} {e.code}: {body}") from None
 
 
 def comfy_render(row, arm, dest):
