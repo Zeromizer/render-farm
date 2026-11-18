@@ -142,8 +142,11 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
             "sid": f"rm{p['job_id'].replace('-', '')[:12]}",
             "tar_out": os.path.join(work_dir, "session.tgz"), "report_out": os.path.join(work_dir, "report.json"),
             "codex_bin": codex_bin() if p["stage"] != "prepare" else "", "codex_auth": config.REMAKE_CODEX_AUTH}
-    spec["kind"] = "edit" if p.get("mode") == "object" else "swap"
     if p["stage"] == "prepare":
+        # session kind (swap | edit), read by the driver ONLY at prepare; later stages read it from the session.
+        # Never set it on paint: there spec["kind"] is the character-sheet kind (person | anthro | creature), and
+        # "swap" leaking into it failed every person paint with "kind: person | anthro | creature".
+        spec["kind"] = "edit" if p.get("mode") == "object" else "swap"
         spec["target"] = media_type.ensure_extension(gate_common.download(p["target"]["bucket"], p["target"]["path"],
                                                                           work_dir, "target", log), ("video",),
                                                      name="target", probe=True)

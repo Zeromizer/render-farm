@@ -118,6 +118,50 @@ class ObjectParams(unittest.TestCase):
 
 
 @unittest.skipIf(RP is None, "worker venv not available")
+class DriverSpecKind(unittest.TestCase):
+    """spec["kind"] means the SESSION kind (swap | edit) at prepare and the SHEET kind (person | anthro | creature)
+    at person paint. The session kind leaking into paint failed every person paint (2026-11-18)."""
+
+    def spec_for(self, p):
+        import json
+        import tarfile
+        import tempfile
+        from unittest import mock
+        work = tempfile.mkdtemp()
+        os.makedirs(os.path.join(work, "src", "rmabc"))
+        tgz = os.path.join(work, "in.tgz")
+        with tarfile.open(tgz, "w:gz") as t:
+            t.add(os.path.join(work, "src", "rmabc"), arcname="rmabc")
+
+        class Stop(Exception):
+            pass
+
+        with mock.patch.object(RP.db, "set_phase"), \
+                mock.patch.object(RP.gate_common, "download", side_effect=lambda b, path, wd, name, log: tgz), \
+                mock.patch.object(RP.media_type, "ensure_extension", side_effect=lambda f, *a, **k: f), \
+                mock.patch.object(RP, "codex_bin", return_value="codex"), \
+                mock.patch.object(RP, "venv_python", side_effect=Stop):
+            with self.assertRaises(Stop):
+                RP.run({"id": "jid", "params": {"remake_paint": p}}, None, work, None, lambda *_: None,
+                       lambda: False, 60)
+        return json.load(open(os.path.join(work, "rm-spec.json"), encoding="utf-8"))
+
+    def test_person_paint_does_not_get_the_session_kind(self):
+        self.assertNotIn("kind", self.spec_for(paint(mode="whole")))   # the driver then defaults to "person"
+
+    def test_person_paint_keeps_an_explicit_sheet_kind(self):
+        self.assertEqual(self.spec_for(paint(kind="anthro"))["kind"], "anthro")
+
+    def test_object_paint_has_no_sheet_kind(self):
+        self.assertNotIn("kind", self.spec_for(obj()))
+
+    def test_prepare_gets_the_session_kind(self):
+        prep = {"org_id": "o", "job_id": "j", "stage": "prepare", "target": SRC}
+        self.assertEqual(self.spec_for(prep)["kind"], "swap")
+        self.assertEqual(self.spec_for({**prep, "mode": "object"})["kind"], "edit")
+
+
+@unittest.skipIf(RP is None, "worker venv not available")
 class CodexBin(unittest.TestCase):
     """The VS Code extension's folder is versioned (openai.chatgpt-26.51021...): the newest one must win, as a number."""
     def test_newest_extension_wins(self):
