@@ -3,7 +3,8 @@
 # from the network volume, then hand over to the image's own /start.sh (sshd).
 # Everything heavy (ComfyUI + models, Blender, ffmpeg, venvs) lives on the volume;
 # setup-volume.sh puts it there once. Per boot: unpack the code+venv bundle to
-# local disk, start ComfyUI, install the apt libraries, run the worker.
+# local disk, start ComfyUI, install the apt libraries (in the background), run
+# the worker.
 set -u
 # The pod starts whatever boot.sh the LAST pod left on the volume. Update the
 # checkout first and re-run the new script, or a change here takes effect one
@@ -52,10 +53,18 @@ stamp() { echo "[boot +$(( $(date +%s) - T0 ))s] $*"; }
   setsid bash $COMFY/run-headless.sh < /dev/null > /dev/null 2>&1 &
 
   # Runtime libraries for Blender (EGL/GL) and headless Chrome; not kept on the volume.
-  apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    libegl1 libgl1 libglu1-mesa libxi6 libxkbcommon0 libxrender1 libsm6 libxxf86vm1 libxfixes3 \
-    libnss3 libatk-bridge2.0-0 libgbm1 libasound2t64 xvfb libvulkan1 >/dev/null || echo "apt failed (continuing)"
-  stamp "apt done"
+  # In the background, capped at 20 min: no cloud-gated engine (video_gen,
+  # lettering_fix, clip_edit, remake) uses them, and on 2026-11-19 the mirrors
+  # took 15+ min, so two pods hit cloud_lane's 20-min BOOT_GRACE before the
+  # worker ever started. /root/.apt-done marks success for anything that does
+  # need them later.
+  (
+    timeout 1200 bash -c 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+      libegl1 libgl1 libglu1-mesa libxi6 libxkbcommon0 libxrender1 libsm6 libxxf86vm1 libxfixes3 \
+      libnss3 libatk-bridge2.0-0 libgbm1 libasound2t64 xvfb libvulkan1 >/dev/null' \
+      && touch /root/.apt-done && stamp "apt done" \
+      || stamp "apt failed or timed out (continuing)"
+  ) &
 
   set -a; . /workspace/render-farm/cloud/pod.env; set +a
   export COMFYUI_DIR=$COMFY WORKER_LOG=/workspace/logs/worker-${RUNPOD_POD_ID:-local}.log
