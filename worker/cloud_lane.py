@@ -30,10 +30,16 @@ import httpx
 import config
 import db
 
-API = "https://rest.runpod.io/v1"
+# RunPod REST v2. v1 (https://rest.runpod.io/v1) was retired in Nov 2026: from
+# 2026-11-16 17:04Z its hostname stopped resolving, every tick failed, and
+# cloud-only engines (remake) sat pending with no PC fallback.
+API = "https://api.runpod.io/v2"
 POD_PREFIX = "rf-cloud"
 TICK_SECONDS = 30
 CREATE_BACKOFF_SECONDS = 300
+# A tick that keeps failing logs its error again this often, not just once:
+# a single line followed by silence hid the v1 retirement for 2.5 days.
+ERROR_RELOG_SECONDS = 30 * 60
 BROKEN_BACKOFF_SECONDS = 2 * 3600
 # Dud pods (never claimed) in a row, with no pod seen working in between,
 # before the image counts as broken. One dud beside a working twin is a bad
@@ -49,28 +55,43 @@ def _headers(key=None):
 
 
 def list_pods():
-    r = httpx.get(f"{API}/pods", headers=_headers(), timeout=30)
-    r.raise_for_status()
-    return [p for p in r.json() if (p.get("name") or "").startswith(POD_PREFIX)]
+    """Our pods (name prefix), all pages. v2 wraps the list as {"pods": [...],
+    "pagination": {...}} and reports observed state in "status"."""
+    pods, cursor = [], None
+    while True:
+        r = httpx.get(f"{API}/pods", headers=_headers(), timeout=30,
+                      params={"cursor": cursor} if cursor else None)
+        r.raise_for_status()
+        data = r.json()
+        pods += data.get("pods") or []
+        page = data.get("pagination") or {}
+        cursor = page.get("nextCursor")
+        if not (page.get("hasNextPage") and cursor):
+            break
+    return [p for p in pods if (p.get("name") or "").startswith(POD_PREFIX)]
 
 
 def delete_pod(pod_id, key=None):
-    httpx.delete(f"{API}/pods/{pod_id}", headers=_headers(key), timeout=30).raise_for_status()
+    r = httpx.delete(f"{API}/pods/{pod_id}", headers=_headers(key), timeout=30)
+    if r.status_code == 404:  # already gone
+        return
+    r.raise_for_status()
 
 
-def create_pod(engines, gpu_types=None):
-    body = {
+def pod_gpu(pod):
+    return (pod.get("gpu") or {}).get("id")
+
+
+def pod_body(engines, gpu_type):
+    return {
         "name": f"{POD_PREFIX}-{datetime.now(timezone.utc):%m%d-%H%M%S}",
-        "imageName": config.RUNPOD_IMAGE,
-        "cloudType": "SECURE",
-        "gpuTypeIds": gpu_types or config.RUNPOD_GPU_TYPES,
-        "gpuCount": 1,
-        "networkVolumeId": config.RUNPOD_VOLUME_ID,
-        "volumeMountPath": "/workspace",
-        "containerDiskInGb": 200,  # models staged locally (cloud/stage-models.sh) + bundle
+        "image": config.RUNPOD_IMAGE,
+        "cloud": "SECURE",
+        "gpu": {"id": gpu_type, "count": 1},
+        "mounts": {"network": [{"volumeId": config.RUNPOD_VOLUME_ID, "path": "/workspace"}]},
+        "disk": 200,  # models staged locally (cloud/stage-models.sh) + bundle
         "ports": ["22/tcp"],
-        "supportPublicIp": True,
-        "dockerStartCmd": ["bash", "-c", "bash /workspace/render-farm/cloud/boot.sh"],
+        "cmd": ["bash", "-c", "bash /workspace/render-farm/cloud/boot.sh"],
         "env": {
             # RunPod secrets: the values never sit in the pod's settings.
             "SUPABASE_URL": "{{ RUNPOD_SECRET_supabase_url }}",
@@ -79,13 +100,23 @@ def create_pod(engines, gpu_types=None):
             "IDLE_EXIT_MINUTES": f"{config.IDLE_EXIT_MINUTES:g}",
             "RF_REF": config.CLOUD_GIT_REF,
         },
+        **({"dataCenterIds": [config.RUNPOD_DATACENTER]} if config.RUNPOD_DATACENTER else {}),
     }
-    if config.RUNPOD_DATACENTER:
-        body["dataCenterIds"] = [config.RUNPOD_DATACENTER]
-    r = httpx.post(f"{API}/pods", headers=_headers(), json=body, timeout=60)
-    if r.status_code >= 400:
-        raise RuntimeError(f"RunPod {r.status_code}: {r.text[:300]}")
-    return r.json()
+
+
+def create_pod(engines, gpu_types=None):
+    """Rent one pod. v2 takes a single GPU type per create (v1 took a list and
+    picked any), so walk the list in order: preferred first, then any fallback
+    the caller added. Raises with every type's error when none could be had."""
+    errors = []
+    for gpu_type in gpu_types or config.RUNPOD_GPU_TYPES:
+        r = httpx.post(f"{API}/pods", headers=_headers(), json=pod_body(engines, gpu_type), timeout=60)
+        if r.status_code < 400:
+            return r.json()
+        errors.append(f"{gpu_type}: RunPod {r.status_code}: {r.text[:200]}")
+        if r.status_code in (401, 403, 422):  # bad key or bad body: another GPU won't help
+            break
+    raise RuntimeError("; ".join(errors))
 
 
 def _load_state():
@@ -114,10 +145,9 @@ def _pending(engines):
 def _gpu_choice(oldest_age):
     """The GPU list for a new pod, and whether it includes the fallback.
 
-    RunPod picks any listed type at once, with no order of preference over
-    time, so the fallback types are only listed once a job has waited
-    CLOUD_GPU_FALLBACK_MINUTES. The preferred types stay first in the list:
-    a 5090 that turns up later is still taken over a PRO 6000."""
+    create_pod tries the list in order, so the fallback types are only listed
+    once a job has waited CLOUD_GPU_FALLBACK_MINUTES. The preferred types stay
+    first: a 5090 that turns up later is still taken over a PRO 6000."""
     fb = config.RUNPOD_FALLBACK_GPU_TYPES
     if fb and oldest_age >= config.CLOUD_GPU_FALLBACK_MINUTES * 60:
         return config.RUNPOD_GPU_TYPES + [g for g in fb if g not in config.RUNPOD_GPU_TYPES], True
@@ -126,9 +156,14 @@ def _gpu_choice(oldest_age):
 
 def _pod_work(pod_id):
     """(busy, last): whether this pod is running a job now, and the epoch
-    seconds of the latest heartbeat/finish of a job it claimed (None: never)."""
+    seconds of the latest heartbeat/finish of a job it claimed (None: never).
+
+    The pod stamps claimed_by from its RUNPOD_POD_ID env var. Match the API id
+    with and without a "pod_" prefix, in case v2 ids carry one that the env var
+    does not: a miss would make every working pod look like a dud."""
+    ids = sorted({f"cloud:{pod_id}", f"cloud:{pod_id.removeprefix('pod_')}"})
     rows = (db.sb.table("farm_render_jobs").select("heartbeat_at,completed_at,status")
-            .eq("claimed_by", f"cloud:{pod_id}").order("claimed_at", desc=True).limit(5)
+            .in_("claimed_by", ids).order("claimed_at", desc=True).limit(5)
             .execute().data or [])
     if any(r["status"] == "processing" for r in rows):
         return True, time.time()
@@ -146,7 +181,7 @@ def _tick(state, log):
     pending, oldest_age = _pending(engines)
     gpu_types, with_fallback = _gpu_choice(oldest_age)
     now = time.time()
-    pods = [p for p in list_pods() if p.get("desiredStatus") != "TERMINATED"]
+    pods = [p for p in list_pods() if p.get("status") != "TERMINATED"]
     state["seconds"] += TICK_SECONDS * len(pods)
     over_budget = state["seconds"] >= config.CLOUD_MAX_HOURS_PER_DAY * 3600
     started = state.setdefault("started", {})
@@ -208,9 +243,9 @@ def _tick(state, log):
             started[pod["id"]] = now
             if not with_fallback and config.RUNPOD_FALLBACK_GPU_TYPES:
                 preferred_only[pod["id"]] = True
-            gpu = (pod.get("machine") or {}).get("gpuTypeId") or pod.get("gpuTypeId") or "/".join(gpu_types)
+            gpu = pod_gpu(pod) or "/".join(gpu_types)
             log(f"{pending} cloud job(s) waiting (oldest {oldest_age / 60:.0f} min), {alive} pod(s) up "
-                f"({spare} free): created pod {pod['id']} on {gpu} (${pod.get('costPerHr', '?')}/h)"
+                f"({spare} free): created pod {pod['id']} on {gpu} (${pod.get('cost', '?')}/h)"
                 f"{' [fallback open]' if with_fallback else ''}")
         except Exception as e:  # noqa: BLE001 - out of stock etc.; the PC fallback covers it
             state["retry_at"] = now + CREATE_BACKOFF_SECONDS
@@ -223,16 +258,22 @@ def _tick(state, log):
 
 def _loop(log):
     state = _load_state()
-    err_logged = False
+    err_since = err_logged_at = None
     while True:
         try:
             _tick(state, log)
             _save_state(state)
-            err_logged = False
+            if err_since is not None:
+                log(f"tick recovered after {(time.time() - err_since) / 60:.0f} min of errors")
+            err_since = err_logged_at = None
         except Exception as e:  # noqa: BLE001 - never take the worker down
-            if not err_logged:
-                log(f"tick error (retrying quietly): {str(e)[:200]}")
-                err_logged = True
+            now = time.time()
+            if err_since is None:
+                err_since = err_logged_at = now
+                log(f"tick error (retrying): {str(e)[:200]}")
+            elif now - err_logged_at >= ERROR_RELOG_SECONDS:
+                err_logged_at = now
+                log(f"tick still failing for {(now - err_since) / 60:.0f} min: {str(e)[:200]}")
         time.sleep(TICK_SECONDS)
 
 
