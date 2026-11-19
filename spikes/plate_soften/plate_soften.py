@@ -241,6 +241,97 @@ def refine_quads(frames, anchor, quads, log=print, smooth=5):
     return out
 
 
+def measure_boxes(frames, anchor, quads, log=print, smooth=5):
+    """Native plate box (left, top, right, bottom) per tracked frame < anchor, measured on the frame itself
+    (dark plate on a light bumper), median-smoothed and gap-filled; frames without a usable measurement get
+    the tracked quad's box. The bottom edge falls back to width / anchor-aspect when the plate runs into a
+    black grille."""
+    qa = quads[anchor]
+    asp = (qa[:, 0].max() - qa[:, 0].min()) / max(1.0, qa[:, 1].max() - qa[:, 1].min())
+    idx = sorted(i for i in quads if i < anchor)
+    meas = {}
+    for i in idx:
+        L = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        H, W = L.shape
+        q = quads[i]
+        x0, x1 = q[:, 0].min(), q[:, 0].max()
+        y0, y1 = q[:, 1].min(), q[:, 1].max()
+        w0, h0 = x1 - x0, y1 - y0
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        ry0, ry1 = int(max(0, cy - 0.3 * h0)), int(min(H, cy + 0.3 * h0 + 1))
+        sx0, sx1 = int(max(0, cx - 0.9 * w0)), int(min(W, cx + 0.9 * w0 + 1))
+        if ry1 - ry0 < 3 or sx1 - sx0 < 10:
+            continue
+        col = np.median(L[ry0:ry1, sx0:sx1], axis=0)
+        dark, light = np.percentile(col, 15), np.percentile(col, 90)
+        if light - dark < 40:
+            continue
+        thr = (dark + light) / 2
+        isd = col < thr
+        c = int(round(cx)) - sx0
+        if not (0 <= c < len(isd)) or not isd[c]:
+            continue
+        l = c
+        while l > 0 and isd[l - 1]:
+            l -= 1
+        r = c
+        while r < len(isd) - 1 and isd[r + 1]:
+            r += 1
+        left, right = sx0 + l, sx0 + r + 1
+        mw = right - left
+        if not (0.6 * w0 <= mw <= 1.4 * w0) or abs((left + right) / 2 - cx) > 0.3 * w0:
+            continue
+        ty0, ty1 = int(max(0, cy - 1.2 * h0)), int(min(H, cy + 1.6 * h0))
+        rows = np.median(L[ty0:ty1, left + 2:max(left + 3, right - 2)], axis=1)
+        isr = rows < thr
+        k = int(cy) - ty0
+        if not (0 <= k < len(isr)) or not isr[k]:
+            continue
+        t = k
+        while t > 0 and isr[t - 1]:
+            t -= 1
+        b = k
+        while b < len(isr) - 1 and isr[b + 1]:
+            b += 1
+        top = ty0 + t
+        bottom = ty0 + b + 1
+        hh = mw / asp
+        if bottom - top > 1.35 * hh or bottom - top < 0.6 * hh:  # merged into the grille / clipped
+            bottom = top + hh
+        if abs(top - y0) > 0.6 * h0:
+            continue
+        meas[i] = (left, top, right, bottom)
+    boxes = {}
+    if not meas:
+        for i in idx:
+            q = quads[i]
+            boxes[i] = (q[:, 0].min(), q[:, 1].min(), q[:, 0].max(), q[:, 1].max())
+        log("  boxes: no native measurements, using the track")
+        return boxes
+    mi = sorted(meas)
+    arr = np.array([meas[i] for i in mi], np.float32)
+    sm = arr.copy()
+    for j in range(len(mi)):
+        a, b = max(0, j - smooth // 2), min(len(mi), j + smooth // 2 + 1)
+        sm[j] = np.median(arr[a:b], axis=0)
+    # light 3-tap mean on top of the median
+    sm2 = sm.copy()
+    for j in range(len(mi)):
+        a, b = max(0, j - 1), min(len(mi), j + 2)
+        sm2[j] = sm[a:b].mean(0)
+    for i in idx:
+        if mi[0] <= i <= mi[-1]:
+            boxes[i] = tuple(float(np.interp(i, mi, sm2[:, c])) for c in range(4))
+        else:
+            # outside the measured span: tracked box, offset to meet the nearest measurement
+            j = 0 if i < mi[0] else len(mi) - 1
+            q, qm = quads[i], quads[mi[j]]
+            d = np.array(sm2[j]) - np.array([qm[:, 0].min(), qm[:, 1].min(), qm[:, 0].max(), qm[:, 1].max()])
+            boxes[i] = tuple(float(v) for v in np.array([q[:, 0].min(), q[:, 1].min(), q[:, 0].max(), q[:, 1].max()]) + d)
+    log(f"  boxes: measured {len(meas)}/{len(idx)} frames")
+    return boxes
+
+
 def motion_kernel(vx, vy, length):
     """Normalised line kernel of `length` px along (vx, vy); length < 1 -> identity."""
     if length < 1.0:
@@ -258,8 +349,25 @@ def motion_kernel(vx, vy, length):
     return k / k.sum()
 
 
-def composite(frames, anchor, name, quads, opts):
-    """Warp the anchor-frame plate into every tracked frame < anchor, blurred and gain-matched."""
+def box_ring_p90(lum, box, inner=3, outer=8):
+    """90th percentile luminance of a band around a box: the light bumper's brightness (ambient light)."""
+    h, w = lum.shape
+    l, t, r, b = box
+    o = np.zeros((h, w), np.uint8)
+    cv2.rectangle(o, (int(l - outer), int(t - outer)), (int(r + outer), int(b + outer)), 1, -1)
+    cv2.rectangle(o, (int(l - inner), int(t - inner)), (int(r + inner), int(b + inner)), 0, -1)
+    v = lum[o > 0]
+    return float(np.percentile(v, 90)) if v.size else 200.0
+
+
+def composite(frames, anchor, name, quads, opts, mode="full", boxes=None):
+    """Warp the anchor-frame plate into every tracked frame < anchor, blurred and gain-matched.
+
+    mode "letters": keep the frame's OWN plate (outline, shading, blur) and replace only its lettering -
+    erase the garbled letters with a per-channel grey opening inside the native plate, then draw the anchor
+    plate's letters (as an alpha matte, fitted box-to-box onto the measured native plate) in the anchor's
+    letter colour scaled by the ambient light, motion-blurred. Over the last `handoff_frames` before the
+    anchor it blends into the full paste so the hand-off to the clean anchor plate stays seamless."""
     h, w = frames[0].shape[:2]
     qa = quads[anchor]
     src = frames[anchor].astype(np.float32)
@@ -268,6 +376,63 @@ def composite(frames, anchor, name, quads, opts):
     # plate tone in the anchor frame (the clean paste): dark background level = 35th percentile luminance
     lum_a = cv2.cvtColor(frames[anchor], cv2.COLOR_BGR2GRAY)
     tone_a = np.percentile(lum_a[plate_mask_a > 0], 35)
+    letters = None
+    if mode == "letters" and boxes:
+        box_a = (qa[:, 0].min(), qa[:, 1].min(), qa[:, 0].max(), qa[:, 1].max())
+        la, ta, ra, ba = box_a
+        sa = max(1.0, 0.1 * (ba - ta))
+        inner_a = np.zeros((h, w), np.float32)
+        cv2.rectangle(inner_a, (int(round(la + sa)), int(round(ta + sa))),
+                      (int(round(ra - sa)) - 1, int(round(ba - sa)) - 1), 1.0, -1)
+        vals = lum_a[inner_a > 0].astype(np.float32)
+        d_a, w_a = np.percentile(vals, 25), np.percentile(vals, 99.5)
+        alpha_a = np.clip((lum_a.astype(np.float32) - d_a) / max(1.0, w_a - d_a), 0, 1) * inner_a
+        col_a = src[alpha_a > 0.85].mean(0) if (alpha_a > 0.85).any() else np.array([235, 235, 235], np.float32)
+        letters = {"box_a": box_a, "alpha_a": alpha_a, "col_a": col_a,
+                   "amb_a": box_ring_p90(lum_a, box_a), "handoff": int(opts.get("handoff_frames", 6))}
+
+    def letters_only(frame, i, crop_box, kern, sigma):
+        """Frame i's own plate with its letters replaced; returns the crop (float) or None."""
+        if i not in boxes:
+            return None
+        x0, y0, x1, y1 = crop_box
+        l, t, r, b = boxes[i]
+        la, ta, ra, ba = letters["box_a"]
+        if r - l < 8 or b - t < 4:
+            return None
+        sx, sy = (r - l) / (ra - la), (b - t) / (ba - ta)
+        A = np.array([[sx, 0, l - sx * la], [0, sy, t - sy * ta]], np.float32)
+        alpha = cv2.warpAffine(letters["alpha_a"], A, (w, h), flags=cv2.INTER_AREA if sx < 1 else cv2.INTER_CUBIC)
+        alpha = np.clip(alpha[y0:y1, x0:x1], 0, 1)
+        # native plate interior (in crop coords), shrunk so the plate's own edge stays untouched
+        s = max(1.0, 0.1 * (b - t))
+        inner = np.zeros((y1 - y0, x1 - x0), np.float32)
+        cv2.rectangle(inner, (int(round(l + s - x0)), int(round(t + s - y0))),
+                      (int(round(r - s - x0)) - 1, int(round(b - s - y0)) - 1), 1.0, -1)
+        if inner.sum() < 10:
+            return None
+        nat = frame[y0:y1, x0:x1].astype(np.float32)
+        # erase: everything outside the interior -> plate median, then a per-channel grey opening removes the
+        # bright strokes (kernel ~ half the plate height, larger than a line of lettering)
+        med = np.median(nat[inner > 0], axis=0)
+        fill = nat * inner[..., None] + med * (1 - inner[..., None])
+        kk = max(3, int(round(0.55 * (b - t)))) | 1
+        se = cv2.getStructuringElement(cv2.MORPH_RECT, (kk, kk))
+        bg = np.stack([cv2.morphologyEx(fill[..., c], cv2.MORPH_OPEN, se) for c in range(3)], -1)
+        bg = cv2.GaussianBlur(bg, (0, 0), 0.7)
+        # letter colour: anchor letters scaled by the ambient light (bumper brightness ratio)
+        lum_i = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        amb = float(np.clip(box_ring_p90(lum_i, boxes[i]) / max(1.0, letters["amb_a"]), 0.7, 1.3))
+        col = np.clip(letters["col_a"] * amb, 0, 255)
+        if kern.shape[0] > 1:
+            alpha = cv2.filter2D(alpha, -1, kern, borderType=cv2.BORDER_CONSTANT)
+        if sigma > 0.05:
+            alpha = cv2.GaussianBlur(alpha, (0, 0), sigma)
+        alpha = alpha * inner
+        new = bg * (1 - alpha[..., None]) + col * alpha[..., None]
+        m = cv2.GaussianBlur(inner, (0, 0), 0.6)
+        return nat * (1 - m[..., None]) + new * m[..., None]
+
     report = []
     idx = sorted(i for i in quads if i < anchor)
     first = idx[0] if idx else anchor
@@ -311,9 +476,18 @@ def composite(frames, anchor, name, quads, opts):
         mc = mc * fade
         base = frames[i][y0:y1, x0:x1].astype(np.float32)
         out = base * (1 - mc[..., None]) + crop * mc[..., None]
+        rec = {"frame": i, "speed_px": round(speed, 2), "blur_px": round(length, 2), "fade": round(fade, 2),
+               "sigma": round(sigma, 2), "gain": round(gain, 3)}
+        if letters is not None:
+            lo = letters_only(frames[i], i, (x0, y0, x1, y1), k, sigma)
+            if lo is not None:
+                hand = float(np.clip((i - (anchor - letters["handoff"])) / float(letters["handoff"]), 0.0, 1.0))
+                lo = base * (1 - fade) + lo * fade
+                out = lo * (1 - hand) + out * hand
+                rec["mode"] = "letters"
+                rec["handoff"] = round(hand, 2)
         frames[i][y0:y1, x0:x1] = np.clip(out + 0.5, 0, 255).astype(np.uint8)
-        report.append({"frame": i, "speed_px": round(speed, 2), "blur_px": round(length, 2), "fade": round(fade, 2),
-                       "sigma": round(sigma, 2), "gain": round(gain, 3)})
+        report.append(rec)
     return report
 
 
@@ -336,7 +510,7 @@ def main():
         os.remove(os.path.join(out, n))
     opts = {"shutter": float(job.get("shutter", 0.5)), "base_sigma": float(job.get("base_sigma", 0.6)),
             "ease_frames": int(job.get("ease_frames", 12)), "fade_frames": int(job.get("fade_frames", 4)),
-            "grow_px": int(job.get("grow_px", 1))}
+            "grow_px": int(job.get("grow_px", 1)), "handoff_frames": int(job.get("handoff_frames", 6))}
     anchor = int(job["anchor"])
     frames, fps = read_frames(job["src"])
     orig = [f.copy() for f in frames]
@@ -357,7 +531,9 @@ def main():
             quads = refine_quads(orig, anchor, quads, log=log)
         first = min(quads)
         print(f"{p['name']}: tracked back to frame {first} (min cc {min(ccs.values()):.3f})", flush=True)
-        rep = composite(frames, anchor, p["name"], quads, opts)
+        mode = p.get("mode", "full")
+        boxes = measure_boxes(orig, anchor, quads, log=log) if mode == "letters" else None
+        rep = composite(frames, anchor, p["name"], quads, opts, mode=mode, boxes=boxes)
         track[p["name"]] = {"tracked_from": first, "anchor": anchor,
                             "quads": {str(i): quads[i].round(2).tolist() for i in sorted(quads)},
                             "cc": {str(i): round(ccs[i], 4) for i in sorted(ccs)}, "frames": rep}
@@ -388,6 +564,24 @@ def main():
             cv2.putText(s, f"{lab} f{i} ({i / fps:.2f}s)", (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             rows.append(s)
     cv2.imwrite(os.path.join(out, "compare_sheet.png"), np.vstack(rows))
+    # per-plate zoom: before | after around the plate, every 5 tracked frames up to the anchor (+6)
+    for nm, tr in track.items():
+        ids = sorted(int(k) for k in tr["quads"])
+        pick = ids[::5] + [anchor - 1, anchor, min(len(frames) - 1, anchor + 6)]
+        rows = []
+        for i in pick:
+            q = np.array(tr["quads"].get(str(i), tr["quads"][str(anchor)]), np.float32)
+            cx, cy = q.mean(0).astype(int)
+            pair = []
+            for lab, src in (("before", orig), ("after", frames)):
+                y0, x0 = max(0, cy - 40), max(0, cx - 90)
+                c = src[i][y0:y0 + 70, x0:x0 + 180]
+                c = cv2.copyMakeBorder(c, 0, 70 - c.shape[0], 0, 180 - c.shape[1], cv2.BORDER_CONSTANT)
+                c = cv2.resize(c, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+                cv2.putText(c, f"{lab} f{i} {i / fps:.2f}s", (4, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                pair.append(c)
+            rows.append(np.hstack(pair))
+        cv2.imwrite(os.path.join(out, f"zoom_{nm}.png"), np.vstack(rows))
     # compare video: before (top) / after (bottom), the plate strip at 2x, whole clip, for judging in motion
     strip = []
     for i in range(len(frames)):
