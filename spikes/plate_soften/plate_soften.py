@@ -258,11 +258,12 @@ def measure_boxes(frames, anchor, quads, log=print, smooth=5):
         y0, y1 = q[:, 1].min(), q[:, 1].max()
         w0, h0 = x1 - x0, y1 - y0
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-        ry0, ry1 = int(max(0, cy - 0.3 * h0)), int(min(H, cy + 0.3 * h0 + 1))
+        # 30th percentile over the plate's height: a plate column stays dark even through white lettering
+        ry0, ry1 = int(max(0, y0 + 0.1 * h0)), int(min(H, y1 - 0.1 * h0 + 1))
         sx0, sx1 = int(max(0, cx - 0.9 * w0)), int(min(W, cx + 0.9 * w0 + 1))
         if ry1 - ry0 < 3 or sx1 - sx0 < 10:
             continue
-        col = np.median(L[ry0:ry1, sx0:sx1], axis=0)
+        col = np.percentile(L[ry0:ry1, sx0:sx1], 30, axis=0)
         dark, light = np.percentile(col, 15), np.percentile(col, 90)
         if light - dark < 40:
             continue
@@ -282,7 +283,7 @@ def measure_boxes(frames, anchor, quads, log=print, smooth=5):
         if not (0.6 * w0 <= mw <= 1.4 * w0) or abs((left + right) / 2 - cx) > 0.3 * w0:
             continue
         ty0, ty1 = int(max(0, cy - 1.2 * h0)), int(min(H, cy + 1.6 * h0))
-        rows = np.median(L[ty0:ty1, left + 2:max(left + 3, right - 2)], axis=1)
+        rows = np.percentile(L[ty0:ty1, left + 2:max(left + 3, right - 2)], 30, axis=1)
         isr = rows < thr
         k = int(cy) - ty0
         if not (0 <= k < len(isr)) or not isr[k]:
@@ -323,11 +324,9 @@ def measure_boxes(frames, anchor, quads, log=print, smooth=5):
         if mi[0] <= i <= mi[-1]:
             boxes[i] = tuple(float(np.interp(i, mi, sm2[:, c])) for c in range(4))
         else:
-            # outside the measured span: tracked box, offset to meet the nearest measurement
-            j = 0 if i < mi[0] else len(mi) - 1
-            q, qm = quads[i], quads[mi[j]]
-            d = np.array(sm2[j]) - np.array([qm[:, 0].min(), qm[:, 1].min(), qm[:, 0].max(), qm[:, 1].max()])
-            boxes[i] = tuple(float(v) for v in np.array([q[:, 0].min(), q[:, 1].min(), q[:, 0].max(), q[:, 1].max()]) + d)
+            # outside the measured span: the tracked box as it is
+            q = quads[i]
+            boxes[i] = (float(q[:, 0].min()), float(q[:, 1].min()), float(q[:, 0].max()), float(q[:, 1].max()))
     log(f"  boxes: measured {len(meas)}/{len(idx)} frames")
     return boxes
 
