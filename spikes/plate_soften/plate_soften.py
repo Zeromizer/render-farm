@@ -241,93 +241,82 @@ def refine_quads(frames, anchor, quads, log=print, smooth=5):
     return out
 
 
-def measure_boxes(frames, anchor, quads, log=print, smooth=5):
-    """Native plate box (left, top, right, bottom) per tracked frame < anchor, measured on the frame itself
-    (dark plate on a light bumper), median-smoothed and gap-filled; frames without a usable measurement get
-    the tracked quad's box. The bottom edge falls back to width / anchor-aspect when the plate runs into a
-    black grille."""
+def fit_boxes(frames, anchor, quads, log=print, smooth=5, search=6, scales=(0.75, 1.12, 16)):
+    """Native plate box (left, top, right, bottom) for every tracked frame < anchor, fitted on the frame.
+
+    Around the tracked box, search position (+-`search` px) and scale (aspect fixed to the anchor plate's)
+    for the rectangle that is darkest inside relative to a 3 px band of bumper ABOVE and BESIDE it (not
+    below: the plate often sits on a black grille). Integral images make the search cheap. The fitted
+    edges are then moving-averaged over consecutive frames, with the anchor box as the final sample so the
+    hand-off lands exactly on the clean plate."""
     qa = quads[anchor]
-    asp = (qa[:, 0].max() - qa[:, 0].min()) / max(1.0, qa[:, 1].max() - qa[:, 1].min())
+    box_a = np.array([qa[:, 0].min(), qa[:, 1].min(), qa[:, 0].max(), qa[:, 1].max()], np.float32)
+    asp = (box_a[2] - box_a[0]) / max(1.0, box_a[3] - box_a[1])
     idx = sorted(i for i in quads if i < anchor)
-    meas = {}
+    fit = {}
     for i in idx:
-        L = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        L = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY).astype(np.float64)
         H, W = L.shape
+        S = cv2.integral(L)
+
+        def rsum(x0, y0, x1, y1):
+            x0, y0 = max(0, min(W, x0)), max(0, min(H, y0))
+            x1, y1 = max(0, min(W, x1)), max(0, min(H, y1))
+            if x1 <= x0 or y1 <= y0:
+                return 0.0, 0
+            return S[y1, x1] - S[y0, x1] - S[y1, x0] + S[y0, x0], (x1 - x0) * (y1 - y0)
+
         q = quads[i]
-        x0, x1 = q[:, 0].min(), q[:, 0].max()
-        y0, y1 = q[:, 1].min(), q[:, 1].max()
-        w0, h0 = x1 - x0, y1 - y0
-        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-        # 30th percentile over the plate's height: a plate column stays dark even through white lettering
-        ry0, ry1 = int(max(0, y0 + 0.1 * h0)), int(min(H, y1 - 0.1 * h0 + 1))
-        sx0, sx1 = int(max(0, cx - 0.9 * w0)), int(min(W, cx + 0.9 * w0 + 1))
-        if ry1 - ry0 < 3 or sx1 - sx0 < 10:
-            continue
-        col = np.percentile(L[ry0:ry1, sx0:sx1], 30, axis=0)
-        dark, light = np.percentile(col, 15), np.percentile(col, 90)
-        if light - dark < 40:
-            continue
-        thr = (dark + light) / 2
-        isd = col < thr
-        c = int(round(cx)) - sx0
-        if not (0 <= c < len(isd)) or not isd[c]:
-            continue
-        l = c
-        while l > 0 and isd[l - 1]:
-            l -= 1
-        r = c
-        while r < len(isd) - 1 and isd[r + 1]:
-            r += 1
-        left, right = sx0 + l, sx0 + r + 1
-        mw = right - left
-        if not (0.6 * w0 <= mw <= 1.4 * w0) or abs((left + right) / 2 - cx) > 0.3 * w0:
-            continue
-        ty0, ty1 = int(max(0, cy - 1.2 * h0)), int(min(H, cy + 1.6 * h0))
-        rows = np.percentile(L[ty0:ty1, left + 2:max(left + 3, right - 2)], 30, axis=1)
-        isr = rows < thr
-        k = int(cy) - ty0
-        if not (0 <= k < len(isr)) or not isr[k]:
-            continue
-        t = k
-        while t > 0 and isr[t - 1]:
-            t -= 1
-        b = k
-        while b < len(isr) - 1 and isr[b + 1]:
-            b += 1
-        top = ty0 + t
-        bottom = ty0 + b + 1
-        # the plate's shape doesn't change: height from the measured width and the anchor aspect (a measured
-        # bottom edge runs into the black grille whenever the plate touches it)
-        bottom = top + mw / asp
-        if abs(top - y0) > 0.6 * h0:
-            continue
-        meas[i] = (left, top, right, bottom)
+        cx, cy = (q[:, 0].min() + q[:, 0].max()) / 2, (q[:, 1].min() + q[:, 1].max()) / 2
+        w0 = q[:, 0].max() - q[:, 0].min()
+        best = None
+        for s in np.linspace(*scales):
+            bw = w0 * s
+            bh = bw / asp
+            for dy in range(-search, search + 1):
+                for dx in range(-search, search + 1):
+                    l = int(round(cx + dx - bw / 2))
+                    t = int(round(cy + dy - bh / 2))
+                    r = int(round(cx + dx + bw / 2))
+                    b = int(round(cy + dy + bh / 2))
+                    si, ni = rsum(l, t, r, b)
+                    st, nt = rsum(l, t - 3, r, t)
+                    sl, nl = rsum(l - 3, t, l, b)
+                    sr, nr = rsum(r, t, r + 3, b)
+                    if ni == 0 or nt + nl + nr == 0:
+                        continue
+                    score = (st + sl + sr) / (nt + nl + nr) - si / ni
+                    if best is None or score > best[0]:
+                        best = (score, cx + dx - bw / 2, cy + dy - bh / 2, cx + dx + bw / 2, cy + dy + bh / 2)
+        if best is not None and best[0] > 25:
+            fit[i] = np.array(best[1:], np.float32)
+    seq = [i for i in idx if i in fit]
+    if len(seq) < 3:
+        log(f"  boxes: only {len(seq)} fits, using the track")
+        return {i: tuple(float(v) for v in (quads[i][:, 0].min(), quads[i][:, 1].min(),
+                                            quads[i][:, 0].max(), quads[i][:, 1].max())) for i in idx}
+    # gap-fill by interpolation over frame index, then moving average incl. the anchor box at the end
+    allf = list(range(seq[0], anchor + 1))
+    raw = np.stack([np.array([np.interp(f, seq + [anchor], [fit[j][c] for j in seq] + [box_a[c]]) for c in range(4)])
+                    for f in allf])
+    sm = raw.copy()
+    for j in range(len(allf)):
+        a, b = max(0, j - smooth // 2), min(len(allf), j + smooth // 2 + 1)
+        sm[j] = raw[a:b].mean(0)
+    sm[-1] = box_a
+    # ease the last few into the anchor box exactly
+    for k in range(1, 4):
+        if len(sm) > k:
+            wgt = k / 4.0
+            sm[-1 - k] = sm[-1 - k] * wgt + box_a * (1 - wgt)
     boxes = {}
-    if not meas:
-        for i in idx:
-            q = quads[i]
-            boxes[i] = (q[:, 0].min(), q[:, 1].min(), q[:, 0].max(), q[:, 1].max())
-        log("  boxes: no native measurements, using the track")
-        return boxes
-    mi = sorted(meas)
-    arr = np.array([meas[i] for i in mi], np.float32)
-    sm = arr.copy()
-    for j in range(len(mi)):
-        a, b = max(0, j - smooth // 2), min(len(mi), j + smooth // 2 + 1)
-        sm[j] = np.median(arr[a:b], axis=0)
-    # light 3-tap mean on top of the median
-    sm2 = sm.copy()
-    for j in range(len(mi)):
-        a, b = max(0, j - 1), min(len(mi), j + 2)
-        sm2[j] = sm[a:b].mean(0)
+    for j, f in enumerate(allf[:-1]):
+        boxes[f] = tuple(float(v) for v in sm[j])
     for i in idx:
-        if mi[0] <= i <= mi[-1]:
-            boxes[i] = tuple(float(np.interp(i, mi, sm2[:, c])) for c in range(4))
-        else:
-            # outside the measured span: the tracked box as it is
-            q = quads[i]
-            boxes[i] = (float(q[:, 0].min()), float(q[:, 1].min()), float(q[:, 0].max()), float(q[:, 1].max()))
-    log(f"  boxes: measured {len(meas)}/{len(idx)} frames")
+        if i not in boxes:
+            boxes[i] = tuple(float(v) for v in (quads[i][:, 0].min(), quads[i][:, 1].min(),
+                                                quads[i][:, 0].max(), quads[i][:, 1].max()))
+    log(f"  boxes: fitted {len(seq)}/{len(idx)} frames")
     return boxes
 
 
@@ -531,7 +520,7 @@ def main():
         first = min(quads)
         print(f"{p['name']}: tracked back to frame {first} (min cc {min(ccs.values()):.3f})", flush=True)
         mode = p.get("mode", "full")
-        boxes = measure_boxes(orig, anchor, quads, log=log) if mode == "letters" else None
+        boxes = fit_boxes(orig, anchor, quads, log=log) if mode == "letters" else None
         if boxes:
             for i in sorted(boxes):
                 q = quads[i]
