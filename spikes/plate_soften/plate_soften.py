@@ -296,9 +296,9 @@ def measure_boxes(frames, anchor, quads, log=print, smooth=5):
             b += 1
         top = ty0 + t
         bottom = ty0 + b + 1
-        hh = mw / asp
-        if bottom - top > 1.35 * hh or bottom - top < 0.6 * hh:  # merged into the grille / clipped
-            bottom = top + hh
+        # the plate's shape doesn't change: height from the measured width and the anchor aspect (a measured
+        # bottom edge runs into the black grille whenever the plate touches it)
+        bottom = top + mw / asp
         if abs(top - y0) > 0.6 * h0:
             continue
         meas[i] = (left, top, right, bottom)
@@ -532,6 +532,10 @@ def main():
         print(f"{p['name']}: tracked back to frame {first} (min cc {min(ccs.values()):.3f})", flush=True)
         mode = p.get("mode", "full")
         boxes = measure_boxes(orig, anchor, quads, log=log) if mode == "letters" else None
+        if boxes:
+            for i in sorted(boxes):
+                q = quads[i]
+                log(f"  box f{i}: {np.round(boxes[i], 1).tolist()}  track {np.round([q[:, 0].min(), q[:, 1].min(), q[:, 0].max(), q[:, 1].max()], 1).tolist()}")
         rep = composite(frames, anchor, p["name"], quads, opts, mode=mode, boxes=boxes)
         track[p["name"]] = {"tracked_from": first, "anchor": anchor,
                             "quads": {str(i): quads[i].round(2).tolist() for i in sorted(quads)},
