@@ -320,6 +320,32 @@ def fit_boxes(frames, anchor, quads, log=print, smooth=5, search=6, scales=(0.75
     return boxes
 
 
+def combine_quads(raw, boxes, anchor, smooth=5, log=print):
+    """Plate quad per frame = fitted box (smoothed: where the plate is, how big) + the HIGH-FREQUENCY part
+    of the raw bumper track (its corners minus their own moving average): the bounce, pitch and tilt the
+    car has from frame to frame. Smoothing the fit alone strips that bounce and the letters slide against
+    the plate."""
+    idx = [i for i in sorted(boxes) if i in raw and i < anchor]
+    if not idx:
+        return {}
+    seq = idx + [anchor]
+    T = np.stack([raw[i].astype(np.float32) for i in seq])  # (n, 4, 2)
+    Ts = T.copy()
+    for j in range(len(seq)):
+        a, b = max(0, j - smooth // 2), min(len(seq), j + smooth // 2 + 1)
+        Ts[j] = T[a:b].mean(0)
+    out = {}
+    res = []
+    for j, i in enumerate(idx):
+        l, t, r, b = boxes[i]
+        B = np.array([[l, t], [r, t], [r, b], [l, b]], np.float32)
+        d = T[j] - Ts[j]
+        out[i] = B + d
+        res.append(float(np.abs(d).max()))
+    log(f"  bounce residual added: median {np.median(res):.2f} px, max {max(res):.2f} px")
+    return out
+
+
 def motion_kernel(vx, vy, length):
     """Normalised line kernel of `length` px along (vx, vy); length < 1 -> identity."""
     if length < 1.0:
@@ -381,24 +407,41 @@ def composite(frames, anchor, name, quads, opts, mode="full", boxes=None):
 
     def letters_only(frame, i, crop_box, kern, sigma):
         """Frame i's own plate with its letters replaced; returns the crop (float) or None."""
-        if i not in boxes:
+        # the plate's quad in this frame: low-frequency position/size from the fitted box, frame-to-frame
+        # bounce and tilt from the bumper track (see combine_quads) - the letters ride with the plate
+        if i not in quads:
             return None
         x0, y0, x1, y1 = crop_box
-        l, t, r, b = boxes[i]
+        pq = quads[i].astype(np.float32)
         la, ta, ra, ba = letters["box_a"]
-        if r - l < 8 or b - t < 4:
+        qa_box = np.array([[la, ta], [ra, ta], [ra, ba], [la, ba]], np.float32)
+        pw = float(np.linalg.norm(pq[1] - pq[0]))
+        ph = float(np.linalg.norm(pq[3] - pq[0]))
+        if pw < 8 or ph < 4:
             return None
-        sx, sy = (r - l) / (ra - la), (b - t) / (ba - ta)
-        A = np.array([[sx, 0, l - sx * la], [0, sy, t - sy * ta]], np.float32)
-        alpha = cv2.warpAffine(letters["alpha_a"], A, (w, h), flags=cv2.INTER_AREA if sx < 1 else cv2.INTER_CUBIC)
+        A, _ = cv2.estimateAffine2D(qa_box, pq, method=cv2.LMEDS)
+        if A is None:
+            return None
+        alpha = cv2.warpAffine(letters["alpha_a"], A, (w, h),
+                               flags=cv2.INTER_AREA if pw < (ra - la) else cv2.INTER_CUBIC)
         alpha = np.clip(alpha[y0:y1, x0:x1], 0, 1)
-        # native plate interior (in crop coords), shrunk so the plate's own edge stays untouched
-        s = max(1.0, 0.1 * (b - t))
+        # native plate interior (crop coords): the quad shrunk toward its centre, so the plate's edge stays
+        s = max(1.0, 0.1 * ph)
+        c = pq.mean(0)
+        shrink = np.array([1 - 2 * s / pw, 1 - 2 * s / ph], np.float32)
+        # shrink along the plate's own axes
+        ux = (pq[1] - pq[0]) / pw
+        uy = (pq[3] - pq[0]) / ph
+        inner_q = []
+        for p in pq:
+            d = p - c
+            inner_q.append(c + ux * (d @ ux) * shrink[0] + uy * (d @ uy) * shrink[1])
+        inner_q = np.array(inner_q, np.float32) - np.array([x0, y0], np.float32)
         inner = np.zeros((y1 - y0, x1 - x0), np.float32)
-        cv2.rectangle(inner, (int(round(l + s - x0)), int(round(t + s - y0))),
-                      (int(round(r - s - x0)) - 1, int(round(b - s - y0)) - 1), 1.0, -1)
+        cv2.fillConvexPoly(inner, np.round(inner_q * 4).astype(np.int32), 1.0, lineType=cv2.LINE_AA, shift=2)
         if inner.sum() < 10:
             return None
+        l, t, r, b = 0, 0, pw, ph  # only the plate height is used below (opening kernel)
         nat = frame[y0:y1, x0:x1].astype(np.float32)
         # erase: everything outside the interior -> plate median, then a per-channel grey opening removes the
         # bright strokes (kernel ~ half the plate height, larger than a line of lettering)
@@ -410,7 +453,8 @@ def composite(frames, anchor, name, quads, opts, mode="full", boxes=None):
         bg = cv2.GaussianBlur(bg, (0, 0), 0.7)
         # letter colour: anchor letters scaled by the ambient light (bumper brightness ratio)
         lum_i = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        amb = float(np.clip(box_ring_p90(lum_i, boxes[i]) / max(1.0, letters["amb_a"]), 0.7, 1.3))
+        pbox = (pq[:, 0].min(), pq[:, 1].min(), pq[:, 0].max(), pq[:, 1].max())
+        amb = float(np.clip(box_ring_p90(lum_i, pbox) / max(1.0, letters["amb_a"]), 0.7, 1.3))
         col = np.clip(letters["col_a"] * amb, 0, 255)
         if kern.shape[0] > 1:
             alpha = cv2.filter2D(alpha, -1, kern, borderType=cv2.BORDER_CONSTANT)
@@ -515,12 +559,15 @@ def main():
         log(f"== {p['name']}")
         quads, ccs = track_back(orig, anchor, quad0, float(job.get("min_cc", 0.6)), log=log,
                                 max_contrast=p.get("max_contrast"))
+        raw_quads = dict(quads)
         if p.get("refine"):
             quads = refine_quads(orig, anchor, quads, log=log)
         first = min(quads)
         print(f"{p['name']}: tracked back to frame {first} (min cc {min(ccs.values()):.3f})", flush=True)
         mode = p.get("mode", "full")
         boxes = fit_boxes(orig, anchor, quads, log=log) if mode == "letters" else None
+        if boxes:
+            quads = {**quads, **combine_quads(raw_quads, boxes, anchor, log=log)}
         if boxes:
             for i in sorted(boxes):
                 q = quads[i]
