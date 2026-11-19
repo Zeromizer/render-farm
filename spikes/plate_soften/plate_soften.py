@@ -87,7 +87,7 @@ def plate_contrast(lum, q):
     return float(np.median(lum[core > 0]) + 4) / float(np.percentile(lum[ring > 0], 75) + 4)
 
 
-def track_back(frames, anchor, quad0, min_cc, search=60, log=print):
+def track_back(frames, anchor, quad0, min_cc, search=60, log=print, max_contrast=None):
     """Return {frame: quad} for frames anchor..0 while tracking holds, and per-frame cc.
 
     Each step: (1) coarse translation by template-matching the front-end window of frame i+1 inside a
@@ -105,7 +105,9 @@ def track_back(frames, anchor, quad0, min_cc, search=60, log=print):
     crit = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 200, 1e-5)
     fails = 0
     con0 = plate_contrast(lum[anchor], quad0)
-    max_contrast = min(0.85, con0 + 0.3)
+    # per-plate override: a plate framed by black trim (Freed: slot above, grille below) has no bright
+    # surround to compare against, so the check is switched off there with a large value
+    max_contrast = float(max_contrast) if max_contrast is not None else min(0.85, con0 + 0.3)
     log(f"  anchor contrast {con0:.2f} -> max {max_contrast:.2f}")
     for i in range(anchor - 1, -1, -1):
         pw = q[:, 0].max() - q[:, 0].min()
@@ -270,7 +272,8 @@ def main():
     for k, p in enumerate(job["plates"]):
         quad0 = np.array(p["quad"], np.float32)
         log(f"== {p['name']}")
-        quads, ccs = track_back(orig, anchor, quad0, float(job.get("min_cc", 0.6)), log=log)
+        quads, ccs = track_back(orig, anchor, quad0, float(job.get("min_cc", 0.6)), log=log,
+                                max_contrast=p.get("max_contrast"))
         first = min(quads)
         print(f"{p['name']}: tracked back to frame {first} (min cc {min(ccs.values()):.3f})", flush=True)
         rep = composite(frames, anchor, p["name"], quads, opts)
