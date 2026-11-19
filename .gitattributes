@@ -1,2 +1,3 @@
 *.sh text eol=lf
 cloud/pod.env text eol=lf
+tools/lipsync/Dockerfile text eol=lf
