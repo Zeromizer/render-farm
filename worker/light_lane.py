@@ -64,7 +64,7 @@ import db
 # Engines whose work is CPU (Chrome capture, ffmpeg, OpenCV) with at most a
 # little GPU, and that never touch ComfyUI or pause the TTS workers.
 LIGHT_ENGINES = {"hyperframes", "remotion", "reference_extract", "planar_patch",
-                 "frame_extract", "video_split", "asset_check"}
+                 "frame_extract", "video_split", "asset_check", "lipsync_check"}
 POLL_SECONDS = 3
 # Render-loop engines that need the whole box; see "Pause during video_gen".
 PAUSE_DURING = {e.strip() for e in os.environ.get("LIGHT_LANE_PAUSE_DURING", "video_gen,lettering_fix,clip_edit").split(",")

@@ -351,6 +351,32 @@ params and rows, same split as matte. Measured: 1080p 124-frame clip, plate
 + badge, ~20 s. Pure tests in `worker/tests/test_planar_patch.py`; the
 tracking tests run when cv2 is importable.
 
+## lipsync_check engine: does the mouth follow the voice? (added 2026-11-19)
+
+Measures lip sync on a clip or a finished render: SyncNet (Chung & Zisserman 2016) exactly as
+joonson/syncnet_python 907c0b5 runs it (S3FD faces on 25 fps frames, PySceneDetect shots, IoU
+face tracks, 224x224 face crops, `SyncNetInstance.evaluate` with a +-15 frame search). Nothing
+in the render-platform pipeline checked this before; Seedance presenter clips made with no
+spoken lines got an ElevenLabs voice-over laid on top and passed every review.
+`engine: "lipsync_check"`, no repo (`repo_url` is `-`), light lane, everything in
+`params.check`: `bucket` (`assets` for a clip at `sha256/<hex>`, `renders` for
+`outputs/<id>.mp4`), `path`, optional `windows [{start_s, end_s, label}]` (the spans where
+someone talks to camera, each >= 1 s) and `fps`. Without windows the whole video is one window
+and every face track is reported. The output is a JSON (see the runner docstring for the exact
+shape): per window `face`, `offset_frames_25` (+ = voice late), `offset_frames` (video fps),
+`offset_ms`, `confidence` (LSE-C), `min_dist` (LSE-D), `speech_fraction` and `verdict` =
+`in_sync` | `off_by_N_frames` | `no_sync_signal` | `no_face`, plus a plain `reason`.
+Compute is `worker/lipsync/lipsync_check.py` in its own cached venv (`lipsync/requirements.txt`,
+CUDA torch 2.5.1 like the extract venv); the vendored upstream code is unmodified
+(`lipsync/vendor/VENDOR.md`). Weights (~145 MB) download on first run into
+`<cache>/models/syncnet`, sha256-checked. Calibrated 2026-11-19 (numbers in the runner docstring): the MaczTech v3 render (Seedance
+mouths with no lines under an ElevenLabs voice) scored confidence 0.55-2.16 on all 10 face
+tracks, real presenter footage 2.93-8.18 on all 5, so `confidence < 2.5` = the mouth does not
+follow the voice; offsets in sync are -2..+3 frames at 25 fps (voice 80 ms early to 120 ms
+late). Offset sign verified by shifting the voice 160 ms both ways.
+Pure tests in `worker/tests/test_lipsync_check.py`; `LIPSYNC_E2E=1` adds the upstream demo +
+offset-sign check (downloads the weights).
+
 ## audio_gen engine: YuE2 instrumental beds (added 2026-09-20)
 
 A music bed from a text description, for render-platform's Music page

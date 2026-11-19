@@ -65,7 +65,8 @@ from heartbeat import Heartbeat
 from job_stats import JobStats
 import queue_status
 from runners import (asset_check, audio_gen, blender, clip_edit, footage, frame_extract, hyperframes,
-                     lettering_fix, matte, planar_patch, python_script, ramp_shot, reference_extract, remake,
+                     lettering_fix, lipsync_check, matte, planar_patch, python_script, ramp_shot,
+                     reference_extract, remake,
                      remake_paint, remotion, video_gen, video_split, voiceover)
 from videogen import comfy_client, ram_gate
 
@@ -128,13 +129,17 @@ RUNNERS = {"remotion": remotion.run, "blender": blender.run,
            # reference, or fit H3 takes / a hold still to one of its shots and
            # render it (TIME-01 / CAM-13 in the same checkout) with its cut blur.
            # Clones fx-library; rembg on the CPU, Remotion like the remotion engine.
-           "ramp_shot": ramp_shot.run}
+           "ramp_shot": ramp_shot.run,
+           # Lip-sync measure: SyncNet (joonson/syncnet_python, MIT) on each talking face of a
+           # clip or render -> AV offset + confidence + verdict per window. Small torch models,
+           # light lane; the result JSON is the job output.
+           "lipsync_check": lipsync_check.run}
 
 # Engines that work on a storage object, not a repo — the clone is skipped and
 # repo_url is a "-" placeholder (the column is NOT NULL).
 NO_CLONE = {"reference_extract", "asset_check", "frame_extract", "video_split",
             "matte", "video_gen", "planar_patch", "audio_gen", "footage", "voiceover", "lettering_fix",
-            "clip_edit", "remake_paint", "remake"}
+            "clip_edit", "remake_paint", "remake", "lipsync_check"}
 
 
 def log(msg):

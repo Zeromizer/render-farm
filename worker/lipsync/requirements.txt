@@ -1,0 +1,11 @@
+# lipsync_check (SyncNet + S3FD, joonson/syncnet_python 907c0b5). Their environment.yml pins
+# torch 2.5.1 / scenedetect 0.6.7.1 / python_speech_features 0.6; torch here is the CUDA build the
+# extract venv already uses (same wheel, pip cache hit on the PC). Weights are fetched by
+# lipsync_check.py into the worker cache (sha256-pinned), not by pip.
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+numpy==2.2.6
+scipy==1.15.3
+opencv-python-headless==4.11.0.86
+scenedetect==0.6.7.1
+python_speech_features==0.6
