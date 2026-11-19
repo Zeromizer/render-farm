@@ -74,7 +74,9 @@ def apply_affine(A, pts):
 
 
 def plate_contrast(lum, q):
-    """Median luminance inside the quad / median of a 3-7 px ring around it (a real plate is dark: << 1)."""
+    """Median luminance inside the quad / 75th percentile of a 3-7 px ring around it. A real plate is dark
+    against the painted bumper (<< 1); the ring's 75th percentile skips the black grille under the plate.
+    Plain paving or sea scores near 1."""
     h, w = lum.shape
     inner = np.zeros((h, w), np.uint8)
     cv2.fillConvexPoly(inner, cv2.convexHull(q.astype(np.int32)), 1)
@@ -82,10 +84,10 @@ def plate_contrast(lum, q):
     ring = cv2.dilate(inner, np.ones((15, 15), np.uint8)) - cv2.dilate(inner, np.ones((7, 7), np.uint8))
     if core.sum() < 20 or ring.sum() < 20:
         return 9.0
-    return float(np.median(lum[core > 0]) + 4) / float(np.median(lum[ring > 0]) + 4)
+    return float(np.median(lum[core > 0]) + 4) / float(np.percentile(lum[ring > 0], 75) + 4)
 
 
-def track_back(frames, anchor, quad0, min_cc, max_contrast=0.72, search=60):
+def track_back(frames, anchor, quad0, min_cc, search=60, log=print):
     """Return {frame: quad} for frames anchor..0 while tracking holds, and per-frame cc.
 
     Each step: (1) coarse translation by template-matching the front-end window of frame i+1 inside a
@@ -102,6 +104,9 @@ def track_back(frames, anchor, quad0, min_cc, max_contrast=0.72, search=60):
     vel = np.zeros(2, np.float32)
     crit = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 200, 1e-5)
     fails = 0
+    con0 = plate_contrast(lum[anchor], quad0)
+    max_contrast = min(0.85, con0 + 0.3)
+    log(f"  anchor contrast {con0:.2f} -> max {max_contrast:.2f}")
     for i in range(anchor - 1, -1, -1):
         pw = q[:, 0].max() - q[:, 0].min()
         ph = q[:, 1].max() - q[:, 1].min()
@@ -140,9 +145,10 @@ def track_back(frames, anchor, quad0, min_cc, max_contrast=0.72, search=60):
         asp = (qn[:, 0].max() - qn[:, 0].min()) / max(1.0, qn[:, 1].max() - qn[:, 1].min())
         con = plate_contrast(lum[i], qn)
         ok = cc >= min_cc and 0.25 <= ar <= 1.8 and 0.6 * asp0 <= asp <= 1.6 * asp0 and con <= max_contrast
+        log(f"  f{i}: shift {shift.round(1).tolist()} cc {cc:.3f} area {ar:.2f} aspect {asp:.2f} contrast {con:.2f}"
+            + ("" if ok else f" -> FAIL {fails + 1}"))
         if not ok:
             fails += 1
-            print(f"  f{i}: cc {cc:.3f} area {ar:.2f} aspect {asp:.2f} contrast {con:.2f} -> fail {fails}", flush=True)
             if fails >= 2:
                 # the previous frame was the first failure too: drop it
                 quads.pop(i + 1, None)
@@ -255,9 +261,16 @@ def main():
     orig = [f.copy() for f in frames]
     print(f"read {len(frames)} frames at {fps} fps", flush=True)
     track = {}
+    logf = open(os.path.join(out, "track_log.txt"), "w")
+
+    def log(s):
+        print(s, flush=True)
+        logf.write(s + "\n")
+
     for k, p in enumerate(job["plates"]):
         quad0 = np.array(p["quad"], np.float32)
-        quads, ccs = track_back(orig, anchor, quad0, float(job.get("min_cc", 0.6)))
+        log(f"== {p['name']}")
+        quads, ccs = track_back(orig, anchor, quad0, float(job.get("min_cc", 0.6)), log=log)
         first = min(quads)
         print(f"{p['name']}: tracked back to frame {first} (min cc {min(ccs.values()):.3f})", flush=True)
         rep = composite(frames, anchor, p["name"], quads, opts)
@@ -265,6 +278,7 @@ def main():
                             "quads": {str(i): quads[i].round(2).tolist() for i in sorted(quads)},
                             "cc": {str(i): round(ccs[i], 4) for i in sorted(ccs)}, "frames": rep}
         print(f"PROGRESS {int(30 + 50 * (k + 1) / len(job['plates']))}", flush=True)
+    logf.close()
     write_mp4(frames, fps, os.path.join(out, "plate_soften.mp4"), int(job.get("crf", 12)))
     with open(os.path.join(out, "track.json"), "w") as f:
         json.dump(track, f)
