@@ -164,6 +164,83 @@ def track_back(frames, anchor, quad0, min_cc, search=60, log=print, max_contrast
     return quads, ccs
 
 
+def refine_quads(frames, anchor, quads, log=print, smooth=5):
+    """Snap each tracked quad (< anchor) to the REAL dark plate in that frame.
+
+    The bumper-window affine can over-estimate scale while a car swings in fast; the plate itself is a
+    clear dark rectangle on a light bumper, so measure it: column medians over the plate's rows give the
+    left/right edges, row medians between those give the top edge; height follows from the anchor aspect
+    (the bottom edge often merges into a black grille). Edges are median-smoothed over time; a measurement
+    that disagrees with the track by more than 40% in width or 8 px in position is ignored."""
+    lum = {i: cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY).astype(np.float32) for i in quads}
+    qa = quads[anchor]
+    aw = qa[:, 0].max() - qa[:, 0].min()
+    ah = qa[:, 1].max() - qa[:, 1].min()
+    asp = aw / ah
+    meas = {}
+    for i, q in quads.items():
+        if i >= anchor:
+            continue
+        L = lum[i]
+        H, W = L.shape
+        x0, x1 = q[:, 0].min(), q[:, 0].max()
+        y0, y1 = q[:, 1].min(), q[:, 1].max()
+        w0, h0 = x1 - x0, y1 - y0
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        ry0, ry1 = int(max(0, cy - 0.35 * h0)), int(min(H, cy + 0.35 * h0 + 1))
+        sx0, sx1 = int(max(0, cx - 0.9 * w0)), int(min(W, cx + 0.9 * w0 + 1))
+        if ry1 - ry0 < 3 or sx1 - sx0 < 10:
+            continue
+        col = np.median(L[ry0:ry1, sx0:sx1], axis=0)
+        dark = np.percentile(col, 15)
+        light = np.percentile(col, 90)
+        if light - dark < 40:
+            continue
+        thr = (dark + light) / 2
+        isd = col < thr
+        c = int(round(cx)) - sx0
+        if not (0 <= c < len(isd)) or not isd[c]:
+            continue
+        l = c
+        while l > 0 and isd[l - 1]:
+            l -= 1
+        r = c
+        while r < len(isd) - 1 and isd[r + 1]:
+            r += 1
+        left, right = sx0 + l, sx0 + r + 1
+        # top edge from row medians between left/right
+        ty0 = int(max(0, cy - 1.2 * h0))
+        rows = np.median(L[ty0:int(cy) + 1, left:right], axis=1)
+        isr = rows < thr
+        k = len(isr) - 1
+        while k > 0 and isr[k - 1]:
+            k -= 1
+        top = ty0 + k
+        mw = right - left
+        if not (0.6 * w0 <= mw <= 1.4 * w0) or abs((left + right) / 2 - cx) > 8 or abs(top - y0) > 8:
+            continue
+        meas[i] = (left, right, top)
+    if len(meas) < 3:
+        log(f"  refine: only {len(meas)} measurements, kept the track")
+        return quads
+    idx = sorted(meas)
+    arr = np.array([meas[i] for i in idx], np.float32)
+    # temporal median smoothing (window `smooth`), then mean of 3
+    sm = arr.copy()
+    for j in range(len(idx)):
+        a, b = max(0, j - smooth // 2), min(len(idx), j + smooth // 2 + 1)
+        sm[j] = np.median(arr[a:b], axis=0)
+    out = dict(quads)
+    for j, i in enumerate(idx):
+        left, right, top = sm[j]
+        wq = right - left
+        hq = wq / asp
+        out[i] = np.array([[left, top], [right, top], [right, top + hq], [left, top + hq]], np.float32)
+    log(f"  refine: snapped {len(idx)} frames to the measured plate "
+        f"(width change {np.median([(sm[j][1]-sm[j][0]) / (quads[i][:,0].max()-quads[i][:,0].min()) for j,i in enumerate(idx)]):.2f}x median)")
+    return out
+
+
 def motion_kernel(vx, vy, length):
     """Normalised line kernel of `length` px along (vx, vy); length < 1 -> identity."""
     if length < 1.0:
@@ -274,6 +351,8 @@ def main():
         log(f"== {p['name']}")
         quads, ccs = track_back(orig, anchor, quad0, float(job.get("min_cc", 0.6)), log=log,
                                 max_contrast=p.get("max_contrast"))
+        if p.get("refine"):
+            quads = refine_quads(orig, anchor, quads, log=log)
         first = min(quads)
         print(f"{p['name']}: tracked back to frame {first} (min cc {min(ccs.values()):.3f})", flush=True)
         rep = composite(frames, anchor, p["name"], quads, opts)
