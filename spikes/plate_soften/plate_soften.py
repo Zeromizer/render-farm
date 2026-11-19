@@ -236,7 +236,7 @@ def main():
     rows = []
     for i in list(range(24, anchor + 4, 12)) + [anchor - 1, anchor]:
         for lab, src in (("before", orig), ("after", frames)):
-            s = src[max(0, yc - 30):yc + 30, 60:760]
+            s = src[i][max(0, yc - 30):yc + 30, 60:760]
             s = cv2.resize(s, None, fx=1.6, fy=1.6, interpolation=cv2.INTER_LANCZOS4)
             cv2.putText(s, f"{lab} f{i} ({i / fps:.2f}s)", (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             rows.append(s)
