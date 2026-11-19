@@ -282,7 +282,8 @@ def composite(frames, anchor, name, quads, opts):
         # mask = tracked quad, grown 1.5 px to cover the garbled plate's edge, feathered
         m = np.zeros((h, w), np.float32)
         cv2.fillConvexPoly(m, cv2.convexHull(q.astype(np.int32)), 1.0)
-        m = cv2.dilate(m, np.ones((3, 3), np.uint8))
+        g = int(opts.get("grow_px", 1))
+        m = cv2.dilate(m, np.ones((2 * g + 1, 2 * g + 1), np.uint8))
         m = cv2.GaussianBlur(m, (0, 0), 0.9)
         # gain-match the plate's dark background to what Seedance lit in this frame
         lum_i = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY)
@@ -334,7 +335,8 @@ def main():
     for n in os.listdir(out):
         os.remove(os.path.join(out, n))
     opts = {"shutter": float(job.get("shutter", 0.5)), "base_sigma": float(job.get("base_sigma", 0.6)),
-            "ease_frames": int(job.get("ease_frames", 12)), "fade_frames": int(job.get("fade_frames", 4))}
+            "ease_frames": int(job.get("ease_frames", 12)), "fade_frames": int(job.get("fade_frames", 4)),
+            "grow_px": int(job.get("grow_px", 1))}
     anchor = int(job["anchor"])
     frames, fps = read_frames(job["src"])
     orig = [f.copy() for f in frames]
@@ -386,6 +388,17 @@ def main():
             cv2.putText(s, f"{lab} f{i} ({i / fps:.2f}s)", (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             rows.append(s)
     cv2.imwrite(os.path.join(out, "compare_sheet.png"), np.vstack(rows))
+    # compare video: before (top) / after (bottom), the plate strip at 2x, whole clip, for judging in motion
+    strip = []
+    for i in range(len(frames)):
+        pair = []
+        for lab, src in (("before (plate-fixed clip)", orig), ("after (plate soften)", frames)):
+            s = src[i][max(0, yc - 60):yc + 30, 40:760]
+            s = cv2.resize(s, (1440, 180), interpolation=cv2.INTER_LANCZOS4)
+            cv2.putText(s, f"{lab}  {i / fps:.2f}s", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            pair.append(s)
+        strip.append(np.vstack(pair))
+    write_mp4(strip, fps, os.path.join(out, "compare_zoom.mp4"), 16)
     print("PROGRESS 100", flush=True)
 
 
