@@ -101,7 +101,7 @@ def paste_art(frame, box, art_path, mode="fill", supersample=6):
     old = A[t + 2:b - 2, l + 2:r - 2].reshape(-1, 3)
     lum = old.mean(1)
     bgc = np.percentile(old[lum < np.percentile(lum, 40)], 50, axis=0)
-    wc = np.clip(np.percentile(old[lum >= np.percentile(lum, 98)], 50, axis=0) * 1.05, 200, 240)
+    wc = np.clip(np.percentile(old[lum >= np.percentile(lum, 98)], 50, axis=0) * 1.05, 222, 242)
     art = np.asarray(Image.open(art_path).convert("RGB")).astype(np.float32).mean(2)
     ah, aw = art.shape
     bw, bh = r - l, b - t
