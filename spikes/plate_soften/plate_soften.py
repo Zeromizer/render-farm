@@ -108,6 +108,12 @@ def paste_art(frame, box, art_path, mode="fill", supersample=6):
     if mode == "fill":
         pw, ph, x0, y0 = bw, bh, l, t
     else:
+        # clear the native plate face first (Seedance's own lettering can be wider than the art)
+        e = max(2, int(round(0.08 * bh)))
+        face = np.zeros(A.shape[:2], np.float32)
+        cv2.rectangle(face, (l + e, t + e), (r - e - 1, b - e - 1), 1.0, -1)
+        face = cv2.GaussianBlur(face, (0, 0), 0.8)
+        A = A * (1 - face[..., None]) + bgc[None, None, :] * face[..., None]
         s = min((bw - 4) / aw, (bh - 2) / ah)
         pw, ph = max(4, int(round(aw * s))), max(2, int(round(ah * s)))
         x0, y0 = int(round(l + (bw - pw) / 2)), int(round(t + (bh - ph) / 2))
@@ -128,7 +134,7 @@ def paste_art(frame, box, art_path, mode="fill", supersample=6):
     return (x0, y0, pw, ph)
 
 
-def track_back(frames, anchor, quad0, min_cc, search=60, log=print, max_contrast=None):
+def track_back(frames, anchor, quad0, min_cc, search=60, log=print, max_contrast=None, min_patch=0.0):
     """Return {frame: quad} for frames anchor..0 while tracking holds, and per-frame cc.
 
     Each step: (1) coarse translation by template-matching the front-end window of frame i+1 inside a
@@ -187,8 +193,20 @@ def track_back(frames, anchor, quad0, min_cc, search=60, log=print, max_contrast
         ar = cv2.contourArea(qn) / area0
         asp = (qn[:, 0].max() - qn[:, 0].min()) / max(1.0, qn[:, 1].max() - qn[:, 1].min())
         con = plate_contrast(lum[i], qn)
-        ok = cc >= min_cc and 0.25 <= ar <= 1.8 and 0.6 * asp0 <= asp <= 1.6 * asp0 and con <= max_contrast
-        log(f"  f{i}: shift {shift.round(1).tolist()} cc {cc:.3f} area {ar:.2f} aspect {asp:.2f} contrast {con:.2f}"
+        # the plate patch itself must match its successor: if the window locked onto static background while
+        # the car moves through, the patch at the stuck spot changes and this match collapses
+        pnc = 1.0
+        if min_patch > 0:
+            bx0, by0, bx1, by1 = quad_bbox(qn, 2, 2, w, h)
+            ax0, ay0, ax1, ay1 = quad_bbox(q, 2, 2, w, h)
+            pa = gray[i][by0:by1, bx0:bx1]
+            pb = gray[i + 1][ay0:ay1, ax0:ax1]
+            if pa.size > 20 and pb.size > 20:
+                pb = cv2.resize(pb, (pa.shape[1], pa.shape[0]), interpolation=cv2.INTER_AREA)
+                pnc = float(cv2.matchTemplate(pa, pb, cv2.TM_CCOEFF_NORMED)[0, 0])
+        ok = (cc >= min_cc and 0.25 <= ar <= 1.8 and 0.6 * asp0 <= asp <= 1.6 * asp0 and con <= max_contrast
+              and pnc >= min_patch)
+        log(f"  f{i}: shift {shift.round(1).tolist()} cc {cc:.3f} area {ar:.2f} aspect {asp:.2f} contrast {con:.2f} patch {pnc:.2f}"
             + ("" if ok else f" -> FAIL {fails + 1}"))
         if not ok:
             fails += 1
@@ -608,7 +626,7 @@ def main():
         quad0 = np.array(p["quad"], np.float32)
         log(f"== {p['name']}")
         quads, ccs = track_back(orig, anchor, quad0, float(job.get("min_cc", 0.6)), log=log,
-                                max_contrast=p.get("max_contrast"))
+                                max_contrast=p.get("max_contrast"), min_patch=float(p.get("min_patch", 0)))
         raw_quads = dict(quads)
         if p.get("refine"):
             quads = refine_quads(orig, anchor, quads, log=log)
