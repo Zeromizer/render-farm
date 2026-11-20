@@ -87,6 +87,47 @@ def plate_contrast(lum, q):
     return float(np.median(lum[core > 0]) + 4) / float(np.percentile(lum[ring > 0], 75) + 4)
 
 
+def paste_art(frame, box, art_path, mode="fill", supersample=6):
+    """Paste plate artwork (white lettering on black, any aspect) onto `frame` in place.
+
+    box = (l, t, r, b) of the native plate. mode "fill": the art fills the box with rounded corners (use when
+    the box's aspect matches the art within a few %). mode "inside": the art keeps its OWN aspect, fitted to
+    the box's height or width (whichever is tighter) and centred; the plate's native edge stays. The plate
+    face takes the native plate's dark tone; the lettering takes the native plate's brightest tone x1.05
+    (clipped 200-240), so it sits in the frame's light."""
+    from PIL import Image, ImageDraw
+    l, t, r, b = [int(round(v)) for v in box]
+    A = frame.astype(np.float32)
+    old = A[t + 2:b - 2, l + 2:r - 2].reshape(-1, 3)
+    lum = old.mean(1)
+    bgc = np.percentile(old[lum < np.percentile(lum, 40)], 50, axis=0)
+    wc = np.clip(np.percentile(old[lum >= np.percentile(lum, 98)], 50, axis=0) * 1.05, 200, 240)
+    art = np.asarray(Image.open(art_path).convert("RGB")).astype(np.float32).mean(2)
+    ah, aw = art.shape
+    bw, bh = r - l, b - t
+    if mode == "fill":
+        pw, ph, x0, y0 = bw, bh, l, t
+    else:
+        s = min((bw - 4) / aw, (bh - 2) / ah)
+        pw, ph = max(4, int(round(aw * s))), max(2, int(round(ah * s)))
+        x0, y0 = int(round(l + (bw - pw) / 2)), int(round(t + (bh - ph) / 2))
+    S = supersample
+    big = Image.fromarray(art.astype(np.uint8)).resize((pw * S, ph * S), Image.LANCZOS)
+    L = np.asarray(big.resize((pw, ph), Image.LANCZOS)).astype(np.float32) / 255.0
+    plate = bgc[None, None, :] * (1 - L[..., None]) + wc[None, None, :] * L[..., None]
+    if mode == "fill":
+        m = Image.new("L", (pw * S, ph * S), 0)
+        ImageDraw.Draw(m).rounded_rectangle([0, 0, pw * S - 1, ph * S - 1], radius=max(3, ph * S // 9), fill=255)
+        m = np.asarray(m.resize((pw, ph), Image.LANCZOS)).astype(np.float32) / 255.0
+    else:
+        m = np.ones((ph, pw), np.float32)
+    plate = cv2.GaussianBlur(plate, (0, 0), 0.35)
+    reg = A[y0:y0 + ph, x0:x0 + pw]
+    A[y0:y0 + ph, x0:x0 + pw] = reg * (1 - m[..., None]) + plate * m[..., None]
+    frame[:] = np.clip(A + 0.5, 0, 255).astype(np.uint8)
+    return (x0, y0, pw, ph)
+
+
 def track_back(frames, anchor, quad0, min_cc, search=60, log=print, max_contrast=None):
     """Return {frame: quad} for frames anchor..0 while tracking holds, and per-frame cc.
 
@@ -546,6 +587,15 @@ def main():
     anchor = int(job["anchor"])
     frames, fps = read_frames(job["src"])
     orig = [f.copy() for f in frames]
+    # optional: paste the dealer's exact plate artwork onto the anchor frame first, so everything carried
+    # back from it is the real artwork (plate "art": path, "art_mode": fill|inside; the quad is the native plate)
+    for p in job["plates"]:
+        if p.get("art"):
+            q = np.array(p["quad"], np.float32)
+            box = (q[:, 0].min(), q[:, 1].min(), q[:, 0].max(), q[:, 1].max())
+            placed = paste_art(frames[anchor], box, p["art"], p.get("art_mode", "fill"))
+            orig[anchor] = frames[anchor].copy()
+            print(f"anchor art {p['name']}: placed at {placed}", flush=True)
     print(f"read {len(frames)} frames at {fps} fps", flush=True)
     track = {}
     logf = open(os.path.join(out, "track_log.txt"), "w")
