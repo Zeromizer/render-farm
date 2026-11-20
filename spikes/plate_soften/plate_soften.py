@@ -134,7 +134,7 @@ def paste_art(frame, box, art_path, mode="fill", supersample=6):
     return (x0, y0, pw, ph)
 
 
-def track_back(frames, anchor, quad0, min_cc, search=60, log=print, max_contrast=None, min_patch=0.0):
+def track_back(frames, anchor, quad0, min_cc, search=60, log=print, max_contrast=None, min_patch=0.0, min_frame=0):
     """Return {frame: quad} for frames anchor..0 while tracking holds, and per-frame cc.
 
     Each step: (1) coarse translation by template-matching the front-end window of frame i+1 inside a
@@ -156,7 +156,7 @@ def track_back(frames, anchor, quad0, min_cc, search=60, log=print, max_contrast
     # surround to compare against, so the check is switched off there with a large value
     max_contrast = float(max_contrast) if max_contrast is not None else min(0.85, con0 + 0.3)
     log(f"  anchor contrast {con0:.2f} -> max {max_contrast:.2f}")
-    for i in range(anchor - 1, -1, -1):
+    for i in range(anchor - 1, max(-1, int(min_frame) - 1), -1):
         pw = q[:, 0].max() - q[:, 0].min()
         ph = q[:, 1].max() - q[:, 1].min()
         # (1) coarse shift: window (frame i+1) matched in frame i
@@ -626,7 +626,8 @@ def main():
         quad0 = np.array(p["quad"], np.float32)
         log(f"== {p['name']}")
         quads, ccs = track_back(orig, anchor, quad0, float(job.get("min_cc", 0.6)), log=log,
-                                max_contrast=p.get("max_contrast"), min_patch=float(p.get("min_patch", 0)))
+                                max_contrast=p.get("max_contrast"), min_patch=float(p.get("min_patch", 0)),
+                                min_frame=int(p.get("min_frame", 0)))
         raw_quads = dict(quads)
         if p.get("refine"):
             quads = refine_quads(orig, anchor, quads, log=log)
