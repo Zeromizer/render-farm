@@ -12,6 +12,13 @@ params (jsonb):
     threshold     optional ContentDetector threshold override
     ocr_fps       optional OCR sample rate (drop to 1 if the 90s budget busts)
     motion_fps    optional motion sampling rate (default 10; §4.5 amendment)
+    merge         true = ADD the listed stages to the spec already on the row
+                  instead of replacing it. Only for stages that read the text
+                  measured earlier ("layers"): the row's text blocks are handed
+                  to extract.py, nothing else is re-measured, and every other
+                  section — the annotation above all — is kept. This is how a
+                  new stage reaches a library that is already measured and
+                  annotated without a re-annotation of every reference.
 
 Split of responsibilities: extract/extract.py is pure compute (video in,
 JSON + artefacts out) and runs in a cached venv keyed by
@@ -56,9 +63,23 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     heartbeat.progress = 5
 
     out_dir = os.path.join(work_dir, "out")
+    table = "rp_references" if kind == "reference" else "rp_renders"
+    stages = [s for s in (params.get("stages") or []) if s]
+    merge = bool(params.get("merge"))
     cmd = [py, "-u", os.path.join(EXTRACT_DIR, "extract.py"), local_video, out_dir,
-           "--stages", ",".join(params.get("stages") or []),
+           "--stages", ",".join(stages),
            "--reference-id", str(target_id)]
+    if merge:
+        bad = [s for s in stages if s not in MERGE_STAGES]
+        if bad or not stages:
+            raise RuntimeError(f"merge supports only {sorted(MERGE_STAGES)}; got {stages}")
+        blocks = ((_current_spec(table, target_id).get("text") or {}).get("blocks"))
+        if blocks is None:
+            raise RuntimeError("merge needs a spec with measured text on the row; run a full extract first")
+        blocks_path = os.path.join(work_dir, "blocks.json")
+        with open(blocks_path, "w", encoding="utf-8") as f:
+            json.dump(blocks, f, ensure_ascii=False)
+        cmd += ["--blocks", blocks_path]
     if params.get("threshold"):
         cmd += ["--threshold", str(params["threshold"])]
     if params.get("ocr_fps"):
@@ -91,11 +112,35 @@ def run(job, repo, work_dir, heartbeat, log, cancel_check, timeout_seconds):
     with open(spec_path, "w", encoding="utf-8") as f:
         json.dump(spec, f, ensure_ascii=False, indent=1)
 
-    table = "rp_references" if kind == "reference" else "rp_renders"
+    if merge:
+        # Re-read at the last moment: an annotation may have landed while this
+        # ran, and the whole column is written back.
+        current = _current_spec(table, target_id)
+        for s in stages:
+            if s in spec:
+                current[s] = spec[s]
+                current.setdefault("timings", {})[s] = (spec.get("timings") or {}).get(s)
+        spec = current
+        with open(spec_path, "w", encoding="utf-8") as f:
+            json.dump(spec, f, ensure_ascii=False, indent=1)
     db.sb.table(table).update({"motion_spec": spec}).eq("id", target_id).execute()
-    log(f"wrote {table}.motion_spec for {target_id} (status={spec.get('status')})")
+    log(f"wrote {table}.motion_spec for {target_id} (status={spec.get('status')}{', merged ' + ','.join(stages) if merge else ''})")
 
     return spec_path, "json", "application/json"
+
+
+# Stages that only read what an earlier extract measured (the text blocks), so
+# they can be added to an existing spec.
+MERGE_STAGES = {"layers"}
+
+
+def _current_spec(table, target_id):
+    """The measured spec on the row; merge refuses a row without one."""
+    res = db.sb.table(table).select("motion_spec").eq("id", target_id).limit(1).execute()
+    spec = (res.data[0] if res.data else {}).get("motion_spec") or {}
+    if spec.get("status") not in ("ok", "partial"):
+        raise RuntimeError(f"merge needs a measured spec on {table} {target_id}; found status={spec.get('status')}")
+    return spec
 
 
 def _download(bucket, path, work_dir, log):

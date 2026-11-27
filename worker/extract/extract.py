@@ -64,9 +64,9 @@ def _find_ffmpeg_tool(name):
 FFMPEG = None
 FFPROBE = None  # resolved once in main()
 
-ALL_STAGES = ["probe", "frames", "shots", "audio", "motion", "grade", "text", "kinetic", "composition"]
+ALL_STAGES = ["probe", "frames", "shots", "audio", "motion", "grade", "text", "kinetic", "layers", "composition"]
 PROGRESS_AT = {"probe": 5, "frames": 15, "shots": 35, "audio": 50, "motion": 65,
-               "grade": 72, "text": 82, "kinetic": 92, "composition": 95}
+               "grade": 72, "text": 82, "kinetic": 90, "layers": 94, "composition": 96}
 SAMPLE_FPS = 2.0
 MAX_FRAMES = 300
 # The text pass samples denser than the shared frames: at 2 fps a word on screen
@@ -1025,6 +1025,56 @@ def _kinetic_sheet(group):
     return cv2.vconcat(padded[:-1])
 
 
+LAYERS_PER_SHEET = 12
+
+
+def stage_layers(ctx):
+    """Whether each display-size text block sits IN FRONT of the subject, BEHIND
+    it or clear of it (layers.py), plus sheets kf_layers_NN.jpg showing every
+    verdict with the subject outlined and the letters tinted. The runner
+    uploads kf_* next to the keyframes, so no runner change is needed for them."""
+    import kinetic
+    import layers
+
+    text = (ctx.get("sections") or {}).get("text") or {}
+    if text.get("status") != "ok":
+        raise RuntimeError("needs the text stage")
+    blocks = text.get("blocks") or []
+    picked = layers.pick_blocks(blocks, ctx["duration"], kinetic.looks_like_text)
+    counts = {"behind": 0, "front": 0, "clear": 0, "unknown": 0}
+    if not picked:
+        return {"version": 1, "model": layers.MODEL, "blocks": [], "sheets": [],
+                "summary": {"analysed": 0, **counts}}
+
+    subjects = layers.Subjects()
+    cap = cv2.VideoCapture(ctx["video"])
+    out, tiles = [], []
+    try:
+        for n, i in enumerate(picked):
+            verdict, shown = layers.analyse_block(cap, blocks[i], ctx["fps"], subjects)
+            counts[verdict["layer"]] = counts.get(verdict["layer"], 0) + 1
+            row = {"i": n, "block": i, **verdict}
+            if shown is not None:
+                tiles.append((n, layers.tile(shown, blocks[i], verdict, n)))
+            out.append(row)
+            if n % 4 == 3:  # a quiet python job cannot be cancelled: keep talking
+                print(f"layers {n + 1}/{len(picked)}")
+    finally:
+        cap.release()
+
+    sheets = []
+    for k in range(0, len(tiles), LAYERS_PER_SHEET):
+        group = tiles[k:k + LAYERS_PER_SHEET]
+        name = f"kf_layers_{len(sheets) + 1:02d}.jpg"
+        cv2.imwrite(os.path.join(ctx["out_dir"], name), layers.sheet([t for _n, t in group]),
+                    [cv2.IMWRITE_JPEG_QUALITY, 82])
+        for n, _t in group:
+            out[n]["sheet"] = name
+        sheets.append(name)
+    return {"version": 1, "model": layers.MODEL, "blocks": out, "sheets": sheets,
+            "summary": {"analysed": len(out), **counts}}
+
+
 def stage_composition(ctx):
     kfs = ctx.get("keyframes") or []
     if not kfs:
@@ -1055,11 +1105,12 @@ def stage_composition(ctx):
 STAGE_FNS = {
     "probe": stage_probe, "frames": stage_frames, "shots": stage_shots,
     "audio": stage_audio, "motion": stage_motion, "grade": stage_grade,
-    "text": stage_text, "kinetic": stage_kinetic, "composition": stage_composition,
+    "text": stage_text, "kinetic": stage_kinetic, "layers": stage_layers,
+    "composition": stage_composition,
 }
 SECTION_FOR = {"probe": "probe", "shots": "shots", "audio": "audio",
                "motion": "motion", "grade": "grade", "text": "text",
-               "kinetic": "kinetic", "composition": "composition"}
+               "kinetic": "kinetic", "layers": "layers", "composition": "composition"}
 
 
 def main():
@@ -1071,6 +1122,11 @@ def main():
     ap.add_argument("--threshold", type=float, default=27.0)
     ap.add_argument("--ocr-fps", type=float, default=None)
     ap.add_argument("--motion-fps", type=float, default=None)
+    # A JSON file of text blocks measured earlier (the text section's "blocks").
+    # With it, a stage that only READS the text (layers) runs without the OCR
+    # pass: how a new stage is added to a reference that is already measured
+    # and annotated (the runner's merge mode).
+    ap.add_argument("--blocks", default=None)
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -1102,6 +1158,11 @@ def main():
         wanted |= {"shots"}
     if "kinetic" in wanted:  # measures the text stage's events, carried-by-cut needs shots
         wanted |= {"text", "shots"}
+    if "layers" in wanted and not args.blocks:  # judges the text stage's blocks
+        wanted |= {"text"}
+    if args.blocks:
+        with open(args.blocks, encoding="utf-8") as f:
+            ctx["sections"] = {"text": {"status": "ok", "blocks": json.load(f)}}
     if "text" in wanted:
         wanted |= {"frames"}
     stages = [s for s in ALL_STAGES if s in wanted]
