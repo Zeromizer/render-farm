@@ -16,16 +16,19 @@ How: for each display-size text block, on a few frames of its hold,
   strokes   the text's own pixels, found by its colour: the cluster of colours
             inside the block's box that is unlike the surround and uniform
             (type is a flat colour; footage is not).
-  verdict   three numbers decide it:
-              cover   how much of the visible letters' box the subject covers
-              through how dense the letters are UNDER the subject, against
-                      how dense they are beside it (1 = they carry on over it)
-              touch   how much of the word's width has letters running right
-                      up to the subject's outline
+  verdict   four numbers decide it:
+              cover   how much of the visible letters' box the subject is in
+              sure    ...counting only what is subject beyond the outline's error
+              through how dense the letters are ON the subject, against how
+                      dense they are beside it (1 = they carry on over it)
+              touch   how much of the subject's outline, inside that box, has
+                      letters right up against it
             clear   the subject does not reach into the letters
             front   the letters carry on over the subject
-            behind  the subject covers part of the word, the letters stop at
+            behind  the subject is inside the word's box, the letters stop at
                     its outline, and there are none on it
+            on      the whole block lies on the subject: a title laid over it,
+                    or lettering that is part of it (a number plate, a badge)
 
 The extractor's rule applies: a wrong label is worse than a missing one. A text
 colour that cannot be told from the subject's, a subject the detector does not
@@ -45,11 +48,15 @@ MAX_BLOCKS = 24
 SAMPLES = (0.3, 0.5, 0.75)   # where in a block's settled hold to look
 SUBJECT_SCORE = 0.6
 SUBJECT_MIN_AREA = 0.012     # of the frame: smaller is a prop, not the subject
-MASK_EDGE = 7           # px at WORK_W: how far the detector's outline can be off
-COVER_MIN = 0.05        # the subject must cover this much of the letters' box to matter
+MASK_EDGE = 7           # px at WORK_W: kept clear of the subject when reading the text's colour
+CORE_IN = 4             # px inside the detector's outline that is surely subject
+RIM_OUT = 6             # px outside it that may still be subject
+COVER_MIN = 0.02        # under this share of the letters' box, the subject does not reach the word
+SURE_MIN = 0.01         # share of the box that is surely subject: more than the outline's own error
 THROUGH_FRONT = 0.5     # letters at least half as dense on the subject as beside it
 THROUGH_BEHIND = 0.15
-TOUCH_MIN = 0.15
+TOUCH_MIN = 0.15        # share of the outline inside the box with letters right against it
+TOUCH_CLOSE = 0.3
 MODEL = "maskrcnn_resnet50_fpn_v2"
 
 # The COCO things that stand as the subject of an ad. Furniture, food and
@@ -203,15 +210,17 @@ def text_strokes(frame_bgr, bbox, subject):
 
 # ----------------------------------------------------------------- verdict
 
+def _disc(r):
+    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+
+
 def judge(strokes, subject):
     """(layer, numbers) for one frame: the letters against the subject."""
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * MASK_EDGE + 1, 2 * MASK_EDGE + 1))
     sub = subject.astype(np.uint8)
-    core = cv2.erode(sub, kernel).astype(bool)      # surely subject
-    reach = cv2.dilate(sub, kernel).astype(bool)    # subject, give or take its outline
-    rim = reach & ~core                             # the outline itself
+    core = cv2.erode(sub, _disc(CORE_IN)).astype(bool)     # surely subject
+    reach = cv2.dilate(sub, _disc(RIM_OUT)).astype(bool)   # subject, give or take its outline
+    rim = reach & ~core                                    # the outline itself
 
-    off = strokes & ~reach
     ys, xs = np.nonzero(strokes)
     if len(xs) == 0:
         return "unknown", {"why": "no letters found"}
@@ -219,25 +228,30 @@ def judge(strokes, subject):
     box = np.zeros_like(strokes)
     box[y0:y1, x0:x1] = True
     area = float(box.sum())
-    cover = float((box & core).sum()) / area
+    cover = float((box & subject).sum()) / area    # the subject reaches into the letters' box
+    sure = float((box & core).sum()) / area        # ...by more than the outline's own error
 
-    beside = float(off.sum()) / max(1.0, float((box & ~reach).sum()))
-    under = float((strokes & core & box).sum()) / max(1.0, float((box & core).sum()))
+    beside = float((strokes & ~reach).sum()) / max(1.0, float((box & ~reach).sum()))
+    core_px = float((box & core).sum())
+    under = float((strokes & core & box).sum()) / core_px if core_px >= 30 else 0.0
     through = under / beside if beside > 0 else 0.0
 
-    cols = np.nonzero(strokes[:, x0:x1].any(axis=0))[0]
-    meets = np.nonzero((strokes & rim)[:, x0:x1].any(axis=0))[0]
-    touch = len(meets) / max(1, len(cols))
+    # how much of the subject's outline, where it crosses the letters' box, has letters right against it
+    rim_in = rim & box
+    near = cv2.dilate(strokes.astype(np.uint8), _disc(2)).astype(bool)
+    touch = float((rim_in & near).sum()) / float(rim_in.sum()) if rim_in.sum() >= 20 else 0.0
 
-    nums = {"cover": round(cover, 3), "through": round(through, 3), "touch": round(touch, 3)}
-    if cover < COVER_MIN:
+    nums = {"cover": round(cover, 3), "sure": round(sure, 3), "through": round(through, 3), "touch": round(touch, 3)}
+    if cover < COVER_MIN and touch < TOUCH_MIN:
         return "clear", nums
-    if through >= THROUGH_FRONT:
+    if sure >= SURE_MIN and through >= THROUGH_FRONT:
         return "front", nums
-    if through <= THROUGH_BEHIND and touch >= TOUCH_MIN:
-        return "behind", nums
     if through <= THROUGH_BEHIND:
-        # the subject reaches into the word's box but the letters do not meet it
+        if touch >= TOUCH_MIN and sure >= SURE_MIN:
+            # the subject is inside the word's box, the letters stop at its outline, none lie on it
+            return "behind", nums
+        if touch >= TOUCH_CLOSE:
+            return "unknown", {**nums, "why": "letters meet the subject's outline: cut by it, or only close to it"}
         return "clear", nums
     return "unknown", {**nums, "why": "letters partly on the subject"}
 
@@ -288,9 +302,9 @@ def analyse_block(cap, block, native_fps, subjects):
         if strokes is None and why == "box is mostly subject":
             # The text pass READ this block, and its box lies on the subject:
             # letters behind a subject that covers them could not have been read.
-            votes["front"] = votes.get("front", 0) + 1
-            seen.append({"t": round(t, 2), "layer": "front", "subject": label, "cover": 1.0,
-                         "why": "read on top of the subject"})
+            votes["on"] = votes.get("on", 0) + 1
+            seen.append({"t": round(t, 2), "layer": "on", "subject": label, "cover": 1.0,
+                         "why": "lies wholly on the subject"})
             shown = shown or (frame, mask, None, t)
             continue
         if strokes is None:
@@ -313,14 +327,14 @@ def analyse_block(cap, block, native_fps, subjects):
         layer = "unknown"
     elif decided:
         layer = max(decided, key=decided.get)
-        if decided[layer] * 2 <= len(seen) and layer != "clear":
+        if decided[layer] * 2 <= len(seen) and layer not in ("clear", "on"):
             layer = "unknown"
     else:
         layer = "unknown"
     pick = next((s for s in seen if s["layer"] == layer), seen[0])
     out = {"layer": layer, "t": pick["t"], "frames": len(seen),
            "agree": round(votes.get(layer, 0) / len(seen), 2)}
-    for key in ("subject", "cover", "through", "touch", "why"):
+    for key in ("subject", "cover", "sure", "through", "touch", "why"):
         if key in pick:
             out[key] = pick[key]
     return out, shown
@@ -328,7 +342,7 @@ def analyse_block(cap, block, native_fps, subjects):
 
 # ----------------------------------------------------------------- sheet
 
-_TINT = {"behind": (60, 60, 235), "front": (60, 200, 60), "clear": (200, 200, 200), "unknown": (0, 200, 235)}
+_TINT = {"behind": (60, 60, 235), "front": (60, 200, 60), "on": (200, 160, 60), "clear": (200, 200, 200), "unknown": (0, 200, 235)}
 
 
 def tile(shown, block, verdict, n, tile_w=300):
@@ -348,7 +362,7 @@ def tile(shown, block, verdict, n, tile_w=300):
     layer = verdict["layer"]
     cv2.putText(bar, f"#{n} {t:.2f}s {layer.upper()}", (5, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                 _TINT.get(layer, (255, 255, 255)), 1, cv2.LINE_AA)
-    detail = " ".join(f"{k}={verdict[k]}" for k in ("subject", "cover", "through", "touch") if k in verdict)
+    detail = " ".join(f"{k}={verdict[k]}" for k in ("subject", "sure", "through", "touch") if k in verdict)
     cv2.putText(bar, (detail or verdict.get("why", ""))[:46], (5, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.36,
                 (220, 220, 220), 1, cv2.LINE_AA)
     return np.vstack([bar, img])

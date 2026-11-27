@@ -1041,7 +1041,7 @@ def stage_layers(ctx):
         raise RuntimeError("needs the text stage")
     blocks = text.get("blocks") or []
     picked = layers.pick_blocks(blocks, ctx["duration"], kinetic.looks_like_text)
-    counts = {"behind": 0, "front": 0, "clear": 0, "unknown": 0}
+    counts = {"behind": 0, "front": 0, "on": 0, "clear": 0, "unknown": 0}
     if not picked:
         return {"version": 1, "model": layers.MODEL, "blocks": [], "sheets": [],
                 "summary": {"analysed": 0, **counts}}
