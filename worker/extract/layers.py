@@ -68,6 +68,8 @@ SUBJECT_LABELS = {
     "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe",
     "backpack", "handbag", "suitcase", "bottle", "cup", "cell phone", "laptop", "tv",
     "skateboard", "surfboard", "sports ball", "teddy bear", "clock", "vase",
+    # food and drink ads: the dish is the subject
+    "bowl", "wine glass", "banana", "apple", "sandwich", "orange", "pizza", "donut", "cake", "hot dog",
 }
 
 
