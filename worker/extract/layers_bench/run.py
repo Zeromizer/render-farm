@@ -53,6 +53,8 @@ def main():
                 row["text"], row["t0"], row["t1"] = b.get("text"), b.get("t0"), b.get("t1")
                 row["size"] = b.get("size_ratio")
             summary[name] = {"layers": layers, "timings": spec.get("timings")}
+            # the whole spec too: what the platform would read off this film
+            shutil.copy(spec_path, os.path.join(out_root, f"{name}_spec.json"))
             for fn in sorted(os.listdir(work)):
                 if fn.startswith("kf_layers_"):
                     shutil.copy(os.path.join(work, fn), os.path.join(out_root, f"{name}_{fn}"))
