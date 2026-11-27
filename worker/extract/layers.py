@@ -19,15 +19,19 @@ How: for each display-size text block, on a few frames of its hold,
   verdict   five numbers decide it:
               cover   how much of the visible letters' box the subject is in
               sure    ...counting only what is subject beyond the outline's error
-              depth   how far into the word's height the subject reaches
+              cut     how much shorter the letters are where they meet the
+                      subject than where they do not (their baseline is
+                      straight unless something covers it)
               through how dense the letters are ON the subject, against how
                       dense they are beside it (1 = they carry on over it)
               touch   how much of the subject's outline, inside that box, has
                       letters right up against it
             clear   the subject does not reach into the letters
             front   the letters carry on over the subject
-            behind  the subject is inside the word's box, the letters stop at
-                    its outline, and there are none on it
+            behind  no letters lie on the subject, they run right up to its
+                    outline, and they are CUT there: shorter than their own
+                    baseline, or tracing the outline where the subject is as
+                    wide as the word
             on      the whole block lies on the subject: a title laid over it,
                     or lettering that is part of it (a number plate, a badge)
 
@@ -54,7 +58,11 @@ CORE_IN = 4             # px inside the detector's outline that is surely subjec
 RIM_OUT = 6             # px outside it that may still be subject
 COVER_MIN = 0.02        # under this share of the letters' box, the subject does not reach the word
 SURE_MIN = 0.01         # share of the box that is surely subject: more than the outline's own error
-DEPTH_MIN = 0.1         # ...and it must reach this far into the word's height somewhere
+SURE_DEEP = 0.05        # ...and this much is the subject standing well inside the word
+CUT_MIN = 0.1           # letters this much shorter where they meet the subject are cut by it
+CUT_NONE = 0.04         # ...and under this they are whole
+FOLLOW_MIN = 0.6        # share of the meeting columns where the letters' edge lies on the outline
+BEND_MIN = 0.12         # how far from straight that edge must be, as a share of the height
 THROUGH_FRONT = 0.5     # letters at least half as dense on the subject as beside it
 THROUGH_BEHIND = 0.15
 TOUCH_MIN = 0.15        # share of the outline inside the box with letters right against it
@@ -218,6 +226,60 @@ def _disc(r):
     return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
 
 
+def _profile(strokes, subject, rim, reach, box):
+    """Are the letters CUT by the subject, or do they only stand next to it?
+
+    Reads the letters' top and bottom edge column by column. Letters that are
+    whole end on a straight baseline whether or not something stands under
+    them; letters the subject covers end where its outline is. Returns
+    (cut, follow, bend), each None when it cannot be measured:
+      cut     how much shorter the letters are where they meet the subject
+              than where they do not, as a share of the letters' height
+      follow  share of the columns meeting the subject where the letters'
+              edge lies on its outline
+      bend    how far from straight that edge is, as a share of the height
+    """
+    x0, x1, y0, y1 = box
+    s = strokes[y0:y1, x0:x1]
+    cols = np.nonzero(s.any(axis=0))[0]
+    if len(cols) < 8:
+        return None, None, None
+    height = float(y1 - y0)
+    top = s.argmax(axis=0).astype(np.float32)
+    bot = (s.shape[0] - 1 - s[::-1].argmax(axis=0)).astype(np.float32)
+    sub = subject[y0:y1, x0:x1]
+    meets = np.nonzero((s & rim[y0:y1, x0:x1]).any(axis=0))[0]
+    free = np.array([c for c in cols if not reach[y0:y1, x0 + c].any()], dtype=int)
+    if len(meets) < 3:
+        return None, None, None
+
+    # which edge the subject comes at: from below (a roof under a name) or from above
+    sub_any = sub.any(axis=0)
+    sub_top = sub.argmax(axis=0).astype(np.float32)
+    sub_bot = (sub.shape[0] - 1 - sub[::-1].argmax(axis=0)).astype(np.float32)
+    live = np.array([c for c in meets if sub_any[c]], dtype=int)
+    if len(live) < 3:
+        return None, None, None
+    from_below = float(np.median(sub_top[live])) > 0.5 * (s.shape[0] - 1)
+    edge = bot if from_below else top
+    outline = sub_top if from_below else sub_bot
+
+    tol = RIM_OUT + 2
+    follow = float((np.abs(edge[live] - outline[live]) <= tol).mean())
+    lo, hi = np.percentile(edge[cols], [10, 90])
+    bend = float(hi - lo) / height
+
+    cut = None
+    if len(free) >= max(3, int(0.05 * len(cols))):
+        if from_below:
+            base = float(np.percentile(bot[free], 80))
+            cut = float(np.median(base - bot[live])) / height
+        else:
+            base = float(np.percentile(top[free], 20))
+            cut = float(np.median(top[live] - base)) / height
+    return cut, follow, bend
+
+
 def judge(strokes, subject):
     """(layer, numbers) for one frame: the letters against the subject."""
     sub = subject.astype(np.uint8)
@@ -228,16 +290,12 @@ def judge(strokes, subject):
     ys, xs = np.nonzero(strokes)
     if len(xs) == 0:
         return "unknown", {"why": "no letters found"}
-    x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
+    x0, x1, y0, y1 = int(xs.min()), int(xs.max()) + 1, int(ys.min()), int(ys.max()) + 1
     box = np.zeros_like(strokes)
     box[y0:y1, x0:x1] = True
     area = float(box.sum())
     cover = float((box & subject).sum()) / area    # the subject reaches into the letters' box
     sure = float((box & core).sum()) / area        # ...by more than the outline's own error
-    # ...and how DEEP it reaches in: the most of any column of the box that is
-    # surely subject, against the box's height. A head that only brushes a
-    # word's baseline is a few pixels deep; a roof cutting into a name is a fifth of it.
-    depth = float((box & core)[y0:y1, x0:x1].sum(axis=0).max()) / float(y1 - y0)
 
     beside = float((strokes & ~reach).sum()) / max(1.0, float((box & ~reach).sum()))
     core_px = float((box & core).sum())
@@ -249,20 +307,34 @@ def judge(strokes, subject):
     near = cv2.dilate(strokes.astype(np.uint8), _disc(2)).astype(bool)
     touch = float((rim_in & near).sum()) / float(rim_in.sum()) if rim_in.sum() >= 20 else 0.0
 
-    nums = {"cover": round(cover, 3), "sure": round(sure, 3), "depth": round(depth, 3),
-            "through": round(through, 3), "touch": round(touch, 3)}
+    nums = {"cover": round(cover, 3), "sure": round(sure, 3), "through": round(through, 3), "touch": round(touch, 3)}
     if cover < COVER_MIN and touch < TOUCH_MIN:
         return "clear", nums
     if sure >= SURE_MIN and through >= THROUGH_FRONT:
         return "front", nums
-    if through <= THROUGH_BEHIND:
-        if touch >= TOUCH_MIN and sure >= SURE_MIN and depth >= DEPTH_MIN:
-            # the subject is inside the word's box, the letters stop at its outline, none lie on it
+    if through > THROUGH_BEHIND:
+        return "unknown", {**nums, "why": "letters partly on the subject"}
+    if touch < TOUCH_MIN:
+        return "clear", nums      # the subject is in the word's box, the letters keep away from it
+
+    # No letters on the subject, and letters right against its outline. Cut by
+    # it, or only standing next to it?
+    if sure >= SURE_DEEP:
+        return "behind", nums     # it is well inside the word: nothing else explains the gap
+    cut, follow, bend = _profile(strokes, subject, rim, reach, (x0, x1, y0, y1))
+    for key, val in (("cut", cut), ("follow", follow), ("bend", bend)):
+        if val is not None:
+            nums[key] = round(val, 3)
+    if cut is not None:
+        if cut >= CUT_MIN and sure >= SURE_MIN:
             return "behind", nums
-        if touch >= TOUCH_CLOSE:
-            return "unknown", {**nums, "why": "letters meet the subject's outline: cut by it, or only close to it"}
-        return "clear", nums
-    return "unknown", {**nums, "why": "letters partly on the subject"}
+        if cut < CUT_NONE:
+            return "clear", nums  # the letters are whole where they meet it: it only stands under them
+    elif follow is not None and follow >= FOLLOW_MIN and bend >= BEND_MIN and sure >= SURE_MIN:
+        # the subject is as wide as the word, so no letter is free of it: the
+        # letters' edge traces its outline instead of a straight line
+        return "behind", nums
+    return "unknown", {**nums, "why": "letters meet the subject's outline: cut by it, or only close to it"}
 
 
 def pick_blocks(blocks, duration, looks_like_text):
@@ -343,7 +415,7 @@ def analyse_block(cap, block, native_fps, subjects):
     pick = next((s for s in seen if s["layer"] == layer), seen[0])
     out = {"layer": layer, "t": pick["t"], "frames": len(seen),
            "agree": round(votes.get(layer, 0) / len(seen), 2)}
-    for key in ("subject", "cover", "sure", "depth", "through", "touch", "why"):
+    for key in ("subject", "cover", "sure", "through", "touch", "cut", "follow", "bend", "why"):
         if key in pick:
             out[key] = pick[key]
     return out, shown
@@ -371,7 +443,7 @@ def tile(shown, block, verdict, n, tile_w=300):
     layer = verdict["layer"]
     cv2.putText(bar, f"#{n} {t:.2f}s {layer.upper()}", (5, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                 _TINT.get(layer, (255, 255, 255)), 1, cv2.LINE_AA)
-    detail = " ".join(f"{k}={verdict[k]}" for k in ("subject", "depth", "through", "touch") if k in verdict)
+    detail = " ".join(f"{k}={verdict[k]}" for k in ("subject", "sure", "touch", "cut", "follow", "bend") if k in verdict)
     cv2.putText(bar, (detail or verdict.get("why", ""))[:46], (5, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.36,
                 (220, 220, 220), 1, cv2.LINE_AA)
     return np.vstack([bar, img])
