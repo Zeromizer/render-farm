@@ -16,12 +16,13 @@ How: for each display-size text block, on a few frames of its hold,
   strokes   the text's own pixels, found by its colour: the cluster of colours
             inside the block's box that is unlike the surround and uniform
             (type is a flat colour; footage is not).
-  verdict   five numbers decide it:
+  verdict   six numbers decide it:
               cover   how much of the visible letters' box the subject is in
               sure    ...counting only what is subject beyond the outline's error
-              cut     how much shorter the letters are where they meet the
-                      subject than where they do not (their baseline is
-                      straight unless something covers it)
+              span    share of the word's columns where the letters stop short of
+                      the word's own line AND at the subject's outline
+              cut     how far short they stop there (a straight baseline
+                      stays straight unless something covers it)
               through how dense the letters are ON the subject, against how
                       dense they are beside it (1 = they carry on over it)
               touch   how much of the subject's outline, inside that box, has
@@ -29,9 +30,8 @@ How: for each display-size text block, on a few frames of its hold,
             clear   the subject does not reach into the letters
             front   the letters carry on over the subject
             behind  no letters lie on the subject, they run right up to its
-                    outline, and they are CUT there: shorter than their own
-                    baseline, or tracing the outline where the subject is as
-                    wide as the word
+                    outline, and they are CUT there: short of the line the
+                    word's whole letters end on, over a tenth of the word
             on      the whole block lies on the subject: a title laid over it,
                     or lettering that is part of it (a number plate, a badge)
 
@@ -61,10 +61,11 @@ RIM_OUT = 6             # px outside it that may still be subject
 COVER_MIN = 0.02        # under this share of the letters' box, the subject does not reach the word
 SURE_MIN = 0.01         # share of the box that is surely subject: more than the outline's own error
 SURE_DEEP = 0.05        # ...and this much is the subject standing well inside the word
-CUT_MIN = 0.1           # letters this much shorter where they meet the subject are cut by it
-CUT_NONE = 0.04         # ...and under this they are whole
-FOLLOW_MIN = 0.6        # share of the meeting columns where the letters' edge lies on the outline
-BEND_MIN = 0.12         # how far from straight that edge must be, as a share of the height
+CUT_SHORT = 0.05        # a column stops short when it ends this share of the height before the word's line
+SPAN_MIN = 0.1          # share of the word's columns that stop short AT the subject's outline: cut by it
+SPAN_NONE = 0.05        # ...and under this the letters are whole
+CUT_MIN = 0.06          # how far short the cut columns stop, as a share of the letters' height
+UNDER_ALL = 0.85        # the subject stands in this share of the word's columns: no whole letter to compare with
 THROUGH_FRONT = 0.5     # letters at least half as dense on the subject as beside it
 THROUGH_BEHIND = 0.15
 TOUCH_MIN = 0.15        # share of the outline inside the box with letters right against it
@@ -228,58 +229,46 @@ def _disc(r):
     return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
 
 
-def _profile(strokes, subject, rim, reach, box):
+def _profile(strokes, subject, box):
     """Are the letters CUT by the subject, or do they only stand next to it?
 
-    Reads the letters' top and bottom edge column by column. Letters that are
-    whole end on a straight baseline whether or not something stands under
-    them; letters the subject covers end where its outline is. Returns
-    (cut, follow, bend), each None when it cannot be measured:
-      cut     how much shorter the letters are where they meet the subject
-              than where they do not, as a share of the letters' height
-      follow  share of the columns meeting the subject where the letters'
-              edge lies on its outline
-      bend    how far from straight that edge is, as a share of the height
+    Reads the letters' edge on the subject's side column by column. A column
+    is cut when its letters stop SHORT of the line the word's whole letters end
+    on AND stop at the subject's outline. Either alone is ordinary: a T's arm
+    or an O's curve ends short of the baseline by its own shape, and a head
+    that rises into the gap between two letters has letters at its outline
+    that are whole. Returns (span, cut, under), or None when there are too few
+    columns to say:
+      span   share of the word's columns that are cut
+      cut    how far short those columns stop, as a share of the letters' height
+      under  share of the word's columns the subject stands in
     """
     x0, x1, y0, y1 = box
     s = strokes[y0:y1, x0:x1]
-    cols = np.nonzero(s.any(axis=0))[0]
-    if len(cols) < 8:
-        return None, None, None
-    height = float(y1 - y0)
-    top = s.argmax(axis=0).astype(np.float32)
-    bot = (s.shape[0] - 1 - s[::-1].argmax(axis=0)).astype(np.float32)
     sub = subject[y0:y1, x0:x1]
-    meets = np.nonzero((s & rim[y0:y1, x0:x1]).any(axis=0))[0]
-    free = np.array([c for c in cols if not reach[y0:y1, x0 + c].any()], dtype=int)
-    if len(meets) < 3:
-        return None, None, None
+    has = s.any(axis=0)
+    cols = np.nonzero(has)[0]
+    both = np.nonzero(has & sub.any(axis=0))[0]
+    if len(cols) < 8 or len(both) < 3:
+        return None
+    rows = s.shape[0]
+    top = s.argmax(axis=0).astype(np.float32)
+    bot = (rows - 1 - s[::-1].argmax(axis=0)).astype(np.float32)
+    sub_top = sub.argmax(axis=0).astype(np.float32)
+    sub_bot = (rows - 1 - sub[::-1].argmax(axis=0)).astype(np.float32)
 
     # which edge the subject comes at: from below (a roof under a name) or from above
-    sub_any = sub.any(axis=0)
-    sub_top = sub.argmax(axis=0).astype(np.float32)
-    sub_bot = (sub.shape[0] - 1 - sub[::-1].argmax(axis=0)).astype(np.float32)
-    live = np.array([c for c in meets if sub_any[c]], dtype=int)
-    if len(live) < 3:
-        return None, None, None
-    from_below = float(np.median(sub_top[live])) > 0.5 * (s.shape[0] - 1)
-    edge = bot if from_below else top
-    outline = sub_top if from_below else sub_bot
-
-    tol = RIM_OUT + 2
-    follow = float((np.abs(edge[live] - outline[live]) <= tol).mean())
-    lo, hi = np.percentile(edge[cols], [10, 90])
-    bend = float(hi - lo) / height
-
-    cut = None
-    if len(free) >= max(3, int(0.05 * len(cols))):
-        if from_below:
-            base = float(np.percentile(bot[free], 80))
-            cut = float(np.median(base - bot[live])) / height
-        else:
-            base = float(np.percentile(top[free], 20))
-            cut = float(np.median(top[live] - base)) / height
-    return cut, follow, bend
+    if float(np.median(sub_top[both])) > 0.5 * (rows - 1):
+        edge, outline = bot, sub_top
+        short = float(np.percentile(bot[cols], 90)) - bot
+    else:
+        edge, outline = top, sub_bot
+        short = top - float(np.percentile(top[cols], 10))
+    at_outline = np.abs(edge - outline) <= RIM_OUT + 2
+    cut_cols = both[at_outline[both] & (short[both] >= max(3.0, CUT_SHORT * rows))]
+    span = len(cut_cols) / len(cols)
+    cut = float(np.median(short[cut_cols])) / rows if len(cut_cols) else 0.0
+    return span, cut, len(both) / len(cols)
 
 
 def judge(strokes, subject):
@@ -323,20 +312,18 @@ def judge(strokes, subject):
     # it, or only standing next to it?
     if sure >= SURE_DEEP:
         return "behind", nums     # it is well inside the word: nothing else explains the gap
-    cut, follow, bend = _profile(strokes, subject, rim, reach, (x0, x1, y0, y1))
-    for key, val in (("cut", cut), ("follow", follow), ("bend", bend)):
-        if val is not None:
-            nums[key] = round(val, 3)
-    if cut is not None:
-        if cut >= CUT_MIN and sure >= SURE_MIN:
-            return "behind", nums
-        if cut < CUT_NONE:
-            return "clear", nums  # the letters are whole where they meet it: it only stands under them
-    elif follow is not None and follow >= FOLLOW_MIN and bend >= BEND_MIN and sure >= SURE_MIN:
-        # the subject is as wide as the word, so no letter is free of it: the
-        # letters' edge traces its outline instead of a straight line
+    prof = _profile(strokes, subject, (x0, x1, y0, y1))
+    if prof is None:
+        return "unknown", {**nums, "why": "too little of the word meets the subject to tell cut letters from whole ones"}
+    span, cut, under = prof
+    nums.update(span=round(span, 3), cut=round(cut, 3))
+    if span >= SPAN_MIN and cut >= CUT_MIN and sure >= SURE_MIN:
         return "behind", nums
-    return "unknown", {**nums, "why": "letters meet the subject's outline: cut by it, or only close to it"}
+    if span < SPAN_NONE and under < UNDER_ALL:
+        return "clear", nums      # the letters are whole where they meet it: it stands in their gaps or under them
+    if span < SPAN_NONE:
+        return "unknown", {**nums, "why": "the subject is as wide as the word: no whole letter to compare the others with"}
+    return "unknown", {**nums, "why": "a few letters stop at the subject's outline: cut by it, or only shaped that way"}
 
 
 def _dump(block, t, strokes, mask, label, layer):
@@ -364,6 +351,19 @@ def pick_blocks(blocks, duration, looks_like_text):
         keep = np.linspace(0, len(ids) - 1, MAX_BLOCKS).round().astype(int)
         ids = [ids[k] for k in sorted(set(keep.tolist()))]
     return ids
+
+
+def settle(layers):
+    """One verdict from the frames read. A layer is a fact about the whole
+    hold: it takes a majority of the frames, and "behind" and "front" both
+    seen is a contradiction, not a vote."""
+    votes = {}
+    for layer in layers:
+        votes[layer] = votes.get(layer, 0) + 1
+    if votes.get("behind") and votes.get("front"):
+        return "unknown"
+    top = max(votes, key=votes.get)
+    return top if votes[top] * 2 > len(layers) else "unknown"
 
 
 def analyse_block(cap, block, native_fps, subjects):
@@ -417,21 +417,11 @@ def analyse_block(cap, block, native_fps, subjects):
     if not seen:
         return {"layer": "unknown", "why": "no frame could be read"}, None
 
-    # A layer is a fact about the whole hold: it takes a majority of the frames
-    # read, and "behind" and "front" both seen is a contradiction, not a vote.
-    decided = {k: v for k, v in votes.items() if k != "unknown"}
-    if decided.get("behind") and decided.get("front"):
-        layer = "unknown"
-    elif decided:
-        layer = max(decided, key=decided.get)
-        if decided[layer] * 2 <= len(seen) and layer not in ("clear", "on"):
-            layer = "unknown"
-    else:
-        layer = "unknown"
+    layer = settle([s["layer"] for s in seen])
     pick = next((s for s in seen if s["layer"] == layer), seen[0])
     out = {"layer": layer, "t": pick["t"], "frames": len(seen),
            "agree": round(votes.get(layer, 0) / len(seen), 2)}
-    for key in ("subject", "cover", "sure", "through", "touch", "cut", "follow", "bend", "why"):
+    for key in ("subject", "cover", "sure", "through", "touch", "span", "cut", "why"):
         if key in pick:
             out[key] = pick[key]
     return out, shown
@@ -459,7 +449,7 @@ def tile(shown, block, verdict, n, tile_w=300):
     layer = verdict["layer"]
     cv2.putText(bar, f"#{n} {t:.2f}s {layer.upper()}", (5, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                 _TINT.get(layer, (255, 255, 255)), 1, cv2.LINE_AA)
-    detail = " ".join(f"{k}={verdict[k]}" for k in ("subject", "sure", "touch", "cut", "follow", "bend") if k in verdict)
+    detail = " ".join(f"{k}={verdict[k]}" for k in ("subject", "sure", "touch", "span", "cut") if k in verdict)
     cv2.putText(bar, (detail or verdict.get("why", ""))[:46], (5, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.36,
                 (220, 220, 220), 1, cv2.LINE_AA)
     return np.vstack([bar, img])

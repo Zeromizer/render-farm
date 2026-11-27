@@ -1,6 +1,6 @@
 """Re-judge a bench run's dumps with the rule as it stands in layers.py.
 
-  python replay.py <bench_out> [name ...]
+  python replay.py <bench_out> [--brief] [name ...]
 
 <bench_out>/<name>_dump/*.npz hold the letters and the subject mask of every
 frame the bench judged (run.py sets LAYERS_DUMP). judge() needs nothing else,
@@ -25,20 +25,29 @@ def load(path):
 
 
 def main():
-    root = sys.argv[1]
-    only = set(sys.argv[2:])
+    args = [a for a in sys.argv[1:] if a != "--brief"]
+    brief = "--brief" in sys.argv
+    root, only = args[0], set(args[1:])
     for d in sorted(os.listdir(root)):
         if not d.endswith("_dump") or (only and d[:-5] not in only):
             continue
         print(f"== {d[:-5]}")
+        blocks = {}
         for fn in sorted(os.listdir(os.path.join(root, d))):
             strokes, mask, meta = load(os.path.join(root, d, fn))
             layer, nums = layers.judge(strokes, mask)
             why = nums.pop("why", "")
             flag = " " if layer == meta["was"] else "*"
-            print(f" {flag} {meta['t']:>6} {layer:8} (was {meta['was']:8}) {meta['subject']:8} "
-                  + " ".join(f"{k}={v}" for k, v in nums.items())
-                  + f'  "{meta["text"][:24]}" {why}')
+            key = fn.split("_")[0] + " " + meta["text"][:24]
+            blocks.setdefault(key, []).append(layer)
+            if not brief:
+                print(f" {flag} {meta['t']:>6} {layer:8} (was {meta['was']:8}) {meta['subject']:8} "
+                      + " ".join(f"{k}={v}" for k, v in nums.items())
+                      + f'  "{meta["text"][:24]}" {why}')
+        # the verdict each block would get from these frames alone (frames with
+        # no subject or no readable letters never reach judge(), so are not here)
+        for key, seen in blocks.items():
+            print(f"   block {key:32} {layers.settle(seen):8} {seen}")
 
 
 if __name__ == "__main__":
