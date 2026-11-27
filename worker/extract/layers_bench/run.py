@@ -10,7 +10,9 @@ so it reuses the extractor's cached venv):
           reference already in the assets bucket needs no upload)
 
 For each video it runs extract.py --stages layers (which pulls in the text
-pass), then keeps the layers section, the blocks it judged and the sheets.
+pass), then keeps the layers section, the blocks it judged and the sheets, plus
+<name>_dump/*.npz: the letters and subject mask of every frame judged, which
+replay.py re-judges anywhere numpy and cv2 are (no detector, no video).
 Child output is streamed line by line: a quiet python job cannot be cancelled.
 """
 import json
@@ -33,6 +35,7 @@ def main():
         print(f"== {name}: {path}", flush=True)
         p = subprocess.Popen([sys.executable, "-u", EXTRACT, os.path.abspath(path), work, "--stages", "layers"],
                              cwd=os.path.dirname(EXTRACT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             env={**os.environ, "LAYERS_DUMP": os.path.join(out_root, f"{name}_dump")},
                              text=True, encoding="utf-8", errors="replace")
         for line in p.stdout:
             print(f"  {line.rstrip()}", flush=True)

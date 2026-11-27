@@ -44,6 +44,8 @@ letters tinted, so a person or the annotate pass can overrule it by eye.
 numpy + cv2 here; torch/torchvision are imported inside Subjects so the rest of
 the extractor does not pay for them.
 """
+import os
+
 import cv2
 import numpy as np
 
@@ -337,6 +339,19 @@ def judge(strokes, subject):
     return "unknown", {**nums, "why": "letters meet the subject's outline: cut by it, or only close to it"}
 
 
+def _dump(block, t, strokes, mask, label, layer):
+    """Bench only (LAYERS_DUMP=<dir>): keep what judge() was given, so a rule
+    change can be replayed without the detector (layers_bench/replay.py)."""
+    out = os.environ.get("LAYERS_DUMP")
+    if not out:
+        return
+    os.makedirs(out, exist_ok=True)
+    name = f"{block['t0']:07.2f}_{t:07.2f}_{int(round(block['bbox'][0] * 1000)):04d}_{int(round(block['bbox'][1] * 1000)):04d}"
+    np.savez_compressed(os.path.join(out, name + ".npz"), shape=np.array(strokes.shape),
+                        strokes=np.packbits(strokes), mask=np.packbits(mask.astype(bool)),
+                        meta=np.array([str(block.get("text", "")), label, layer, f"{t:.2f}", f"{block['t0']:.2f}"]))
+
+
 def pick_blocks(blocks, duration, looks_like_text):
     """Display-size text worth judging, spread over the clip: [index]."""
     ids = [i for i, b in enumerate(blocks)
@@ -394,6 +409,7 @@ def analyse_block(cap, block, native_fps, subjects):
             shown = shown or (frame, mask, None, t)
             continue
         layer, nums = judge(strokes, mask)
+        _dump(block, t, strokes, mask, label, layer)
         votes[layer] = votes.get(layer, 0) + 1
         seen.append({"t": round(t, 2), "layer": layer, "subject": label, **nums})
         if shown is None or shown[2] is None or layer in ("behind", "front"):
