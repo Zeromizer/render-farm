@@ -16,9 +16,10 @@ How: for each display-size text block, on a few frames of its hold,
   strokes   the text's own pixels, found by its colour: the cluster of colours
             inside the block's box that is unlike the surround and uniform
             (type is a flat colour; footage is not).
-  verdict   four numbers decide it:
+  verdict   five numbers decide it:
               cover   how much of the visible letters' box the subject is in
               sure    ...counting only what is subject beyond the outline's error
+              depth   how far into the word's height the subject reaches
               through how dense the letters are ON the subject, against how
                       dense they are beside it (1 = they carry on over it)
               touch   how much of the subject's outline, inside that box, has
@@ -53,6 +54,7 @@ CORE_IN = 4             # px inside the detector's outline that is surely subjec
 RIM_OUT = 6             # px outside it that may still be subject
 COVER_MIN = 0.02        # under this share of the letters' box, the subject does not reach the word
 SURE_MIN = 0.01         # share of the box that is surely subject: more than the outline's own error
+DEPTH_MIN = 0.1         # ...and it must reach this far into the word's height somewhere
 THROUGH_FRONT = 0.5     # letters at least half as dense on the subject as beside it
 THROUGH_BEHIND = 0.15
 TOUCH_MIN = 0.15        # share of the outline inside the box with letters right against it
@@ -230,6 +232,10 @@ def judge(strokes, subject):
     area = float(box.sum())
     cover = float((box & subject).sum()) / area    # the subject reaches into the letters' box
     sure = float((box & core).sum()) / area        # ...by more than the outline's own error
+    # ...and how DEEP it reaches in: the most of any column of the box that is
+    # surely subject, against the box's height. A head that only brushes a
+    # word's baseline is a few pixels deep; a roof cutting into a name is a fifth of it.
+    depth = float((box & core)[y0:y1, x0:x1].sum(axis=0).max()) / float(y1 - y0)
 
     beside = float((strokes & ~reach).sum()) / max(1.0, float((box & ~reach).sum()))
     core_px = float((box & core).sum())
@@ -241,13 +247,14 @@ def judge(strokes, subject):
     near = cv2.dilate(strokes.astype(np.uint8), _disc(2)).astype(bool)
     touch = float((rim_in & near).sum()) / float(rim_in.sum()) if rim_in.sum() >= 20 else 0.0
 
-    nums = {"cover": round(cover, 3), "sure": round(sure, 3), "through": round(through, 3), "touch": round(touch, 3)}
+    nums = {"cover": round(cover, 3), "sure": round(sure, 3), "depth": round(depth, 3),
+            "through": round(through, 3), "touch": round(touch, 3)}
     if cover < COVER_MIN and touch < TOUCH_MIN:
         return "clear", nums
     if sure >= SURE_MIN and through >= THROUGH_FRONT:
         return "front", nums
     if through <= THROUGH_BEHIND:
-        if touch >= TOUCH_MIN and sure >= SURE_MIN:
+        if touch >= TOUCH_MIN and sure >= SURE_MIN and depth >= DEPTH_MIN:
             # the subject is inside the word's box, the letters stop at its outline, none lie on it
             return "behind", nums
         if touch >= TOUCH_CLOSE:
@@ -334,7 +341,7 @@ def analyse_block(cap, block, native_fps, subjects):
     pick = next((s for s in seen if s["layer"] == layer), seen[0])
     out = {"layer": layer, "t": pick["t"], "frames": len(seen),
            "agree": round(votes.get(layer, 0) / len(seen), 2)}
-    for key in ("subject", "cover", "sure", "through", "touch", "why"):
+    for key in ("subject", "cover", "sure", "depth", "through", "touch", "why"):
         if key in pick:
             out[key] = pick[key]
     return out, shown
@@ -362,7 +369,7 @@ def tile(shown, block, verdict, n, tile_w=300):
     layer = verdict["layer"]
     cv2.putText(bar, f"#{n} {t:.2f}s {layer.upper()}", (5, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                 _TINT.get(layer, (255, 255, 255)), 1, cv2.LINE_AA)
-    detail = " ".join(f"{k}={verdict[k]}" for k in ("subject", "sure", "through", "touch") if k in verdict)
+    detail = " ".join(f"{k}={verdict[k]}" for k in ("subject", "depth", "through", "touch") if k in verdict)
     cv2.putText(bar, (detail or verdict.get("why", ""))[:46], (5, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.36,
                 (220, 220, 220), 1, cv2.LINE_AA)
     return np.vstack([bar, img])
