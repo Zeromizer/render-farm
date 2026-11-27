@@ -167,8 +167,11 @@ def _upload_artefacts(spec, out_dir, prefix, log):
     """Contact sheet + keyframes -> renders bucket at fixed per-id paths
     (upsert, so a re-extract overwrites instead of accumulating), then patch
     the storage paths into the spec in place of local ones."""
-    names = sorted(f for f in os.listdir(out_dir)
-                   if f == "contact.jpg" or (f.startswith("kf_") and f.endswith(".jpg")))
+    # the sheets (contact, kf_words_NN, kf_layers_NN) before the shot keyframes
+    # (kf_NNN), so the bound below never drops a sheet a prompt links to
+    names = sorted((f for f in os.listdir(out_dir)
+                    if f == "contact.jpg" or (f.startswith("kf_") and f.endswith(".jpg"))),
+                   key=lambda f: (f[3:4].isdigit(), f))
     remote_for = {}
     for name in names[:80]:  # bound a pathological shot count
         remote = f"{prefix}/{name}"
