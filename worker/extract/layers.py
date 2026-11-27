@@ -95,9 +95,27 @@ class Subjects:
         weights = MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT
         self.torch = torch
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = maskrcnn_resnet50_fpn_v2(weights=weights).to(self.device).eval()
+        self.model = maskrcnn_resnet50_fpn_v2(weights=weights).eval()
+        try:
+            self.model = self.model.to(self.device)
+        except RuntimeError as e:
+            self._to_cpu(e)
         self.names = weights.meta["categories"]
         self._cache = {}
+
+    def _to_cpu(self, err):
+        """The card is full (a video is generating on it): finish on the CPU,
+        a second or two a frame, instead of failing the stage."""
+        if self.device.type != "cuda" or "out of memory" not in str(err).lower():
+            raise err
+        print("layers: GPU out of memory, finishing on the CPU")
+        self.torch.cuda.empty_cache()
+        self.device = self.torch.device("cpu")
+        self.model = self.model.to(self.device)
+
+    def _detect(self, x):
+        with self.torch.no_grad():
+            return self.model([x.to(self.device)])[0]
 
     def find(self, key, frame_bgr):
         """[(label, score, bool mask)] for the frame, biggest first. `key`
@@ -106,9 +124,12 @@ class Subjects:
             return self._cache[key]
         torch = self.torch
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        x = torch.from_numpy(rgb).permute(2, 0, 1).float().div(255).to(self.device)
-        with torch.no_grad():
-            out = self.model([x])[0]
+        x = torch.from_numpy(rgb).permute(2, 0, 1).float().div(255)
+        try:
+            out = self._detect(x)
+        except RuntimeError as e:
+            self._to_cpu(e)
+            out = self._detect(x)
         h, w = frame_bgr.shape[:2]
         found = []
         for label, score, mask in zip(out["labels"].tolist(), out["scores"].tolist(), out["masks"]):
