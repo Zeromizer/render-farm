@@ -195,6 +195,15 @@ def lift_of(db, hop_s=0.1, win_s=1.5, dur=None):
     return round(best[0] * hop_s, 2), round(best[1], 1)
 
 
+def lufs(ff, path):
+    """Integrated loudness (LUFS) via ffmpeg ebur128."""
+    import re
+    r = subprocess.run([ff, "-hide_banner", "-nostats", "-i", path, "-af", "ebur128", "-f", "null", "-"], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    found = re.findall(r"I:\s+(-?[\d.]+) LUFS", r.stderr)
+    return float(found[-1]) if found else None
+
+
 def octave_fold(r):
     return r * 2.0 ** (-round(np.log2(r))) if r > 0 else r
 
@@ -410,6 +419,8 @@ def measure(job, out):
             info = json.load(f)
         y, sr = load_mono(os.path.join(d, "no_vocals.wav"))
         info["_chroma"] = chroma(y, sr)
+        info["_lufs"] = lufs(ff, os.path.join(d, "mix.wav"))
+        log(f"{name}: reference mix {info['_lufs']} LUFS")
         _phase["name"] = f"sheetsage:{name}"
         try:
             melodies[name] = melody_notes(sheetsage(os.path.join(d, "no_vocals.wav")))
@@ -480,6 +491,20 @@ def measure(job, out):
                     row["melody_max_run"] = max(m["longest_run"] for m in mo.values())
                 except Exception as e:
                     row["melody_error"] = str(e)[:300]
+            if job.get("master"):
+                # master to the reference's loudness: gain to its integrated LUFS, then a -1 dBFS limiter
+                target = ri.get("_lufs")
+                cut = os.path.join(sepdir, f"{name}__{tid}.cut.wav")
+                run([ff, "-y", "-v", "error", "-i", path, "-t", f"{dur:.3f}", "-ac", "2", "-ar", "44100", cut])
+                before = lufs(ff, cut)
+                if target is not None and before is not None:
+                    gain = target - before
+                    mst = os.path.join(sepdir, f"{name}__{tid}.master.wav")
+                    run([ff, "-y", "-v", "error", "-i", cut, "-af",
+                         f"volume={gain:.2f}dB,alimiter=limit=0.891:attack=3:release=60:level=0", mst])
+                    row.update({"lufs_before": before, "master_gain_db": round(gain, 1), "lufs_after": lufs(ff, mst),
+                                "lufs_target": target})
+                    path = mst
             mp3 = os.path.join(out, "audio", f"{name}__{tid}.mp3")
             fade = min(2.0, max(0.8, 0.05 * dur))
             run([ff, "-y", "-v", "error", "-i", path, "-t", f"{dur:.3f}", "-af", f"afade=t=out:st={max(0, dur - fade):.3f}:d={fade:.2f}",
