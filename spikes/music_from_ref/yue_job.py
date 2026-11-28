@@ -36,7 +36,9 @@ HOME = os.path.join(os.path.expanduser("~"), "music-from-ref")
 log = ro.log
 
 
-def style_words(name, info):
+def style_words(name, info, override=None):
+    if override:
+        return f"Instrumental, {override}, {int(round(info['bpm']))} BPM, in {info['key']['key']}, no vocals, no singing, no choir, no spoken words"
     und = {}
     p = os.path.join(HOME, name, "ace_understand.json")
     if os.path.isfile(p):
@@ -157,7 +159,7 @@ def main():
     for ref in job["refs"]:
         with open(os.path.join(HOME, ref["name"], "ref.json"), encoding="utf-8") as f:
             info = json.load(f)
-        refs.append((ref["name"], info, style_words(ref["name"], info)))
+        refs.append((ref["name"], info, style_words(ref["name"], info, ref.get("style"))))
 
     # ---- phase 1: official planner (GPU, ComfyUI emptied first), conform each plan
     ro.set_phase("comfy-free")
@@ -170,7 +172,7 @@ def main():
     plans = []
     for name, info, style in (refs if "A" in arms else []):
         for seed in seeds:
-            tag = f"A_{seed}"
+            tag = f"{job.get('a_tag', 'A')}_{seed}"
             ro.set_phase(f"plan:{name}:{tag}")
             log(f"=== plan {name} {tag}: {style}")
             work = os.path.join(HOME, "_plans", f"{name}__{tag}")

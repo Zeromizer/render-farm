@@ -393,8 +393,12 @@ def measure(job, out):
     for ref in job["refs"]:
         name = ref["name"]
         tdir = os.path.join(HOME, "takes", name)
+        keep = job.get("measure_arms")
         for f in sorted(glob.glob(os.path.join(tdir, "*.wav"))):
-            takes.append((name, os.path.splitext(os.path.basename(f))[0], f))
+            tid = os.path.splitext(os.path.basename(f))[0]
+            if keep and tid.split("_")[0] not in keep:
+                continue
+            takes.append((name, tid, f))
         if ref.get("control"):
             c = ref["control"] if os.path.isabs(ref["control"]) else os.path.join(os.getcwd(), ref["control"])
             takes.append((name, "C_job", c))
@@ -438,6 +442,19 @@ def measure(job, out):
             hits = [beat_hit(ri["beats"], [b for b in beats if b <= dur], offset=o) or 0 for o in offs]
             row["beat_hit_best"] = round(max(hits), 3)
             row["beat_best_offset_s"] = round(float(offs[int(np.argmax(hits))]), 2)
+            if job.get("align"):
+                # delaying the take by o == trimming (period - o) mod period off its head
+                period = 60.0 / bpm
+                trim = (-row["beat_best_offset_s"]) % period
+                if trim > 0.02:
+                    seg2 = os.path.join(sepdir, f"{name}__{tid}.aligned.wav")
+                    run([ff, "-y", "-v", "error", "-ss", f"{trim:.3f}", "-i", path, "-t", f"{dur:.3f}", "-ac", "2", "-ar", "44100", seg2])
+                    path = seg2
+                    vocals, rest, sr = separate(seg2, os.path.join(sepdir, f"{name}__{tid}.al"))
+                    y, ysr = load_mono(os.path.join(sepdir, f"{name}__{tid}.al", "no_vocals.wav"))
+                    bpm, beats, contrast = tempo_beats(y, ysr, ri["bpm"])
+                    row["beat_hit"] = beat_hit(ri["beats"], [b for b in beats if b <= dur])
+                row["aligned_trim_s"] = round(trim, 3) if trim > 0.02 else 0.0
             ch = chroma(y, ysr)
             kk = key_of(ch)
             row["key"] = kk["key"]

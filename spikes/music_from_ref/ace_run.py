@@ -106,8 +106,10 @@ def main():
         bpm = int(round(info["bpm"]))
         key = ace_key(info["key"])
         t = time.monotonic()
-        codes = dit.convert_src_audio_to_codes(stem)
-        if not codes or codes.startswith("❌"):
+        codes = "" if ref.get("caption") else dit.convert_src_audio_to_codes(stem)
+        if ref.get("caption"):
+            u = None
+        elif not codes or codes.startswith("❌"):
             log(f"{name}: codes failed: {codes[:300]}")
             u = None
         else:
@@ -117,16 +119,19 @@ def main():
                "error": getattr(u, "error", None), "seconds": round(time.monotonic() - t, 1)}
         und["caption_instrumental"] = clean_caption(und["caption"])
         results["understand"][name] = und
-        with open(os.path.join(d, "ace_understand.json"), "w", encoding="utf-8") as f:
-            json.dump(und, f, indent=1, ensure_ascii=False)
+        if not ref.get("caption"):
+            with open(os.path.join(d, "ace_understand.json"), "w", encoding="utf-8") as f:
+                json.dump(und, f, indent=1, ensure_ascii=False)
         log(f"{name}: understand {json.dumps(und, ensure_ascii=False)[:600]}")
-        caption = und["caption_instrumental"] or "instrumental, punchy modern drums, confident"
-        caption = caption + ", instrumental, no vocals"
+        caption = ref.get("caption") or und["caption_instrumental"] or "instrumental, punchy modern drums, confident"
+        caption = caption.rstrip(". ") + ". Instrumental, no vocals."
         save()
-        arms = [("B1", dict(task_type="text2music", reference_audio=stem, thinking=True)),
-                ("B2", dict(task_type="cover", src_audio=stem, audio_cover_strength=strength, thinking=False))]
-        for arm, extra in arms:
-            for seed in seeds:
+        arms = []
+        for a in job.get("ace_arms") or [{"tag": "B1", "task": "text2music"}, {"tag": "B2", "task": "cover", "strength": strength}]:
+            extra = dict(task_type="text2music", reference_audio=stem, thinking=True) if a["task"] == "text2music" else                 dict(task_type="cover", src_audio=stem, audio_cover_strength=float(a.get("strength", strength)), thinking=False)
+            arms.append((a["tag"], extra, a.get("seeds", seeds)))
+        for arm, extra, arm_seeds in arms:
+            for seed in arm_seeds:
                 tag = f"{arm}_{seed}"
                 log(f"PROGRESS {int(100 * (ri + 0.5) / len(refs))}")
                 log(f"=== {name} {tag}")

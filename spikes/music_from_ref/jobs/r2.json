@@ -1,0 +1,92 @@
+{
+ "run_id": "r2",
+ "refs": [
+  {
+   "name": "taycan",
+   "video": "spikes/music_from_ref/in/taycan.mp4",
+   "bpm_hint": 103.4,
+   "control": "spikes/music_from_ref/in/control_taycan.wav",
+   "caption": "Instrumental hip-hop, future beats, LA beat scene. Mid-tempo head-nodding groove with heavy swing. Punchy sub-heavy kick, dry cracking snare and clap, crisp off-kilter hi-hats. Deep warm rounded synth sub bass. Dusty warm chord pads, a quirky gliding whistle-like synth lead, gritty synth brass swells later. Cool, swaggering, playful, modern. Quick riser straight into the groove, builds with denser synth layers",
+   "style": "instrumental hip-hop, future beats, swung drums, sub bass, dusty chord pads, gliding synth lead, cool, playful"
+  },
+  {
+   "name": "b5",
+   "video": "spikes/music_from_ref/in/b5.mp4",
+   "bpm_hint": 117.5,
+   "control": "spikes/music_from_ref/in/control_b5.wav",
+   "caption": "Cinematic darksynth, melodic techno. Fast urgent four-on-the-floor kick, crisp claps on 2 and 4, driving 16th-note hi-hats, white-noise sweeps. Relentless sidechained 16th-note analog saw bassline. Biting reedy lead synth with a dramatic harmonic-minor melody and glide, dark brassy synth pads, rising chord arpeggios. Sleek, tense, nocturnal, high-octane. Filtered pulse and riser intro, hard drop into the hook",
+   "style": "darksynth, melodic techno, four-on-the-floor, analog saw bassline, reedy lead synth, dark synth pads, tense, nocturnal"
+  },
+  {
+   "name": "bmw",
+   "video": "spikes/music_from_ref/in/bmw.mp4",
+   "bpm_hint": 136.0,
+   "control": "spikes/music_from_ref/in/control_bmw.wav",
+   "caption": "Atmospheric trap beat, cloud rap, nocturnal alt R&B. Slow hypnotic half-time bounce. Deep syncopated kick, crisp snare and rimshot backbeat, rolling trap hi-hats, warm sustained gliding 808 sub bass. Lush reverb-drenched minor synth pads and a hazy gliding high synth lead. Nocturnal, sleek, moody, luxury-cool. Steady cruising pocket that swells with fuller layers midway",
+   "style": "atmospheric trap, cloud rap beat, half-time, 808 bass, rolling hi-hats, reverb synth pads, hazy synth lead, moody, nocturnal"
+  },
+  {
+   "name": "sealion",
+   "video": "spikes/music_from_ref/in/sealion.mp4",
+   "bpm_hint": 123.0,
+   "control": "spikes/music_from_ref/in/control_sealion.wav",
+   "caption": "Cinematic trap, hybrid brass trap with phonk undertones. Half-time swagger. Punchy 808 kick, sharp backbeat snare and clap, skittering triplet hi-hat rolls, deep saturated 808 sub bass. Dark low-passed intro, tense synth-string swell and snare riser into a big drop with a bold soaring synth-brass lead over wide minor-key pads. Nocturnal, confident, triumphant, anthemic",
+   "style": "cinematic trap, brass trap, phonk, 808 bass, triplet hi-hats, synth brass lead, minor pads, big drop, confident, anthemic"
+  },
+  {
+   "name": "deepavali",
+   "video": "spikes/music_from_ref/in/deepavali.mp4",
+   "bpm_hint": 92.3,
+   "control": "spikes/music_from_ref/in/control_deepavali.wav",
+   "caption": "Cinematic world fusion, Indian ambient downtempo, prestige brand score. Unhurried flowing pulse. Sparse organic hand percussion: warm tabla, muted frame drum, subtle shakers, no drum kit. Drone-like low synth bass under lush airy pads. A breathy bansuri flute melody, then a bright plucked sitar-like string lead with an ascending phrase and a resolving cadence. Warm, serene, heritage-rich, quietly uplifting",
+   "style": "Indian world fusion, cinematic downtempo, tabla, frame drum, bansuri flute, sitar, airy pads, warm, serene, uplifting"
+  }
+ ],
+ "seeds": [
+  11
+ ],
+ "copy_seed": 11,
+ "cover_strength": 0.3,
+ "dit": "acestep-v15-turbo",
+ "lm": "acestep-5Hz-lm-1.7B",
+ "lm_backend": "pt",
+ "ace_arms": [
+  {
+   "tag": "B1g",
+   "task": "text2music",
+   "seeds": [
+    11,
+    222
+   ]
+  },
+  {
+   "tag": "B2g5",
+   "task": "cover",
+   "strength": 0.5,
+   "seeds": [
+    11
+   ]
+  },
+  {
+   "tag": "B2g7",
+   "task": "cover",
+   "strength": 0.7,
+   "seeds": [
+    11
+   ]
+  }
+ ],
+ "arms": [
+  "A"
+ ],
+ "a_tag": "Ag",
+ "measure_arms": [
+  "C",
+  "Ag",
+  "B1g",
+  "B2g5",
+  "B2g7"
+ ],
+ "align": true,
+ "describer": "gemini-4-argon-high via agy on the laptop, reference music stem, 2026-11-28; artist names dropped"
+}
