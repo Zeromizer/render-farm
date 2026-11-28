@@ -1,0 +1,10 @@
+# music_from_ref analysis venv: htdemucs split + librosa measures (+ uv for the ACE-Step job).
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
+torchaudio==2.7.1+cu128
+demucs==4.0.1
+librosa==0.10.2.post1
+soundfile>=0.12.1
+numpy<2
+scipy<1.15
+uv>=0.8

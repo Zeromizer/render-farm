@@ -1,0 +1,16 @@
+{
+  "run_id": "r1",
+  "refs": [
+    {"name": "taycan",    "video": "spikes/music_from_ref/in/taycan.mp4",    "bpm_hint": 103.4, "control": "spikes/music_from_ref/in/control_taycan.wav"},
+    {"name": "b5",        "video": "spikes/music_from_ref/in/b5.mp4",        "bpm_hint": 117.5, "control": "spikes/music_from_ref/in/control_b5.wav"},
+    {"name": "bmw",       "video": "spikes/music_from_ref/in/bmw.mp4",       "bpm_hint": 136.0, "control": "spikes/music_from_ref/in/control_bmw.wav"},
+    {"name": "sealion",   "video": "spikes/music_from_ref/in/sealion.mp4",   "bpm_hint": 123.0, "control": "spikes/music_from_ref/in/control_sealion.wav"},
+    {"name": "deepavali", "video": "spikes/music_from_ref/in/deepavali.mp4", "bpm_hint": 92.3,  "control": "spikes/music_from_ref/in/control_deepavali.wav"}
+  ],
+  "seeds": [11, 222],
+  "copy_seed": 11,
+  "cover_strength": 0.3,
+  "dit": "acestep-v15-turbo",
+  "lm": "acestep-5Hz-lm-1.7B",
+  "lm_backend": "pt"
+}

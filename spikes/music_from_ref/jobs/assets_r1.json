@@ -1,0 +1,12 @@
+[
+ {"path": "spikes/music_from_ref/in/taycan.mp4", "sha256": "c5b47f2e695b25f1470fdeed8bd1ee552b4abf9642aa4b9a7c52bb2b311f0458", "size": 4621656},
+ {"path": "spikes/music_from_ref/in/b5.mp4", "sha256": "f32244d024720bb87ae4bce12477e7158d3115bcec6a1e501b261cb7b7641eac", "size": 26405640},
+ {"path": "spikes/music_from_ref/in/bmw.mp4", "sha256": "4dafade5d46f717a17d1b9143ecfad86d9bcb0320dcf51d6b5f075b2e3aac054", "size": 2782335},
+ {"path": "spikes/music_from_ref/in/sealion.mp4", "sha256": "9dce6958ca1a761072c79ccadc21eee0e80cb71131c14d834e74487697d76d98", "size": 2152643},
+ {"path": "spikes/music_from_ref/in/deepavali.mp4", "sha256": "301d1be7109d5c25dd233ec839a1777e7cb45f7842cd64ea5670b1cbbbbd880b", "size": 18785033},
+ {"path": "spikes/music_from_ref/in/control_taycan.wav", "sha256": "42cf57dd0ae16a97c08a84cc9097b3a08237c26c7020d9b54e9fad3b853cfaa8", "size": 4416078},
+ {"path": "spikes/music_from_ref/in/control_b5.wav", "sha256": "e65054b29d7ad9f889b129972a6ee2e7b76267ad1103feeafd0a9078cbf0d04c", "size": 4992078},
+ {"path": "spikes/music_from_ref/in/control_bmw.wav", "sha256": "32017430dd15e19a74da3f8744050ed1d01516e1e8779740e42c208239f76ec8", "size": 2688078},
+ {"path": "spikes/music_from_ref/in/control_sealion.wav", "sha256": "d076f541280a1619803a2d94a8bc778b2730877389d4e4da5b9edf0b2eac6522", "size": 5760078},
+ {"path": "spikes/music_from_ref/in/control_deepavali.wav", "sha256": "aa5957136e22a8bb3ee3839b840378bc2d0b54ce43b752f56d7f33f52a05b065", "size": 4224078}
+]
