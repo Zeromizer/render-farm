@@ -144,6 +144,7 @@ def main():
     threading.Thread(target=ro.monitor, daemon=True).start()
     py = sys.executable
     seeds = job.get("seeds", [11, 222])
+    arms = set(job.get("arms", ["A", "A2", "X"]))
     results = {"takes": [], "plans": []}
 
     def save():
@@ -167,7 +168,7 @@ def main():
         os.environ["YUE2_ATTENTION"] = choice
         os.environ["PYTHONPATH"] = os.path.join(ro.HERE, "shim") + os.pathsep + os.environ.get("PYTHONPATH", "")
     plans = []
-    for name, info, style in refs:
+    for name, info, style in (refs if "A" in arms else []):
         for seed in seeds:
             tag = f"A_{seed}"
             ro.set_phase(f"plan:{name}:{tag}")
@@ -218,7 +219,7 @@ def main():
             jobs.append(dict(name=row["ref"], tag=row["take"], abc_text=text, style=row.get("prepared_style") or row["style"],
                              tags=ro.timed_tags(c["sections"], c["bar_seconds"]), seconds=info["duration_s"],
                              seed=int(row["take"].split("_")[1]), mode="full", head_trim=c["head_trim_s"]))
-    for name, info, style in refs:
+    for name, info, style in (refs if arms & {"A2", "X"} else []):
         stem = os.path.join(HOME, name, "no_vocals.wav")
         ro.set_phase(f"sheetsage:{name}")
         try:

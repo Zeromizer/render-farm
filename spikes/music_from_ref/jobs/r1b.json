@@ -1,0 +1,2 @@
+{"run_id": "r1b", "refs": [{"name": "taycan"}, {"name": "sealion"}], "seeds": [3333], "arms": ["A"],
+ "note": "re-plan of taycan/sealion A_222, whose plans ran to the 4096-token ABC cap"}
